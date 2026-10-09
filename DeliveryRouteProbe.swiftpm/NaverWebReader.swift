@@ -14,7 +14,7 @@ enum NaverWebReader {
         try Task.checkCancellation()
         let raw: Any = try await withCheckedThrowingContinuation { continuation in
             view.callAsyncJavaScript(body, arguments: arguments, in: nil, in: .page) { result in
-                continuation.resume(with: result.map { $0 ?? NSNull() })
+                continuation.resume(with: result)
             }
         }
         try Task.checkCancellation()

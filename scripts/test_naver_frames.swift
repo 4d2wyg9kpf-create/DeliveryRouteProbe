@@ -7,6 +7,7 @@ import Foundation
 @MainActor
 final class FrameChecks {
     let view: WKWebView
+    let window: NSWindow
     var checks = 0
     let parent = "http://localhost:8349"
     init() {
@@ -16,6 +17,9 @@ final class FrameChecks {
         let list = Self.fixture(NaverSavedListScript.source)
         configuration.userContentController.addUserScript(WKUserScript(source: "(" + bridge + ")(" + detail + "," + list + ");", injectionTime: .atDocumentStart, forMainFrameOnly: false))
         view = WKWebView(frame: CGRect(x: 0, y: 0, width: 393, height: 700), configuration: configuration)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 393, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = view
+        window.orderFront(nil)
     }
     static func fixture(_ source: String) -> String {
         source.replacingOccurrences(of: "'https:'", with: "'http:'")
@@ -29,7 +33,7 @@ final class FrameChecks {
     func evaluate(_ body: String, _ args: [String: Any] = [:]) async throws -> [String: Any] {
         let raw: Any = try await withCheckedThrowingContinuation { continuation in
             view.callAsyncJavaScript(body, arguments: args, in: nil, in: .page) { result in
-                continuation.resume(with: result.map { $0 ?? NSNull() })
+                continuation.resume(with: result)
             }
         }
         guard let string = raw as? String, let data = string.data(using: .utf8),
@@ -47,8 +51,16 @@ final class FrameChecks {
     func run() async {
         do {
             view.load(URLRequest(url: URL(string: parent + "/main")!))
-            try await Task.sleep(nanoseconds: 700_000_000)
+            let deadline = Date().addingTimeInterval(12)
+            var ready = false
+            while Date() < deadline {
+                let state = try? await evaluate("return JSON.stringify({ok:true,ready:location.pathname==='/main'&&!!document.querySelector('#entryIframe')});")
+                if state?["ready"] as? Bool == true { ready = true; break }
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+            guard ready else { throw NSError(domain: "local fixture main page not loaded", code: 1) }
             let first = try await request("place")
+            print("FIRST_FRAME_RESULT \(first)")
             try check(first["ok"] as? Bool == true && first["placeID"] as? String == "101", "iPhone-width cross-origin restaurant frame")
             try check(first["address"] as? String == "서울 중구 세종대로 1", "detail address arrives without WKFrameInfo")
             _ = try await evaluate("document.querySelector('#entryIframe').src='http://127.0.0.1:8349/place/102/home'; return JSON.stringify({ok:true});")
