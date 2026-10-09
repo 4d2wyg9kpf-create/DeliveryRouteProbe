@@ -12,6 +12,7 @@ on:
       - 'scripts/package_unsigned_ipa.py'
       - 'scripts/test_naver_frames.*'
       - 'scripts/naver_frame_fixtures.py'
+      - 'scripts/naver_fixture_info.plist'
       - '.github/workflows/build-ipa.yml'
 
 permissions:
@@ -34,6 +35,7 @@ jobs:
       - name: Verify cross-origin iframe reads in native WKWebView
         run: bash scripts/test_naver_frames.sh
       - name: Build device app and package unsigned IPA
+        if: always()
         run: bash scripts/build_ios.sh unsigned
       - name: Upload IPA and its verification report
         uses: actions/upload-artifact@v7

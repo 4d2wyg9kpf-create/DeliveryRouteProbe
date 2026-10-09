@@ -5,12 +5,12 @@ import Foundation
 // Exercise the SAME embedded request/reply scripts in real WKWebView with
 // local, different-origin iframe fixtures. No account or external site access.
 @MainActor
-final class FrameChecks {
+final class FrameChecks: NSObject, WKNavigationDelegate {
     let view: WKWebView
     let window: NSWindow
     var checks = 0
     let parent = "http://localhost:8349"
-    init() {
+    override init() {
         let configuration = WKWebViewConfiguration()
         let bridge = Self.fixture(NaverFrameBridgeScript.source)
         let detail = Self.fixture(NaverPlaceDetailScript.source)
@@ -18,9 +18,14 @@ final class FrameChecks {
         configuration.userContentController.addUserScript(WKUserScript(source: "(" + bridge + ")(" + detail + "," + list + ");", injectionTime: .atDocumentStart, forMainFrameOnly: false))
         view = WKWebView(frame: CGRect(x: 0, y: 0, width: 393, height: 700), configuration: configuration)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 393, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        super.init()
+        view.navigationDelegate = self
         window.contentView = view
         window.orderFront(nil)
     }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { print("FIXTURE_NAVIGATION_ERROR \(error)") }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { print("FIXTURE_NAVIGATION_ERROR \(error)") }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { print("FIXTURE_MAIN_LOADED \(webView.url?.absoluteString ?? "nil")") }
     static func fixture(_ source: String) -> String {
         source.replacingOccurrences(of: "'https:'", with: "'http:'")
             .replacingOccurrences(of: "https://map.naver.com", with: "http://localhost:8349")
