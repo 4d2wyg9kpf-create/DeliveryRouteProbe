@@ -11,6 +11,17 @@ import struct
 import zipfile
 
 
+def validate_app_names(info):
+    # Personal-signing tools may use the display name for Apple's appIdName.
+    # Keep the metadata names simple ASCII; the app's Korean UI is independent.
+    for key in ('CFBundleName', 'CFBundleDisplayName'):
+        name = info.get(key)
+        if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9]+(?: [A-Za-z0-9]+)*', name):
+            raise ValueError(f'{key} must use ASCII letters, numbers, or spaces for personal signing')
+    if len(info['CFBundleName']) > 15:
+        raise ValueError('CFBundleName must not exceed 15 characters')
+
+
 def inspect_binary(data):
     if len(data) < 32 or data[:4] != b'\xcf\xfa\xed\xfe':
         raise ValueError('Compiled 64-bit Mach-O executable required')
@@ -43,6 +54,7 @@ def package(app, output):
     if not app.is_dir() or app.suffix != '.app':
         raise ValueError('The compiled .app folder is missing')
     info = plistlib.loads((app / 'Info.plist').read_bytes())
+    validate_app_names(info)
     executable = info.get('CFBundleExecutable', '')
     if not executable or Path(executable).name != executable:
         raise ValueError('Invalid application executable name')
@@ -84,7 +96,8 @@ def package(app, output):
             raise ValueError('IPA metadata changed during packaging')
     temporary.replace(target)
     report = {'file': target.name, 'bytes': target.stat().st_size, 'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
-              'bundle_identifier': info['CFBundleIdentifier'], 'version': version, 'build': build,
+              'bundle_identifier': info['CFBundleIdentifier'], 'bundle_name': info['CFBundleName'],
+              'display_name': info['CFBundleDisplayName'], 'version': version, 'build': build,
               'minimum_os': info.get('MinimumOSVersion'), 'devices': ['iPhone', 'iPad'],
               'binary': binary_info, 'signing': 'Built with code signing disabled; personal installation signing is separate',
               'source_commit': os.environ.get('GITHUB_SHA'), 'compiled_device_binary_present': True, 'device_launch_tested': False}
