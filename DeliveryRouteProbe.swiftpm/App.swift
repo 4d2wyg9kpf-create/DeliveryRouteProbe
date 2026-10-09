@@ -81,6 +81,7 @@ struct ProbeView: View {
     @State private var exportDocument = CaptureDocument()
     @State private var mapExpanded = UIDevice.current.userInterfaceIdiom == .phone
     @State private var showCustomers = false
+    @State private var showSharedLink = false
     @EnvironmentObject private var customers: NaverCustomerStore
 
     var body: some View {
@@ -100,6 +101,8 @@ struct ProbeView: View {
                     Button { model.webView.reload() } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("새로고침")
                     Button("지도 홈", action: model.openHome)
+                    Button("공유 링크 붙여넣기") { showSharedLink = true }
+                        .disabled(model.isImportingSavedList || model.isReadingPlace || model.isOpeningSharedLink)
                     Button("저장 목록 전체 가져오기") { mapExpanded = true; model.openSavedLists(customers) }
                     Button(model.isReadingPlace ? "장소 읽는 중" : "선택 장소 읽기", action: model.readSelectedPlace)
                         .buttonStyle(.borderedProminent)
@@ -168,9 +171,44 @@ struct ProbeView: View {
         .background(Color(uiColor: .systemGroupedBackground))
         .onAppear { model.startIfNeeded() }
         .sheet(isPresented: $showCustomers) { NaverCustomerCatalogView(planner: planner, browser: model) }
+        .sheet(isPresented: $showSharedLink) {
+            NaverSharedLinkView { text in
+                try model.openSharedLink(text, customers: customers)
+                mapExpanded = true
+            }
+        }
+        .onChange(of: model.placeCapture?.selectionKey) { _, key in if key != nil { mapExpanded = false } }
         .onDisappear { model.endMapEditingIfLoaded() }
         .fileExporter(isPresented: $showExport, document: exportDocument, contentType: .json, defaultFilename: "배송경로_확인기록") { result in
             if case .failure(let error) = result { model.errorMessage = "내보내기 실패: \(error.localizedDescription)" }
+        }
+    }
+}
+
+struct NaverSharedLinkView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var error: String?
+    let open: (String) throws -> Void
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("네이버 지도 공유 링크") {
+                    Text("네이버 지도에서 장소나 저장 목록의 ‘공유 → 링크 복사’를 누른 뒤 여기에 붙여넣으세요.").font(.subheadline)
+                    TextEditor(text: $text).frame(minHeight: 120).autocorrectionDisabled().textInputAutocapitalization(.never)
+                    Button("복사한 링크 붙여넣기") { text = UIPasteboard.general.string ?? ""; error = nil }
+                    if let error { Text(error).foregroundColor(.red).font(.caption) }
+                    Button("링크로 가져오기") {
+                        do { try open(text); dismiss() } catch { self.error = error.localizedDescription }
+                    }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                Section {
+                    Text("장소 링크는 해당 장소를 열고 주소·좌표를 읽습니다. 확인한 장소 정보에서 거래처로 저장하세요. 저장 목록 링크는 접근 가능한 폴더의 장소를 모두 거래처 목록에 저장합니다.").font(.caption)
+                    Text("지도 중심 좌표는 장소 좌표로 사용하지 않습니다. 저장 목록은 네이버의 공유 설정과 로그인 상태에 따라 접근할 수 있습니다.").font(.caption).foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("공유 링크 가져오기").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { dismiss() } } }
         }
     }
 }

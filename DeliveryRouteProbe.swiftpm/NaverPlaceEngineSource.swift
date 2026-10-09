@@ -68,6 +68,12 @@ enum NaverPlaceEngineSource {
         c.method='apple_address_geocoding';c.geocodeProvider='Apple';c.geocodedAddress=text(chosen.address,1000,'변환 결과 주소');c.tileZoom=null;c.screenResolutionMeters=null;c.coordinateIssue='';
         return validate(c);
       }
+      function matchesSavedRow(input){
+        const c=validate(input.capture),row=input.row;
+        if(!row||!tidy(row.name))return false;
+        if(tidy(row.address))return [c.address,c.roadAddress,c.jibunAddress].some(address=>addressMatches(row.address,address));
+        return sameName(row.name,c.name);
+      }
       function enrich(input){
         const capture=copy(validate(input.capture)),map=validate(input.map);
         if(capture.kind!=='place'||capture.selectionKey!==map.selectionKey||!sameName(capture.name,map.name)||!coordinate(map.coordinate))fail('선택한 장소와 좌표 지도의 장소가 다릅니다. 다시 읽어 주세요.');
@@ -188,8 +194,8 @@ enum NaverPlaceEngineSource {
         }
         return p;
       }
-      const api={merge,validate,sameSelection,attach,enrich,selectCustomers,endpoints,geocode,addressMatches};
-      for(const name of ['merge','sameSelection','attach','enrich','validate','selectCustomers','endpoints','geocode'])api[name+'JSON']=value=>{try{const input=JSON.parse(value);return JSON.stringify({ok:true,value:api[name](name==='validate'?input.capture:input)});}catch(e){return JSON.stringify({ok:false,message:e.message});}};
+      const api={merge,validate,sameSelection,attach,enrich,selectCustomers,endpoints,geocode,addressMatches,matchesSavedRow};
+      for(const name of ['merge','sameSelection','attach','enrich','validate','selectCustomers','endpoints','geocode','matchesSavedRow'])api[name+'JSON']=value=>{try{const input=JSON.parse(value);return JSON.stringify({ok:true,value:api[name](name==='validate'?input.capture:input)});}catch(e){return JSON.stringify({ok:false,message:e.message});}};
       return api;
     })();
     if(typeof module!=='undefined')module.exports=DeliveryNaverPlaces;

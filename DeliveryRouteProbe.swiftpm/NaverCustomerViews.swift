@@ -79,7 +79,7 @@ struct NaverCustomerCatalogView: View {
                             }.font(.caption).buttonStyle(.borderless).disabled(resolvingID != nil)
                         }
                         Button(role: .destructive) { deleting = record; confirmDelete = true } label: { Image(systemName: "trash") }
-                            .buttonStyle(.borderless).accessibilityLabel("\(record.name) 거래처 목록에서 삭제")
+                            .buttonStyle(.borderless).disabled(resolvingID != nil).accessibilityLabel("\(record.name) 거래처 목록에서 삭제")
                     }
                 }
                 Section {

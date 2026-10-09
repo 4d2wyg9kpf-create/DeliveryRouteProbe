@@ -1,6 +1,10 @@
 """Local DOM fixtures for WKWebView; never contacts Naver or uses user data."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
+from pathlib import Path
+import subprocess
+import sys
+import urllib.request
 
 MAIN = '''<!doctype html><meta name="viewport" content="width=device-width">
 <iframe id="entryIframe" src="http://127.0.0.1:8350/restaurant/101/home"></iframe>
@@ -33,8 +37,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content.encode())
 
-for port in [8350, 8351]:
-    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
-    Thread(target=server.serve_forever, daemon=True).start()
-print('LOCAL_FIXTURE_SERVERS_READY', flush=True)
-ThreadingHTTPServer(('127.0.0.1', 8349), Handler).serve_forever()
+def run_checks(binary):
+    # Own the fixture servers and the native client in one foreground process.
+    # Binding completes before the client starts, and exceptions reach CI.
+    servers = []
+    try:
+        for port in [8349, 8350, 8351]:
+            server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+            servers.append(server)
+            Thread(target=server.serve_forever, daemon=True).start()
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        for server in servers:
+            with opener.open(f'http://127.0.0.1:{server.server_port}/main', timeout=5) as response:
+                assert response.status == 200
+        print('LOCAL_FIXTURE_SERVERS_READY', flush=True)
+        return subprocess.run([str(Path(binary).resolve())], timeout=180).returncode
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        raise SystemExit('Pass the compiled native fixture test executable')
+    raise SystemExit(run_checks(sys.argv[1]))

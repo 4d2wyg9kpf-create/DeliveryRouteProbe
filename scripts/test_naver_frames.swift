@@ -56,6 +56,17 @@ final class FrameChecks: NSObject, WKNavigationDelegate {
     }
     func run() async {
         do {
+            try check(try NaverSharedLink.parse("[네이버 지도]\n거래처\nhttps://naver.me/5eUPxjWq").kind == .short, "shared text extracts one short link")
+            try check(try NaverSharedLink.parse("https://m.place.naver.com/restaurant/101/home").kind == .place("101"), "mobile restaurant share keeps exact POI ID")
+            try check(try NaverSharedLink.parse("https://map.naver.com/p/search/거래처/place/102?c=14.00,0,0,0,dh").kind == .place("102"), "search result share keeps selected POI ID")
+            try check(try NaverSharedLink.parse("https://map.naver.com/p/favorite/myPlace/folder/fixture-folder/pc/place/101").kind == .folder("fixture-folder"), "saved folder share imports its folder")
+            try check(NaverSharedLink.target(URL(string: "https://map.naver.com.evil.test/p/entry/place/101")!) == nil, "lookalike host is rejected")
+            try check(NaverSharedLink.target(URL(string: "https://map.naver.com/p?c=127.4,36.3,14")!) == nil, "map center is not a place coordinate")
+            let coordinateURL = try NaverSharedLink.parse("https://map.naver.com/p/entry/place/101?lng=1&lat=2")
+            try check(coordinateURL.url.absoluteString == "https://map.naver.com/p/entry/place/101", "unverified query coordinates are discarded")
+            var multipleRejected = false
+            do { _ = try NaverSharedLink.parse("https://naver.me/abc123 https://naver.me/def456") } catch { multipleRejected = true }
+            try check(multipleRejected, "multiple place links are rejected")
             view.load(URLRequest(url: URL(string: parent + "/main")!))
             let deadline = Date().addingTimeInterval(12)
             var ready = false

@@ -65,7 +65,7 @@ struct TMapScreen: View {
                 Button("취소", role: .cancel) { deleteLocation = nil }
             } message: {
                 if let target = deleteLocation {
-                    Text(target.id == "depot" ? "출발지 '\(target.name)'의 좌표·주소를 지웁니다." : "'\(target.name)' 거래처와 연결된 경로·주문 수량을 배송계획에서 지웁니다.")
+                    Text(target.id == "depot" ? "출발지 '\(target.name)'의 좌표·주소를 지웁니다." : target.id == "destination" ? "최종 도착지 '\(target.name)'를 지우고 출발지 복귀로 바꿉니다." : "'\(target.name)' 거래처와 연결된 경로·주문 수량을 배송계획에서 지웁니다.")
                 }
             }
             .task { await store.refreshClock() }
