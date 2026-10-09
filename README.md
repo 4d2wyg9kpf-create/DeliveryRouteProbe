@@ -1,6 +1,6 @@
 # GitHub 표준 Mac에서 서명 전 IPA 만들기
 
-현재 앱 버전은 0.12.1, 빌드 22입니다. iPhone과 iPad를 대상으로 합니다. 앱 소스·Xcode 프로젝트·빌드 설정만 별도 공개 저장소에 올립니다. 실제 거래처·배송 기록·네이버 로그인·티맵 앱키는 기기에서 보관하거나 입력하며 저장소에 올리지 않습니다.
+현재 앱 버전은 0.12.2, 빌드 23입니다. iPhone과 iPad를 대상으로 합니다. 앱 소스·Xcode 프로젝트·빌드 설정만 별도 공개 저장소에 올립니다. 실제 거래처·배송 기록·네이버 로그인·티맵 앱키는 기기에서 보관하거나 입력하며 저장소에 올리지 않습니다.
 
 ## 빌드
 
@@ -8,7 +8,15 @@
 
 컴파일이나 기기용 바이너리 검사에 실패하면 IPA 업로드 단계도 실패합니다. 시뮬레이터용 바이너리와 소스 폴더를 IPA로 포장하지 않습니다. 성공하면 Actions 실행 결과의 **DeliveryRouteProbe-unsigned-ipa**에서 IPA와 SHA256·버전·기기 대상 검사 결과를 받습니다. 빌드 로그는 **DeliveryRouteProbe-build-log**에 있으며 두 자료는 7일 보관합니다.
 
-생성되는 파일은 `DeliveryRouteProbe_0.12.1-22-unsigned.ipa`입니다. 실제 iPad·iPhone에 설치하려면 기존 Sideloadly 등으로 본인 계정의 설치 서명을 진행합니다. 빌드 성공과 실제 기기 실행 확인은 구분합니다.
+생성되는 파일은 `DeliveryRouteProbe_0.12.2-23-unsigned.ipa`입니다. 실제 iPad·iPhone에 설치하려면 기존 Sideloadly 등으로 본인 계정의 설치 서명을 진행합니다. 빌드 성공과 실제 기기 실행 확인은 구분합니다.
+
+## 네이버 선택 장소 판독 (0.12.2)
+
+장소 상세 패널이 열려도 지도 핀을 정확히 하나 찾지 못하면 판독을 차단하던 문제를 수정했습니다. 휴대폰에서 상세 패널이 지도를 가리거나 지도 핀이 없으면, 현재 상세 패널의 장소 ID·이름·주소를 읽습니다. 지도 핀과 일반 지도 조각을 검증할 수 있는 경우에 좌표를 함께 읽으며, 확인할 수 없는 좌표는 만들지 않습니다. 표식의 DOM 분류가 달라진 경우에도 공개 선택 아이콘으로 식별합니다.
+
+판독 전후의 장소 ID와 상세 프레임을 다시 대조하고, 다른 장소·검색 입력 중인 화면·모호한 좌표는 연결하지 않습니다. 지도 핀이 없는 상세/주소 패널, 표식 분류 변경, 중복 핀·프레임, 판독 중 장소 변경을 포함한 관련 엔진 검사 324개가 통과했습니다. 공개 네이버 장소 화면의 이름·주소·좌표 판독도 확인했습니다. 실제 iPhone/iPad의 설치 후 실행은 별도로 확인해야 합니다.
+
+화면의 앱 버전은 IPA의 `CFBundleShortVersionString`에서 표시합니다. 기본 앱 이름 `DeliveryRoute`와 앱 식별자 `kr.deliverytools.routeprobe`는 유지했습니다.
 
 ## 개인 서명용 앱 이름
 
@@ -22,13 +30,13 @@ Sideloadly에서 앱 이름 변경 옵션을 사용한다면 영문 이름을 �
 
 ## 빌드 확인
 
-2026-10-09 앱 등록 이름을 수정한 Mac 빌드가 성공했습니다. [실행 결과](https://github.com/4d2wyg9kpf-create/DeliveryRouteProbe/actions/runs/37918926395)에서 IPA와 빌드 로그를 확인할 수 있습니다.
+2026-10-09 네이버 선택 장소 판독을 수정한 Mac 빌드가 성공했습니다. [실행 결과](https://github.com/4d2wyg9kpf-create/DeliveryRouteProbe/actions/runs/37925943334)에서 IPA와 빌드 로그를 확인할 수 있습니다.
 
-- 앱: 0.12.1 / 빌드 22, iPhone·iPad, iOS 18 이상
+- 앱: 0.12.2 / 빌드 23, iPhone·iPad, iOS 18 이상
 - Xcode 16.4 / iPhoneOS SDK 18.5로 실제 arm64 기기 앱을 컴파일했습니다.
-- IPA: `DeliveryRouteProbe_0.12.1-22-unsigned.ipa` (1,675,467 bytes)
-- SHA256: `64df8f003487cbcdef615cb115091fca05cf30c1dec2527418f748b4639e736a`
-- 소스 커밋: `ca1324a30d07b1bf8a4c43274e131a28906985e7`
+- IPA: `DeliveryRouteProbe_0.12.2-23-unsigned.ipa` (1,675,555 bytes)
+- SHA256: `793821bbc3c8e4d5d503d9e1d4dca34eb601633ab5adf927d99d8e7593d168ce`
+- 소스 커밋: `2121564b8f83ddfaae3c4b1d2e20825293901094`
 
 다운로드한 IPA의 ZIP 무결성, 앱 식별자·버전, 실행 파일 권한, arm64 Mach-O의 iOS 기기 대상도 검사했습니다. 실제 iPhone·iPad에서의 실행과 TMAP 실요청은 아직 확인하지 않았습니다.
 
