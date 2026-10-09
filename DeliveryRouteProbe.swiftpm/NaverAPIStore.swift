@@ -102,7 +102,7 @@ final class NaverAPIStore: ObservableObject {
     private var state = NaverSecureState()
     private var recoveryBlocked = false
     private var clocks: [String: (milliseconds: Double, uptime: TimeInterval)] = [:]
-    private var resolved: [String: NaverPlaceCapture] = [:]
+    private var resolved: [String: (capture: NaverPlaceCapture, uptime: TimeInterval)] = [:]
     private let writeState: (Data) throws -> Void
     private let transport: ((URLRequest) async throws -> (Data, URLResponse))?
     private let delegate = NaverAPINetworkDelegate()
@@ -263,8 +263,11 @@ final class NaverAPIStore: ObservableObject {
     }
     func resolve(_ capture: NaverPlaceCapture) async throws -> NaverPlaceCapture {
         _ = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self)
-        let cacheKey = SHA256.hash(data: try JSONEncoder().encode(capture)).map { String(format: "%02x", $0) }.joined()
-        if let cached = resolved[cacheKey] { return cached }
+        let cacheKey = SHA256.hash(data: try JSONEncoder().encode([capture.selectionKey, capture.name, capture.address, capture.roadAddress, capture.jibunAddress])).map { String(format: "%02x", $0) }.joined()
+        if let cached = resolved[cacheKey], ProcessInfo.processInfo.systemUptime - cached.uptime < 3600 {
+            var value = cached.capture; value.sourceURL = capture.sourceURL; value.capturedAt = capture.capturedAt
+            return value
+        }
         guard !isBusy else { throw PlannerFailure.message("진행 중인 네이버 요청이 끝난 뒤 다시 시도해 주세요.") }
         isBusy = true; defer { isBusy = false }
         let value: NaverPlaceCapture
@@ -276,7 +279,7 @@ final class NaverAPIStore: ObservableObject {
             let results = try NaverAPIBridge.call("local", ["response": response, "now": Date().timeIntervalSince1970 * 1000], as: [NaverAPIResult].self)
             value = try NaverAPIBridge.call("choose", ["capture": try TMapBridge.object(capture), "results": try results.map { ["capture": try TMapBridge.object($0.capture), "category": $0.category] }], as: NaverPlaceCapture.self)
         } else { throw PlannerFailure.message("네이버 API 설정에서 새 Maps의 Geocoding 키와 무료 대표 계정 여부를 등록해 주세요. 지도를 표시할 필요는 없습니다.") }
-        if resolved.count > 200 { resolved.removeAll() }; resolved[cacheKey] = value
+        if resolved.count > 200 { resolved.removeAll() }; resolved[cacheKey] = (value, ProcessInfo.processInfo.systemUptime)
         return value
     }
 }

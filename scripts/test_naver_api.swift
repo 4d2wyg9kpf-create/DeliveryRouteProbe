@@ -3,8 +3,8 @@ import Foundation
 
 struct TMapCoordinate: Codable { var longitude: Double; var latitude: Double; var poiID: String?; var detailAddress: String? }
 struct MapRoutePoint: Codable { var token: String; var name: String }
-struct TestStop { var id = ""; var naverPlace: NaverPlaceCapture? }
-struct DeliveryPlan { var naverOrigin: NaverPlaceCapture?; var visits: [TestStop] = []; var destination: TestStop? }
+struct TestStop: Codable { var id = ""; var naverPlace: NaverPlaceCapture? }
+struct DeliveryPlan: Codable { var naverOrigin: NaverPlaceCapture?; var visits: [TestStop] = []; var destination: TestStop? }
 enum PlannerFailure: Error, LocalizedError {
     case message(String)
     var errorDescription: String? { if case let .message(value) = self { return value }; return nil }
@@ -146,7 +146,9 @@ struct NaverAPINativeTests {
         await test("repeated identical address uses memory cache without another charge") {
             let f = try Fixture(), s = f.store()
             let c = try NaverAPIBridge.call("seed", ["name": "가상 거래처", "address": "대전 중구 유천로 35", "now": 1791557400000.0], as: NaverPlaceCapture.self)
-            _ = try await s.resolve(c); _ = try await s.resolve(c)
+            _ = try await s.resolve(c)
+            var newer = c; newer.capturedAt = "2026-10-09T14:51:00Z"
+            _ = try await s.resolve(newer)
             try require(f.getCount == 1 && (try f.used("maps")) == 1, "cached resolve charged again")
         }
         await test("simultaneous taps share one native gate") {

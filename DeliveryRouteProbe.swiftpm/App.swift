@@ -295,7 +295,7 @@ struct CapturePanel: View {
                 } else if model.placeCapture == nil && model.bikeCapture == nil {
                     Text("거래처 등록: 검색·저장 목록에서 장소의 상세 화면을 연 뒤 ‘선택 장소 읽기’를 누르세요. 장소 이름과 주소를 읽고 배송계획에 연결할 수 있습니다.")
                         .font(.subheadline)
-                    Text("지도 핀이 보이지 않으면 주소를 먼저 읽습니다. 좌표도 가져오려면 일반 지도와 선택 장소의 핀이 보이도록 표시한 뒤 다시 읽어 주세요.")
+                    Text("지도 핀이 가려져 있어도 읽은 주소를 네이버 API로 좌표 변환합니다. API 키를 설정하면 지도 표시 없이 좌표를 가져올 수 있습니다.")
                         .font(.caption).foregroundColor(.secondary)
                     Text("경로 읽기: 자동차 길찾기의 ‘상세보기’를 연 뒤 ‘화면 읽기’를 누르세요.")
                         .font(.subheadline)
