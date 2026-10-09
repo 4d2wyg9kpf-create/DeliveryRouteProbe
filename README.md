@@ -14,8 +14,16 @@
 
 공개할 프로젝트 사본에는 Swift 소스, Xcode 프로젝트, 앱 메타데이터, 세 개의 빌드 스크립트, 워크플로와 이 안내만 포함합니다. 이전 대화·개발 참고자료·경로 판독 이력·진단 로그·개인 계획 파일·기존 M4Download 프로젝트는 포함하지 않습니다. 내장 적재 예제는 가상 계획입니다. 네이버 공개 화면을 판독하는 코드 자체는 포함하며 로그인 데이터는 포함하지 않습니다.
 
-## 현재 실행 상태
+## 빌드 확인
 
-이 안내와 워크플로를 준비한 것만으로 IPA가 만들어진 것은 아닙니다. GitHub에 공개 저장소를 만든 뒤 Mac 빌드를 실제로 실행하고 결과를 검사해야 합니다.
+2026-10-09 공개 저장소의 첫 Mac 빌드가 성공했습니다. [실행 결과](https://github.com/4d2wyg9kpf-create/DeliveryRouteProbe/actions/runs/37872970874)에서 IPA와 빌드 로그를 확인할 수 있습니다.
+
+- 앱: 0.12.0 / 빌드 21, iPhone·iPad, iOS 18 이상
+- Xcode 16.4 / iPhoneOS SDK 18.5로 실제 arm64 기기 앱을 컴파일했습니다.
+- IPA: `DeliveryRouteProbe_0.12.0-21-unsigned.ipa` (1,675,476 bytes)
+- SHA256: `a920150e91638d1c7a366f29da6943db07884dc71b975ee63aaa19b139979fda`
+- 소스 커밋: `43e2d3812f9711b1324b5900842edcf83e3120e2`
+
+다운로드한 IPA의 ZIP 무결성, 앱 식별자·버전, 실행 파일 권한, arm64 Mach-O의 iOS 기기 대상도 검사했습니다. 실제 iPhone·iPad에서의 실행과 TMAP 실요청은 아직 확인하지 않았습니다.
 
 근거: [표준 GitHub 서버와 공개 저장소 정책](https://docs.github.com/en/actions/reference/runners/github-hosted-runners), [macOS 15 기본 개발 도구](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md).
