@@ -102,6 +102,7 @@ final class NaverAPIStore: ObservableObject {
     private var state = NaverSecureState()
     private var recoveryBlocked = false
     private var clocks: [String: (milliseconds: Double, uptime: TimeInterval)] = [:]
+    private var cooldowns: [String: TimeInterval] = [:]
     private var resolved: [String: (capture: NaverPlaceCapture, uptime: TimeInterval)] = [:]
     private let writeState: (Data) throws -> Void
     private let transport: ((URLRequest) async throws -> (Data, URLResponse))?
@@ -222,6 +223,9 @@ final class NaverAPIStore: ObservableObject {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.utf8.count <= 2000, !trimmed.unicodeScalars.contains(where: { $0.value < 32 }) else { throw PlannerFailure.message("검색어·주소를 확인해 주세요.") }
         guard provider == "search" ? hasSearchKeys : hasMapsKeys else { throw PlannerFailure.message("네이버 API 설정에서 Client ID와 Client Secret을 입력해 주세요.") }
+        if let until = cooldowns[provider], until > ProcessInfo.processInfo.systemUptime {
+            throw PlannerFailure.message("네이버의 일시 호출 제한으로 \(Int(ceil(until - ProcessInfo.processInfo.systemUptime)))초 뒤 다시 사용할 수 있습니다.")
+        }
         let now = try await trustedTime(provider)
         let host = provider == "search" ? "openapi.naver.com" : "maps.apigw.ntruss.com"
         var parts = URLComponents(); parts.scheme = "https"; parts.host = host
@@ -241,9 +245,14 @@ final class NaverAPIStore: ObservableObject {
             let cloudError = body["error"] as? [String: Any]
             let code = String(describing: body["errorCode"] ?? cloudError?["errorCode"] ?? "")
             let detail = String(describing: body["errorMessage"] ?? cloudError?["message"] ?? "").lowercased()
+            if http.statusCode == 429, code != "012", ["410", "420"].contains(code) || detail.contains("throttle") || detail.contains("rate limit") || detail.contains("초당") {
+                let delay = min(60, max(1, Double(http.value(forHTTPHeaderField: "Retry-After") ?? "30") ?? 30))
+                cooldowns[provider] = ProcessInfo.processInfo.systemUptime + delay
+                throw PlannerFailure.message("네이버의 일시 호출 제한입니다. \(Int(delay))초 뒤 다시 시도해 주세요. 무료 기간 한도는 소진된 것으로 처리하지 않습니다.")
+            }
             if http.statusCode == 429 || code == "012" || detail.contains("quota") || detail.contains("한도") {
                 try saveQuota(quotaChange("block", provider: provider, now: now))
-                throw PlannerFailure.message("네이버 서버가 호출을 제한했습니다. 다음 초기화까지 요청을 차단합니다.")
+                throw PlannerFailure.message(provider == "maps" ? "Maps 서버가 할당량을 제한했습니다. 콘솔에서 Geocoding 사용 선택과 할당량을 확인해 주세요. 다음 초기화까지 요청을 차단합니다." : "네이버 서버가 호출을 제한했습니다. 다음 초기화까지 요청을 차단합니다.")
             }
             if [401, 403].contains(http.statusCode) { throw PlannerFailure.message("네이버 인증·권한을 확인해 주세요. 검색 키와 새 Maps 키는 서로 다릅니다. (HTTP \(http.statusCode))") }
             throw PlannerFailure.message("네이버 API 요청에 실패했습니다. (HTTP \(http.statusCode))")

@@ -22,6 +22,8 @@ private final class Fixture {
     var getCount = 0
     var headCount = 0
     var status = 200
+    var serverErrorCode: String?
+    var serverErrorMessage = "fixture error"
     var headStatus = 200
     var cancelGET = false
     var delayGET = false
@@ -53,13 +55,13 @@ private final class Fixture {
         let address = mismatchedAddress ? "대전 중구 유천로 350" : "대전광역시 중구 유천로 35"
         let json: [String: Any]
         if head { json = [:] }
-        else if status != 200 { json = ["errorCode": status == 429 ? "012" : "024", "errorMessage": "fixture error"] }
+        else if status != 200 { json = ["errorCode": serverErrorCode ?? (status == 429 ? "012" : "024"), "errorMessage": serverErrorMessage] }
         else if request.url!.host == "openapi.naver.com" {
             json = ["items": [["title": "<b>가상</b> 거래처", "roadAddress": address, "address": "대전 중구 유천동 100", "category": "배송", "mapx": "1273980000", "mapy": "363160000"]]]
         } else {
             json = ["status": "OK", "addresses": [["roadAddress": address, "jibunAddress": "대전 중구 유천동 100", "x": "127.398", "y": "36.316"]]]
         }
-        return (try JSONSerialization.data(withJSONObject: json), HTTPURLResponse(url: request.url!, statusCode: head ? headStatus : status, httpVersion: "HTTP/1.1", headerFields: ["Date": "Fri, 09 Oct 2026 14:50:00 GMT", "Age": "0"])!)
+        return (try JSONSerialization.data(withJSONObject: json), HTTPURLResponse(url: request.url!, statusCode: head ? headStatus : status, httpVersion: "HTTP/1.1", headerFields: ["Date": "Fri, 09 Oct 2026 14:50:00 GMT", "Age": "0", "Retry-After": "1"])!)
     }
 }
 
@@ -137,6 +139,16 @@ struct NaverAPINativeTests {
             let f = try Fixture(), s = f.store(); f.cancelGET = true
             try await rejects { _ = try await s.search("가상 거래처") }
             try require(f.getCount == 1 && (try f.used("search")) == 1, "cancel refunded")
+        }
+        await test("Maps throttle 410 pauses briefly without exhausting monthly allowance") {
+            let f = try Fixture(), s = f.store(); f.status = 429; f.serverErrorCode = "410"; f.serverErrorMessage = "Throttle Limited"
+            try await rejects { _ = try await s.address("대전 중구 유천로 35", name: "가상 거래처") }
+            try require(s.quotas["maps"]?.blocked == false, "throttle consumed entire month")
+            try await rejects { _ = try await s.address("대전 중구 유천로 35", name: "가상 거래처") }
+            try require(f.getCount == 1, "throttle cooldown ignored")
+            try await Task.sleep(nanoseconds: 1_100_000_000); f.status = 200
+            _ = try await s.address("대전 중구 유천로 35", name: "가상 거래처")
+            try require(f.getCount == 2 && (try f.used("maps")) == 2, "throttle never reopened or refunded failed request")
         }
         await test("wrong building address never becomes a coordinate") {
             let f = try Fixture(), s = f.store(); f.mismatchedAddress = true
