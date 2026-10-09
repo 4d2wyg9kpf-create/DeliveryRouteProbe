@@ -22,7 +22,17 @@ struct NaverPlaceCapture: Codable, Identifiable {
     var requestAddress: String?
     var geocodeProvider: String?
     var geocodedAddress: String?
+    var apiEvidence: NaverAPIEvidence?
     var preferredAddress: String { !roadAddress.isEmpty ? roadAddress : address }
+}
+
+struct NaverAPIEvidence: Codable {
+    var provider: String
+    var name: String
+    var roadAddress: String
+    var jibunAddress: String
+    var x: String
+    var y: String
 }
 
 struct NaverPlaceAttachment: Decodable {

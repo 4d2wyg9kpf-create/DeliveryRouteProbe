@@ -11,6 +11,8 @@ on:
       - 'scripts/build_ios.sh'
       - 'scripts/package_unsigned_ipa.py'
       - 'scripts/test_naver_frames.*'
+      - 'scripts/test_naver_api.*'
+      - 'tests/naver_api_tests.js'
       - 'scripts/naver_frame_fixtures.py'
       - 'scripts/naver_fixture_info.plist'
       - '.github/workflows/build-ipa.yml'
@@ -33,6 +35,10 @@ jobs:
           persist-credentials: false
       - name: Verify cross-origin iframe reads and share links in native WKWebView
         run: bash scripts/test_naver_frames.sh
+      - name: Verify official API parsing and free quota boundary cases
+        run: node tests/naver_api_tests.js
+      - name: Verify persisted native request gates with mocked API transport
+        run: bash scripts/test_naver_api.sh
       - name: Upload native check log
         if: always()
         uses: actions/upload-artifact@v7

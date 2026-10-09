@@ -73,7 +73,7 @@ struct NaverCustomerCatalogView: View {
                                 resolvingID = record.id; error = nil
                                 Task {
                                     defer { resolvingID = nil }
-                                    do { let result = try await AddressGeocoder.shared.resolve(capture); try customers.save(result, name: record.name) }
+                                    do { let result = try await NaverAPIStore.shared.resolve(capture); try customers.save(result, name: record.name) }
                                     catch { self.error = error.localizedDescription }
                                 }
                             }.font(.caption).buttonStyle(.borderless).disabled(resolvingID != nil)

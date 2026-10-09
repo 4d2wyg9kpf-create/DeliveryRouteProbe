@@ -66,13 +66,17 @@ final class NaverCustomerStore: ObservableObject {
         let valid = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self)
         guard valid.coordinate != nil else { throw PlannerFailure.message("좌표가 없는 장소는 거래처 목록에 저장하지 않습니다. 좌표를 다시 읽어 주세요.") }
         var next = records
-        let existing = next.firstIndex { $0.id == valid.selectionKey || $0.capture?.selectionKey == valid.selectionKey }
+        let existing = try next.firstIndex { record in
+            if record.id == valid.selectionKey || record.capture?.selectionKey == valid.selectionKey { return true }
+            guard let previous = record.capture else { return false }
+            return try NaverPlaceBridge.call("customerMatches", ["first": try TMapBridge.object(previous), "second": try TMapBridge.object(valid)], as: Bool.self)
+        }
         var folders = existing.map { next[$0].folders } ?? []
         if !folder.isEmpty && !folders.contains(folder) { folders.append(folder) }
         let displayName = name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? name! : valid.name
         var template = existing.map { next[$0].template } ?? DeliveryVisit()
         template.name = displayName; template.naverPlace = valid
-        let record = NaverCustomerRecord(id: valid.selectionKey, name: displayName, capture: valid, template: template, folders: folders)
+        let record = NaverCustomerRecord(id: existing.map { next[$0].id } ?? valid.selectionKey, name: displayName, capture: valid, template: template, folders: folders)
         if let index = existing { next[index] = record } else { next.append(record) }
         try commit(next)
         return existing == nil
@@ -93,7 +97,7 @@ final class NaverCustomerStore: ObservableObject {
             let key = visit.naverPlace?.selectionKey ?? "manual:" + visit.id
             if next.contains(where: { $0.id == key }) { next.removeAll { $0.id != key && $0.template.id == visit.id } }
             if let index = next.firstIndex(where: { $0.id == key || $0.template.id == visit.id }) {
-                next[index].id = key; next[index].template = visit; next[index].name = visit.name
+                next[index].template = visit; next[index].name = visit.name
                 if let capture = visit.naverPlace {
                     let stored = next[index].capture
                     let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

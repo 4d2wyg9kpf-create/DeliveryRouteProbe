@@ -232,7 +232,7 @@ struct TMapScreen: View {
                 .disabled(store.isOptimizing)
             Button("가져온 거래처 \(customers.records.count)곳 · 배송계획에 연결") { inputs.finishEditing(); showCustomers = true }
                 .disabled(store.isOptimizing)
-            Text("네이버에서 장소를 선택하고 ‘선택 장소 읽기’를 누르면 새 거래처 등록과 기존 거래처 연결을 할 수 있습니다.").font(.caption)
+            Text("네이버 API 검색 결과를 선택해 거래처로 저장하세요. 좌표 조회에는 지도 표시가 필요하지 않습니다. 저장한 목록에서 이번에 나갈 곳과 출발지·도착지를 선택합니다.").font(.caption)
             ForEach(planner.plan.nodes, id: \.id) { node in
                 HStack(alignment: .center, spacing: 12) {
                   Button {

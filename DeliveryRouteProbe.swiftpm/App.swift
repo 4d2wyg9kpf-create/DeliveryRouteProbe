@@ -26,29 +26,28 @@ struct DeliveryRootView: View {
     @StateObject private var trip = TripStore.shared
     @StateObject private var inputs = NativeInputSession()
     @State private var selectedTab = 3
+    @State private var showNaverWeb = false
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         TabView(selection: $selectedTab) {
             TMapScreen(store: tmap, planner: planner, browser: model) { url in
-                if url.contains("/favorite") { model.openSavedLists(customers) } else { model.openRecordedRoute(url) }
-                selectedTab = 0
+                openNaver(url)
             }
                 .tabItem { Label("티맵 최적화", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }.tag(3)
             Group {
                 // Do not construct/attach a web view behind the planner.
-                if selectedTab == 0 { ProbeView(model: model, planner: planner) }
+                if selectedTab == 0 { NaverSearchScreen(planner: planner, browser: model, showWeb: $showNaverWeb) }
                 else { Color.clear }
             }
             .disabled(selectedTab != 0)
-            .tabItem { Label("네이버 지도", systemImage: "map") }.tag(0)
+            .tabItem { Label("네이버 검색", systemImage: "magnifyingglass") }.tag(0)
             PlannerScreen(store: planner, browser: model) { url in
-                if url.contains("/favorite") { model.openSavedLists(customers) } else { model.openRecordedRoute(url) }
-                selectedTab = 0
+                openNaver(url)
             }
             .disabled(selectedTab != 1)
             .tabItem { Label("배송계획", systemImage: "list.number") }.tag(1)
             TripScreen(store: trip, planner: planner, browser: model) { url in
-                model.openRecordedRoute(url); selectedTab = 0
+                openNaver(url)
             }
             .disabled(selectedTab != 2)
             .tabItem { Label("운행 안내", systemImage: "truck.box") }.tag(2)
@@ -65,6 +64,13 @@ struct DeliveryRootView: View {
             if phase != .active { planner.saveNow() }
             else { Task { await tmap.refreshClock() } }
         }
+    }
+    private func openNaver(_ url: String) {
+        inputs.finishEditing()
+        if url.contains("/favorite") { model.openSavedLists(customers); showNaverWeb = true }
+        else if ["https://map.naver.com/", "https://map.naver.com/p/"].contains(url) { showNaverWeb = false }
+        else { model.openRecordedRoute(url); showNaverWeb = true }
+        selectedTab = 0
     }
 }
 

@@ -48,17 +48,10 @@ enum NaverWebReader {
         var value = try NaverPlaceBridge.call("merge", ["before": before, "after": after, "detail": detail,
                                                        "now": Date().timeIntervalSince1970 * 1000], as: NaverPlaceCapture.self)
         if resolveCoordinate && value.coordinate == nil {
-            do { value = try await AddressGeocoder.shared.resolve(value) }
+            do { value = try await NaverAPIStore.shared.resolve(value) }
             catch is CancellationError { throw CancellationError() }
             catch {
-                let addressIssue = error.localizedDescription
-                if value.kind == "place" {
-                    do {
-                        let map = try await NaverPlaceLookup().read(placeID: value.placeID)
-                        value = try NaverPlaceBridge.call("enrich", ["capture": try TMapBridge.object(value), "map": try TMapBridge.object(map)], as: NaverPlaceCapture.self)
-                    } catch is CancellationError { throw CancellationError() }
-                    catch { value.coordinateIssue = addressIssue + " " + error.localizedDescription }
-                } else { value.coordinateIssue = addressIssue }
+                value.coordinateIssue = error.localizedDescription
             }
             let current = try await root(view)
             guard current["selectionKey"] as? String == value.selectionKey else {
@@ -66,45 +59,5 @@ enum NaverWebReader {
             }
         }
         return value
-    }
-}
-
-// A fixed-size PUBLIC place page supplies a laid-out map even when the phone's
-// search panel covers its map. It uses the exact selected Naver POI ID, never an
-// address approximation, private Naver endpoints, or the TMAP API.
-@MainActor
-final class NaverPlaceLookup {
-    private let view: WKWebView
-    init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.defaultWebpagePreferences.preferredContentMode = .desktop
-        configuration.websiteDataStore = .nonPersistent()
-        NaverWebReader.configure(configuration)
-        view = WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 900), configuration: configuration)
-    }
-    func read(placeID: String) async throws -> NaverPlaceCapture {
-        guard placeID.range(of: "^\\d{1,30}$", options: .regularExpression) != nil,
-              let url = URL(string: "https://map.naver.com/p/entry/place/\(placeID)?c=18.00,0,0,0,dh") else {
-            throw PlannerFailure.message("좌표를 가져올 장소 식별자를 확인해 주세요.")
-        }
-        view.load(URLRequest(url: url))
-        defer { view.stopLoading() }
-        let deadline = Date().addingTimeInterval(28)
-        var lastIssue = "장소 지도가 준비되지 않았습니다."
-        while Date() < deadline {
-            try Task.checkCancellation()
-            do {
-                let root = try await NaverWebReader.root(view)
-                guard root["placeID"] as? String == placeID else { throw PlannerFailure.message("선택 장소의 지도 로딩을 기다리고 있습니다.") }
-                if root["coordinate"] is [String: Any] {
-                    let value = try await NaverWebReader.selected(view, resolveCoordinate: false)
-                    if value.coordinate != nil { return value }
-                }
-                lastIssue = root["coordinateIssue"] as? String ?? lastIssue
-            } catch is CancellationError { throw CancellationError() }
-            catch { lastIssue = error.localizedDescription }
-            try await Task.sleep(nanoseconds: 500_000_000)
-        }
-        throw PlannerFailure.message("선택 장소의 좌표를 가져오지 못했습니다. 네이버 지도를 새로고침한 뒤 다시 읽어 주세요. \(lastIssue)")
     }
 }

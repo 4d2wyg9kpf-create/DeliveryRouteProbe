@@ -6,7 +6,7 @@ var DeliveryNaverPlaces=(function(){
   const coordinate=c=>c&&typeof c.longitude==='number'&&typeof c.latitude==='number'&&Number.isFinite(c.longitude)&&Number.isFinite(c.latitude)&&c.longitude>=124&&c.longitude<=132&&c.latitude>=32&&c.latitude<=40;
   function text(value,max,label){if(typeof value!=='string'||value.length>max||/[\x00-\x1f\x7f]/.test(value))fail(label+' 형식을 확인해 주세요.');return tidy(value);}
   function validate(c){
-    if(!c||c.version!==1||!['place','address'].includes(c.kind)||!['rendered_selected_marker_and_tiles','rendered_selected_place_detail','rendered_selected_address_panel','apple_address_geocoding'].includes(c.method)||!tidy(c.name)||!Number.isFinite(Date.parse(c.capturedAt)))fail('네이버 장소 판독을 다시 실행해 주세요.');
+    if(!c||c.version!==1||!['place','address'].includes(c.kind)||!['rendered_selected_marker_and_tiles','rendered_selected_place_detail','rendered_selected_address_panel','apple_address_geocoding','naver_local_search','naver_maps_geocoding'].includes(c.method)||!tidy(c.name)||!Number.isFinite(Date.parse(c.capturedAt)))fail('네이버 장소 판독을 다시 실행해 주세요.');
     text(c.name,500,'장소 이름');for(const key of ['address','roadAddress','jibunAddress'])text(c[key],1000,'주소');
     if(c.kind==='place'){
       if(!/^\d{1,30}$/.test(c.placeID)||c.selectionKey!=='place:'+c.placeID||c.sourceURL!=='https://map.naver.com/p/entry/place/'+c.placeID)fail('네이버 장소 식별자가 일치하지 않습니다.');
@@ -17,6 +17,12 @@ var DeliveryNaverPlaces=(function(){
         if(!Number.isFinite(c.screenResolutionMeters)||c.screenResolutionMeters<=0||c.screenResolutionMeters>5||!Number.isSafeInteger(c.tileZoom)||c.tileZoom<0||c.tileZoom>23)fail('네이버 표식 좌표를 다시 읽어 주세요.');
       }else if(c.method==='apple_address_geocoding'){
         if(c.geocodeProvider!=='Apple'||!addressMatches(c.roadAddress||c.address,c.geocodedAddress))fail('변환한 좌표의 주소가 선택한 장소 주소와 다릅니다.');
+      }else if(['naver_local_search','naver_maps_geocoding'].includes(c.method)){
+        const e=c.apiEvidence,local=c.method==='naver_local_search';
+        if(!e||e.provider!==(local?'NAVER Search':'NAVER Maps')||c.geocodeProvider!==e.provider||!addressMatches(c.roadAddress||c.address,c.geocodedAddress)||![e.roadAddress,e.jibunAddress].some(a=>addressMatches(c.roadAddress||c.address,a)))fail('네이버 API 좌표의 주소가 선택한 장소와 다릅니다.');
+        if(local&&(!sameName(e.name,c.name)||!/^\d{9,10}$/.test(e.x)||!/^\d{9,10}$/.test(e.y)))fail('네이버 지역 검색 결과를 확인해 주세요.');
+        const x=Number(e.x)/(local?1e7:1),y=Number(e.y)/(local?1e7:1);
+        if(!coordinate({longitude:x,latitude:y})||Math.abs(x-c.coordinate.longitude)>1e-8||Math.abs(y-c.coordinate.latitude)>1e-8)fail('네이버 API 좌표 형식을 확인해 주세요.');
       }else fail('좌표 판독 근거를 다시 확인해 주세요.');
       const p=c.point.token?.split(',');
       if(p?.length!==5||p[3]!==''||p[4]!=='SIMPLE_POI'||!Number.isFinite(+p[0])||!Number.isFinite(+p[1])||!sameName(c.point.name,c.name)||Math.abs(+p[0]/20037508.342789244*180-c.coordinate.longitude)>1e-7||Math.abs(Math.atan(Math.sinh(+p[1]/6378137))*180/Math.PI-c.coordinate.latitude)>1e-7)fail('표식과 좌표의 연결이 다릅니다.');
@@ -70,6 +76,20 @@ var DeliveryNaverPlaces=(function(){
     if(!row||!tidy(row.name))return false;
     if(tidy(row.address))return [c.address,c.roadAddress,c.jibunAddress].some(address=>addressMatches(row.address,address));
     return sameName(row.name,c.name);
+  }
+  function customerMatches(input){
+    const a=input.first,b=input.second;
+    if(!a||!b||!sameName(a.name,b.name))return false;
+    return [a.roadAddress,a.address,a.jibunAddress].some(x=>[b.roadAddress,b.address,b.jibunAddress].some(y=>addressMatches(x,y)));
+  }
+  function apiCoordinate(input){
+    const c=copy(validate(input.capture)),e=copy(input.evidence),local=e?.provider==='NAVER Search';
+    if(!e||!['NAVER Search','NAVER Maps'].includes(e.provider))fail('네이버 API 결과를 확인해 주세요.');
+    const lon=Number(e.x)/(local?1e7:1),lat=Number(e.y)/(local?1e7:1);
+    c.coordinate={longitude:lon,latitude:lat};c.point={name:c.name,token:[(lon/180*20037508.342789244).toFixed(3),(6378137*Math.log(Math.tan(Math.PI/4+lat*Math.PI/360))).toFixed(3),encodeURIComponent(c.name),'','SIMPLE_POI'].join(',')};
+    c.method=local?'naver_local_search':'naver_maps_geocoding';c.geocodeProvider=e.provider;c.apiEvidence=e;
+    c.geocodedAddress=[e.roadAddress,e.jibunAddress].find(a=>addressMatches(c.roadAddress||c.address,a))||'';
+    c.coordinateIssue='';c.tileZoom=null;c.screenResolutionMeters=null;return validate(c);
   }
   function enrich(input){
     const capture=copy(validate(input.capture)),map=validate(input.map);
@@ -191,8 +211,8 @@ var DeliveryNaverPlaces=(function(){
     }
     return p;
   }
-  const api={merge,validate,sameSelection,attach,enrich,selectCustomers,endpoints,geocode,addressMatches,matchesSavedRow};
-  for(const name of ['merge','sameSelection','attach','enrich','validate','selectCustomers','endpoints','geocode','matchesSavedRow'])api[name+'JSON']=value=>{try{const input=JSON.parse(value);return JSON.stringify({ok:true,value:api[name](name==='validate'?input.capture:input)});}catch(e){return JSON.stringify({ok:false,message:e.message});}};
+  const api={merge,validate,sameSelection,attach,enrich,selectCustomers,endpoints,geocode,addressMatches,matchesSavedRow,apiCoordinate,customerMatches};
+  for(const name of ['merge','sameSelection','attach','enrich','validate','selectCustomers','endpoints','geocode','matchesSavedRow','apiCoordinate','customerMatches'])api[name+'JSON']=value=>{try{const input=JSON.parse(value);return JSON.stringify({ok:true,value:api[name](name==='validate'?input.capture:input)});}catch(e){return JSON.stringify({ok:false,message:e.message});}};
   return api;
 })();
 if(typeof module!=='undefined')module.exports=DeliveryNaverPlaces;

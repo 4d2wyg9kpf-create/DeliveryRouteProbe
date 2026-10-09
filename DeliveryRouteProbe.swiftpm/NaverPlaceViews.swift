@@ -25,6 +25,8 @@ struct NaverPlaceReadPanel: View {
     @ObservedObject var browser: BrowserModel
     @EnvironmentObject private var customers: NaverCustomerStore
     @State private var error: String?
+    @State private var resolving = false
+    @State private var showAPISettings = false
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Label("읽은 네이버 장소", systemImage: "mappin.and.ellipse").font(.headline)
@@ -33,11 +35,26 @@ struct NaverPlaceReadPanel: View {
             if !capture.jibunAddress.isEmpty { Text("지번 \(capture.jibunAddress)").font(.caption) }
             if let point = capture.coordinate {
                 Text("경도 \(point.longitude, specifier: "%.6f") · 위도 \(point.latitude, specifier: "%.6f")").font(.caption)
-                if capture.geocodeProvider == "Apple" { Text("주소 → 건물 좌표 변환 · Apple").font(.caption).foregroundColor(.secondary) }
+                if let provider = capture.geocodeProvider { Text("좌표 제공 · \(provider)").font(.caption).foregroundColor(.secondary) }
                 if let resolution = capture.screenResolutionMeters {
                     Text("화면 판독 간격 약 \(resolution, specifier: "%.1f")m · 실제 지도 정확도와는 다릅니다.").font(.caption2).foregroundColor(.secondary)
                 }
-            } else { Text(capture.coordinateIssue).font(.caption).foregroundColor(.orange) }
+            } else {
+                Text(capture.coordinateIssue).font(.caption).foregroundColor(.orange)
+                Button(resolving ? "좌표 조회 중…" : "네이버 API로 좌표 조회") {
+                    resolving = true; error = nil
+                    Task {
+                        defer { resolving = false }
+                        do {
+                            let value = try await NaverAPIStore.shared.resolve(capture)
+                            let current = try await NaverWebReader.root(browser.webView)
+                            guard current["selectionKey"] as? String == capture.selectionKey else { throw PlannerFailure.message("선택 장소가 바뀌었습니다. 다시 읽어 주세요.") }
+                            browser.placeCapture = value
+                        } catch { self.error = error.localizedDescription }
+                    }
+                }.disabled(resolving || NaverAPIStore.shared.isBusy)
+                Button("네이버 API 키 설정") { showAPISettings = true }.disabled(resolving)
+            }
             Button("거래처 목록에 저장") {
                 do { try customers.save(capture); error = nil; browser.status = "거래처 목록에 저장했습니다. 이번 배송에 나갈 곳은 목록에서 체크하세요." }
                 catch { self.error = error.localizedDescription }
@@ -46,6 +63,7 @@ struct NaverPlaceReadPanel: View {
             if let error { Text(error).font(.caption).foregroundColor(.red) }
             Text("연결 전에 현재 선택 장소를 다시 확인합니다. 검색 표식을 차량 정차 위치로 사용할지는 연결 화면에서 선택합니다.").font(.caption2).foregroundColor(.secondary)
         }.padding(10).background(Color.blue.opacity(0.08)).cornerRadius(8)
+            .sheet(isPresented: $showAPISettings) { NaverAPISettingsView(api: NaverAPIStore.shared) }
     }
 }
 
@@ -82,7 +100,7 @@ private struct NaverPlaceImportView: View {
                             Marker(capture.name, coordinate: CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude))
                         }.frame(height: 200)
                         Text("경도 \(point.longitude, specifier: "%.6f") · 위도 \(point.latitude, specifier: "%.6f")").font(.caption)
-                        if capture.geocodeProvider == "Apple" { Text("주소 → 건물 좌표 변환 · Apple").font(.caption).foregroundColor(.secondary) }
+                        if let provider = capture.geocodeProvider { Text("좌표 제공 · \(provider)").font(.caption).foregroundColor(.secondary) }
                 if let resolution = capture.screenResolutionMeters {
                             Text("표식 화면 판독 간격 약 \(resolution, specifier: "%.1f")m").font(.caption)
                         }
