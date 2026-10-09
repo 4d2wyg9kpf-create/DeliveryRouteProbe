@@ -1,0 +1,51 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'DeliveryRouteProbe.swiftpm/**'
+      - 'DeliveryRouteProbe.xcodeproj/**'
+      - 'native/**'
+      - 'scripts/build_ios.sh'
+      - 'scripts/package_unsigned_ipa.py'
+      - '.github/workflows/build-ipa.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: delivery-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ipa:
+    # Standard Apple Silicon runner; no paid large-runner label.
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build device app and package unsigned IPA
+        run: bash scripts/build_ios.sh unsigned
+      - name: Upload IPA and its verification report
+        uses: actions/upload-artifact@v7
+        with:
+          name: DeliveryRouteProbe-unsigned-ipa
+          path: |
+            build/ipa/*.ipa
+            build/ipa/*.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: DeliveryRouteProbe-build-log
+          path: build/logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
