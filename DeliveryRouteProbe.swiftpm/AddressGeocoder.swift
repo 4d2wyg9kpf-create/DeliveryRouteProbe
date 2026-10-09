@@ -55,7 +55,7 @@ final class AddressGeocoder {
             }
         } catch is CancellationError { geocoder.cancelGeocode(); throw CancellationError() }
         catch {
-            if (error as NSError).domain == kCLErrorDomain && (error as NSError).code == CLError.network.rawValue { blockedUntil = Date().addingTimeInterval(60) }
+            if (error as NSError).domain == kCLErrorDomain && (error as NSError).code == CLError.Code.network.rawValue { blockedUntil = Date().addingTimeInterval(60) }
             throw PlannerFailure.message("주소를 좌표로 변환하지 못했습니다. \(error.localizedDescription)")
         }
         let result = try merge(capture, candidates)

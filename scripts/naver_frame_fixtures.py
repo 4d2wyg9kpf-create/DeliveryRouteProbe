@@ -1,5 +1,5 @@
 """Local DOM fixtures for WKWebView; never contacts Naver or uses user data."""
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MAIN = '''<!doctype html><meta name="viewport" content="width=device-width">
 <iframe id="entryIframe" src="http://127.0.0.1:8349/restaurant/101/home"></iframe>
@@ -18,7 +18,7 @@ append(20);addEventListener('scroll',()=>{if(loaded===20)append(25);});
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
-        pass
+        print("LOCAL_FIXTURE_HTTP", self.path, flush=True)
     def do_GET(self):
         if self.path == '/main':
             content = MAIN
@@ -32,4 +32,4 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content.encode())
 
-HTTPServer(('0.0.0.0', 8349), Handler).serve_forever()
+ThreadingHTTPServer(('0.0.0.0', 8349), Handler).serve_forever()

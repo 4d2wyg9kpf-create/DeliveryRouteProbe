@@ -59,7 +59,8 @@ final class FrameChecks: NSObject, WKNavigationDelegate {
             let deadline = Date().addingTimeInterval(12)
             var ready = false
             while Date() < deadline {
-                let state = try? await evaluate("return JSON.stringify({ok:true,ready:location.pathname==='/main'&&!!document.querySelector('#entryIframe')});")
+                let state = try? await evaluate("return JSON.stringify({ok:true,ready:location.pathname==='/main'&&!!document.querySelector('#entryIframe'),url:location.href,state:document.readyState});")
+                print("FIXTURE_READY_STATE \(String(describing: state)) URL \(view.url?.absoluteString ?? "nil") loading \(view.isLoading)")
                 if state?["ready"] as? Bool == true { ready = true; break }
                 try await Task.sleep(nanoseconds: 200_000_000)
             }
@@ -97,6 +98,7 @@ struct NativeFrameTests {
     @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        app.finishLaunching()
         let tests = FrameChecks()
         Task { await tests.run() }
         app.run()

@@ -13,6 +13,7 @@ struct NaverCustomerCatalogView: View {
     @State private var originID = "current"
     @State private var endMode = "return"
     @State private var destinationID = ""
+    @State private var resolvingID: String?
     var body: some View {
         NavigationStack {
             List {
@@ -67,6 +68,16 @@ struct NaverCustomerCatalogView: View {
                                 Spacer(minLength: 0)
                             }.contentShape(Rectangle())
                         }.buttonStyle(.borderless).accessibilityLabel("\(record.name), \(selectedIDs.contains(record.id) ? "선택됨" : "선택 안 됨")")
+                        if record.template.tmapCoordinate == nil, record.capture?.coordinate == nil, let capture = record.capture, !capture.preferredAddress.isEmpty {
+                            Button(resolvingID == record.id ? "변환 중…" : "주소 → 좌표") {
+                                resolvingID = record.id; error = nil
+                                Task {
+                                    defer { resolvingID = nil }
+                                    do { let result = try await AddressGeocoder.shared.resolve(capture); try customers.save(result, name: record.name) }
+                                    catch { self.error = error.localizedDescription }
+                                }
+                            }.font(.caption).buttonStyle(.borderless).disabled(resolvingID != nil)
+                        }
                         Button(role: .destructive) { deleting = record; confirmDelete = true } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless).accessibilityLabel("\(record.name) 거래처 목록에서 삭제")
                     }
@@ -81,7 +92,7 @@ struct NaverCustomerCatalogView: View {
                         do { try customers.applySelection(selectedIDs, planner: planner, curbConfirmed: curbConfirmed, originID: originID, endMode: endMode, destinationID: destinationID); dismiss() }
                         catch { self.error = error.localizedDescription }
                     }.buttonStyle(.borderedProminent)
-                        .disabled(planner.isComputing || (needsCoordinateConfirmation && !curbConfirmed) || (endMode == "custom" && destinationID.isEmpty))
+                        .disabled(planner.isComputing || resolvingID != nil || (needsCoordinateConfirmation && !curbConfirmed) || (endMode == "custom" && destinationID.isEmpty))
                 }
             }
             .navigationTitle("거래처 목록 · 이번 배송 선택")
