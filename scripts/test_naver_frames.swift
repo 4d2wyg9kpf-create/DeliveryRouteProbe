@@ -9,7 +9,7 @@ final class FrameChecks: NSObject, WKNavigationDelegate {
     let view: WKWebView
     let window: NSWindow
     var checks = 0
-    let parent = "http://localhost:8349"
+    let parent = "http://127.0.0.1:8349"
     override init() {
         let configuration = WKWebViewConfiguration()
         let bridge = Self.fixture(NaverFrameBridgeScript.source)
@@ -27,13 +27,14 @@ final class FrameChecks: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { print("FIXTURE_NAVIGATION_ERROR \(error)") }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { print("FIXTURE_MAIN_LOADED \(webView.url?.absoluteString ?? "nil")") }
     static func fixture(_ source: String) -> String {
-        source.replacingOccurrences(of: "'https:'", with: "'http:'")
-            .replacingOccurrences(of: "https://map.naver.com", with: "http://localhost:8349")
-            .replacingOccurrences(of: "https://pcmap.place.naver.com", with: "http://127.0.0.1:8349")
-            .replacingOccurrences(of: "https://pages.map.naver.com", with: "http://127.0.0.2:8349")
-            .replacingOccurrences(of: "'map.naver.com'", with: "'localhost'")
+        source.replacingOccurrences(of: "location.hostname==='pcmap.place.naver.com'?", with: "location.port==='8350'?")
+            .replacingOccurrences(of: "'https:'", with: "'http:'")
+            .replacingOccurrences(of: "https://map.naver.com", with: "http://127.0.0.1:8349")
+            .replacingOccurrences(of: "https://pcmap.place.naver.com", with: "http://127.0.0.1:8350")
+            .replacingOccurrences(of: "https://pages.map.naver.com", with: "http://127.0.0.1:8351")
+            .replacingOccurrences(of: "'map.naver.com'", with: "'127.0.0.1'")
             .replacingOccurrences(of: "'pcmap.place.naver.com'", with: "'127.0.0.1'")
-            .replacingOccurrences(of: "'pages.map.naver.com'", with: "'127.0.0.2'")
+            .replacingOccurrences(of: "'pages.map.naver.com'", with: "'127.0.0.1'")
     }
     func evaluate(_ body: String, _ args: [String: Any] = [:]) async throws -> [String: Any] {
         let raw: Any = try await withCheckedThrowingContinuation { continuation in
@@ -69,7 +70,7 @@ final class FrameChecks: NSObject, WKNavigationDelegate {
             print("FIRST_FRAME_RESULT \(first)")
             try check(first["ok"] as? Bool == true && first["placeID"] as? String == "101", "iPhone-width cross-origin restaurant frame")
             try check(first["address"] as? String == "서울 중구 세종대로 1", "detail address arrives without WKFrameInfo")
-            _ = try await evaluate("document.querySelector('#entryIframe').src='http://127.0.0.1:8349/place/102/home'; return JSON.stringify({ok:true});")
+            _ = try await evaluate("document.querySelector('#entryIframe').src='http://127.0.0.1:8350/place/102/home'; return JSON.stringify({ok:true});")
             let second = try await request("place")
             try check(second["placeID"] as? String == "102" && second["name"] as? String == "두 번째 거래처", "new iframe document replaces previous place")
             let list = try await request("list")
