@@ -23,7 +23,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  naver-checks:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify cross-origin iframe reads and share links in native WKWebView
+        run: bash scripts/test_naver_frames.sh
+      - name: Upload native check log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: DeliveryRouteProbe-native-check-log
+          path: build/logs/*.log
+          if-no-files-found: ignore
+          retention-days: 7
   ipa:
+    needs: naver-checks
     # Standard Apple Silicon runner; no paid large-runner label.
     runs-on: macos-15
     timeout-minutes: 45
@@ -32,10 +51,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Verify cross-origin iframe reads in native WKWebView
-        run: bash scripts/test_naver_frames.sh
       - name: Build device app and package unsigned IPA
-        if: always()
         run: bash scripts/build_ios.sh unsigned
       - name: Upload IPA and its verification report
         uses: actions/upload-artifact@v7

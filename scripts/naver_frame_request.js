@@ -8,6 +8,8 @@ async function requestNaverFrame(kind,command,requestID,args) {
   if(frames.length!==1)return JSON.stringify({ok:false,message:kind==='place'?'장소 상세 화면을 하나 열어 주세요.':'네이버 저장 목록에서 가져올 폴더를 열어 주세요.'});
   const frame=frames[0];let url;try{url=new URL(frame.getAttribute('src'),location.href);}catch(_){return JSON.stringify({ok:false,message:'상세 화면이 열리는 중입니다. 다시 읽어 주세요.'});}
   if(url.origin!==expected)return JSON.stringify({ok:false,message:'네이버 상세 화면의 출처를 확인하지 못했습니다.'});
+  const identity=kind==='place'?/^\/(?:place|restaurant|cafe|hospital|beauty|hairshop|accommodation)\/(\d+)(?:\/|$)/.exec(url.pathname)?.[1]:/^\/save-pages\/pc\/detail-list\/([a-zA-Z0-9_-]+)(?:\/|$)/.exec(url.pathname)?.[1];
+  if(!identity)return JSON.stringify({ok:false,message:'선택한 장소·목록의 상세 주소를 확인하지 못했습니다.'});
   // Request the CURRENT frame on every tap, rather than caching transient WKFrameInfo.
   return await new Promise(resolve=>{
     let timer,timeout,done=false;
@@ -17,6 +19,9 @@ async function requestNaverFrame(kind,command,requestID,args) {
       if(event.source!==frame.contentWindow||event.origin!==expected||data?.channel!==channel||data.requestID!==requestID||data.kind!==kind)return;
       let current;try{current=new URL(frame.getAttribute('src'),location.href).href;}catch(_){current='';}
       if(frame!==document.querySelector(selector)||current!==url.href){finish({ok:false,message:'읽는 동안 상세 화면이 바뀌었습니다. 다시 읽어 주세요.'});return;}
+      // src changes before the new iframe document loads. Ignore the old
+      // document's reply; repeating the nonce reaches the replacement page.
+      if(data.result?.ok===true&&(kind==='place'?data.result.placeID:data.result.folderID)!==identity)return;
       finish(data.result||{ok:false,message:'상세 화면에서 빈 응답이 왔습니다.'});
     };
     const send=()=>{
