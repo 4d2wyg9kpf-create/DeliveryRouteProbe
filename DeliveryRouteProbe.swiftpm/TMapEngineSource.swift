@@ -80,7 +80,7 @@ enum TMapEngineSource {
         return {longitude:value.longitude,latitude:value.latitude};
       }
       function location(plan,id) {
-        const v=id==='depot'?null:plan.visits.find(v=>v.id===id), access=id==='depot'?plan.originAccess:v?.roadAccess;
+        const v=id==='depot'?null:id==='destination'?plan.destination:plan.visits.find(v=>v.id===id), access=id==='depot'?plan.originAccess:v?.roadAccess;
         const explicit=coordinate(id==='depot'?plan.tmapOrigin:v?.tmapCoordinate);
         if (explicit) return explicit;
         if (!access?.curbConfirmed||!access.curbPoint?.token) return null;
@@ -160,16 +160,17 @@ enum TMapEngineSource {
       }
       function request(input) {
         const p=input.plan,c=input.options;
-        if (!p||!Array.isArray(p.visits)||p.originName!=='맑은아침농산'||!p.returnToOrigin) fail('출발·도착이 맑은아침농산인 계획을 사용해 주세요.');
-        const s=service(p.visits.length), origin=location(p,'depot');
-        if (!origin) fail('회사의 하역 위치 좌표를 입력해 주세요.');
-        if (new Set(p.visits.map(v=>v.id)).size!==p.visits.length||p.visits.some(v=>!v.id||v.id==='depot')) fail('거래처 식별자가 중복되거나 잘못됐습니다.');
+        if (!p||!Array.isArray(p.visits)||!String(p.originName||'').trim()||!p.returnToOrigin) fail('티맵으로 계산할 때는 출발지와 최종 도착지를 선택해 주세요.');
+        const s=service(p.visits.length), origin=location(p,'depot'),endNodeID=p.destination?'destination':'depot',end=location(p,endNodeID);
+        if(!end)fail('최종 도착지의 하역 위치 좌표를 입력해 주세요.');
+        if (!origin) fail('출발지의 하역 위치 좌표를 입력해 주세요.');
+        if (new Set(p.visits.map(v=>v.id)).size!==p.visits.length||p.visits.some(v=>!v.id||['depot','destination'].includes(v.id))) fail('거래처 식별자가 중복되거나 잘못됐습니다.');
         if (!c||!['0','1','2','3','10'].includes(c.searchOption)) fail('경로 탐색 옵션을 확인해 주세요.');
         const accuracy=c.deliveryAccuracy??'1';
         if(!['1','2','3'].includes(accuracy))fail('배송 결과 정확도 설정을 확인해 주세요.');
         const timing=timeInputs(input);
-        const originInfo=stopInfo(p.tmapOrigin);
-        const body={reqCoordType:'WGS84GEO',resCoordType:'WGS84GEO',startName:encodeURIComponent(p.originName),startX:String(origin.longitude),startY:String(origin.latitude),startTime:timing.startTime,endName:encodeURIComponent(p.originName),endX:String(origin.longitude),endY:String(origin.latitude),endPoiId:originInfo.poiID,searchOption:c.searchOption,carType:'1',coordinateFlag:'0',deliveryAccuracy:accuracy,viaPoints:[]};
+        const endInfo=stopInfo(p.destination?p.destination.tmapCoordinate:p.tmapOrigin);
+        const body={reqCoordType:'WGS84GEO',resCoordType:'WGS84GEO',startName:encodeURIComponent(p.originName),startX:String(origin.longitude),startY:String(origin.latitude),startTime:timing.startTime,endName:encodeURIComponent(p.destination?.name||p.originName),endX:String(end.longitude),endY:String(end.latitude),endPoiId:endInfo.poiID,searchOption:c.searchOption,carType:'1',coordinateFlag:'0',deliveryAccuracy:accuracy,viaPoints:[]};
         if (c.truckRouting) {
           const fields={truckWidth:[100,300],truckHeight:[100,600],truckWeight:[500,600000],truckTotalWeight:[500,600000],truckLength:[200,4000]};
           for(const [field,range] of Object.entries(fields)) {
@@ -188,7 +189,7 @@ enum TMapEngineSource {
           const time=timing.stops[i],info=stopInfo({poiID:v.tmapCoordinate?.poiID,detailAddress:v.tmapCoordinate?.detailAddress??v.naverPlace?.requestAddress??v.naverPlace?.roadAddress??v.naverPlace?.address??''});
           body.viaPoints.push({viaPointId:wire,viaPointName:encodeURIComponent(v.name),viaDetailAddress:info.detailAddress,viaX:String(coord.longitude),viaY:String(coord.latitude),viaPoiId:info.poiID,viaTime:time.viaTime,wishStartTime:time.wishStartTime,wishEndTime:time.wishEndTime});
         });
-        return {apiID:s.id,url:'https://apis.openapi.sk.com/tmap/routes/routeOptimization'+s.id+'?version=1',body:JSON.stringify(body),wireIDs};
+        return {apiID:s.id,url:'https://apis.openapi.sk.com/tmap/routes/routeOptimization'+s.id+'?version=1',body:JSON.stringify(body),wireIDs,endNodeID};
       }
       function number(v,name) {
         if((typeof v!=='number'&&typeof v!=='string')||String(v).trim()===''||!Number.isFinite(Number(v))||Number(v)<0) fail('티맵 응답의 '+name+' 값을 읽지 못했습니다.');
@@ -246,13 +247,13 @@ enum TMapEngineSource {
           }
         }
         const n=Object.keys(request.wireIDs).length, ordered=[...groups.values()].sort((a,b)=>a.index-b.index);
-        if(ordered.length!==n+1||ordered.some((g,i)=>g.index!==i+1)||ordered[n].type!=='E'||ordered.slice(0,n).some(g=>!/^B\d+$/.test(g.type))) fail('티맵 결과에 배송지 또는 회사 복귀 구간이 빠져 있습니다.');
-        const body=JSON.parse(request.body),coordinateFor=id=>id==='depot'?{longitude:Number(body.startX),latitude:Number(body.startY)}:(()=>{const v=body.viaPoints.find(v=>request.wireIDs[String(v.viaPointId)]===id);return {longitude:Number(v.viaX),latitude:Number(v.viaY)};})();
+        if(ordered.length!==n+1||ordered.some((g,i)=>g.index!==i+1)||ordered[n].type!=='E'||ordered.slice(0,n).some(g=>!/^B\d+$/.test(g.type))) fail('티맵 결과에 배송지 또는 최종 도착 구간이 빠져 있습니다.');
+        const body=JSON.parse(request.body),endNodeID=request.endNodeID||'depot',coordinateFor=id=>id===endNodeID&&id!=='depot'?{longitude:Number(body.endX),latitude:Number(body.endY)}:id==='depot'?{longitude:Number(body.startX),latitude:Number(body.startY)}:(()=>{const v=body.viaPoints.find(v=>request.wireIDs[String(v.viaPointId)]===id);return {longitude:Number(v.viaX),latitude:Number(v.viaY)};})();
         const rows=[], legs=[], paths=[], seen=new Set(),warnings=[];let previous='depot',totalSeconds=0,totalDistance=0,knownTollWon=0,unknownTollCount=0;
         for(const group of ordered) {
           if(!group.point||group.lines.length!==1) fail('티맵의 지점별 이동시간·경로를 읽지 못했습니다.');
           const p=group.point,l=group.lines[0],lp=l.properties;
-          const id=group.type==='E'?'depot':request.wireIDs[String(p.viaPointId)];
+          const id=group.type==='E'?endNodeID:request.wireIDs[String(p.viaPointId)];
           if(!id||(id!=='depot'&&seen.has(id))||String(p.viaPointId||'')!==String(lp.viaPointId||'')) fail('티맵 결과의 배송지 식별자가 일치하지 않습니다.');
           seen.add(id);
           const seconds=number(lp.time,'이동시간'), distance=number(lp.distance,'거리'), fare=optionalNumber(lp.Fare??lp.fare??p.Fare??p.fare,'통행료',10000000);
@@ -296,7 +297,7 @@ enum TMapEngineSource {
       function apply(input) {
         const p=copy(input.plan),r=input.route,now=epoch(input.now);
         if(!r||!Number.isFinite(r.expiresAtMillis)||now>=r.expiresAtMillis||now<r.fetchedAtMillis)fail('티맵 결과가 만료됐습니다. 새로 요청해 주세요.');
-        const ids=r.rows.filter(v=>v.visitID!=='depot').map(v=>v.visitID),positions=new Map(ids.map((id,i)=>[id,i+1]));
+        const ids=r.rows.filter(v=>p.visits.some(visit=>visit.id===v.visitID)).map(v=>v.visitID),positions=new Map(ids.map((id,i)=>[id,i+1]));
         if(ids.length!==p.visits.length||new Set(ids).size!==ids.length||p.visits.some(v=>!positions.has(v.id)))fail('거래처가 변경됐습니다. 새로 최적화해 주세요.');
         for(const v of p.visits) {
           const pos=positions.get(v.id);

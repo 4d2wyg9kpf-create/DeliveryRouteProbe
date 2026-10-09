@@ -12,12 +12,17 @@ struct TMapScreen: View {
     @EnvironmentObject private var inputs: NativeInputSession
     @ObservedObject var store: TMapStore
     @ObservedObject var planner: PlannerStore
+    @ObservedObject var browser: BrowserModel
+    @EnvironmentObject private var customers: NaverCustomerStore
     let openNaver: (String) -> Void
     @State private var showSettings = false
     @State private var locationDraft: TMapLocationDraft?
     @State private var usageDraft: Int?
     @State private var showUsage = false
     @State private var usageText = ""
+    @State private var deleteLocation: TMapLocationDraft?
+    @State private var showDeleteLocation = false
+    @State private var showCustomers = false
     private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -45,20 +50,31 @@ struct TMapScreen: View {
             .sheet(isPresented: $showSettings) { TMapSettingsView(store: store) }
             .sheet(item: $locationDraft) { draft in
                 TMapLocationEditor(name: draft.name, coordinate: draft.coordinate, isDepot: draft.id == "depot") { coordinate in
-                    var next = planner.plan
-                    if draft.id == "depot" { next.tmapOrigin = coordinate }
-                    else if let index = next.visits.firstIndex(where: { $0.id == draft.id }) { next.visits[index].tmapCoordinate = coordinate }
-                    planner.plan = next
+                    planner.saveLocation(coordinate, id: draft.id)
                 }
             }
             .sheet(isPresented: $showUsage) { usageEditor }
+            .sheet(isPresented: $showCustomers) { NaverCustomerCatalogView(planner: planner, browser: browser) }
+            .confirmationDialog("하역 위치 삭제", isPresented: $showDeleteLocation, titleVisibility: .visible) {
+                if let target = deleteLocation {
+                    Button(target.id == "depot" ? "출발지 좌표·주소 삭제" : target.id == "destination" ? "최종 도착지 삭제" : "거래처 삭제", role: .destructive) {
+                        if target.id == "depot" { planner.clearOriginLocation() } else if target.id == "destination" { planner.clearDestination() } else { planner.removeVisit(target.id) }
+                        deleteLocation = nil
+                    }
+                }
+                Button("취소", role: .cancel) { deleteLocation = nil }
+            } message: {
+                if let target = deleteLocation {
+                    Text(target.id == "depot" ? "출발지 '\(target.name)'의 좌표·주소를 지웁니다." : "'\(target.name)' 거래처와 연결된 경로·주문 수량을 배송계획에서 지웁니다.")
+                }
+            }
             .task { await store.refreshClock() }
             .onReceive(timer) { _ in store.tick() }
         }
     }
     private var requestSection: some View {
         Section("경로 최적화") {
-            Text("\(planner.plan.originName) → 거래처 \(planner.plan.visits.count)곳 → 회사 복귀").font(.headline)
+            Text("\(planner.plan.originName) → 배송 \(planner.plan.visits.count)곳 → \(planner.plan.finishName)").font(.headline)
             Text("운행 \(planner.plan.planDate) · \(PlannerClock.text(planner.plan.startMinute)) 출발").font(.caption)
             if let quota = store.quota(for: planner.plan.visits.count) {
                 Text("선택 API: \(quota.label) · 무료 \(quota.remaining)/\(quota.limit)회 남음")
@@ -71,8 +87,10 @@ struct TMapScreen: View {
                     inputs.finishEditing(); store.optimize(plan: planner.plan)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!store.canRequest || store.quota(for: planner.plan.visits.count) == nil || store.quota(for: planner.plan.visits.count)?.blocked == true || planner.isComputing)
+                .disabled(!planner.plan.returnToOrigin || !store.canRequest || store.quota(for: planner.plan.visits.count) == nil || store.quota(for: planner.plan.visits.count)?.blocked == true || planner.isComputing)
             }
+            if !planner.plan.returnToOrigin { Text("티맵으로 최적화하려면 목록에서 최종 도착지를 선택하세요.").font(.caption).foregroundColor(.orange) }
+            Button("출발지·도착지 · 이번 배송 선택") { inputs.finishEditing(); showCustomers = true }
             Text(store.message).font(.caption).foregroundColor(.secondary)
             if !store.hasAppKey || !store.freePlanConfirmed { Button("Free 앱키 설정") { showSettings = true } }
             if planner.plan.tmapBinding != nil {
@@ -160,7 +178,7 @@ struct TMapScreen: View {
     private func routeSummary(_ route: TMapRoute) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(route.totalDistanceMeters / 1000, specifier: "%.1f")km · 구간 이동 \(duration(route.totalTravelSeconds))").font(.headline)
-            Text("요청 출발 \(arrivalTime(route.requestedDepartureTime)) · 티맵 회사 복귀 \(arrivalTime(route.returnTime))").font(.caption)
+            Text("요청 출발 \(arrivalTime(route.requestedDepartureTime)) · 티맵 최종 도착 \(arrivalTime(route.returnTime))").font(.caption)
             if !route.reportedDepartureTime.isEmpty, route.reportedDepartureTime != route.requestedDepartureTime {
                 Text("티맵 응답 출발 \(arrivalTime(route.reportedDepartureTime)) · 출발~복귀는 이 시각 기준입니다.").font(.caption).foregroundColor(.orange)
             }
@@ -183,10 +201,10 @@ struct TMapScreen: View {
     @ViewBuilder
     private func routeRow(_ row: TMapRow) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(row.visitID == "depot" ? "회사 복귀" : "\(row.position). \(planner.plan.name(row.visitID))").bold()
+            Text((row.visitID == "depot" || row.visitID == "destination") ? "최종 도착: \(planner.plan.name(row.visitID))" : "\(row.position). \(planner.plan.name(row.visitID))").bold()
             Text("이동 \(duration(row.travelSeconds)) · \(row.distanceMeters / 1000, specifier: "%.1f")km · 통행료 \(toll(row.tollWon))").font(.caption)
             Text("티맵 도착 \(arrivalTime(row.arriveTime))").font(.caption)
-            if row.visitID != "depot" {
+            if planner.plan.visits.contains(where: { $0.id == row.visitID }) {
                 Text("예상 작업 시작 \(arrivalTime(row.workStartTime)) · 완료 \(arrivalTime(row.completeTime))").font(.caption)
                 Text("작업 \(duration(row.deliverySeconds)) · 대기 \(duration(row.waitSeconds))").font(.caption)
                 if !row.detailAddress.isEmpty { Text(row.detailAddress).font(.caption) }
@@ -210,16 +228,20 @@ struct TMapScreen: View {
         Section("하역 위치 좌표") {
             Button("네이버 검색에서 장소·주소 가져오기") { inputs.finishEditing(); openNaver("https://map.naver.com/p/") }
                 .disabled(store.isOptimizing)
-            Button("네이버에 저장한 거래처 목록 열기") { inputs.finishEditing(); openNaver("https://map.naver.com/p/favorite") }
+            Button("네이버 저장 목록 전체 가져오기") { inputs.finishEditing(); openNaver("https://map.naver.com/p/favorite") }
+                .disabled(store.isOptimizing)
+            Button("가져온 거래처 \(customers.records.count)곳 · 배송계획에 연결") { inputs.finishEditing(); showCustomers = true }
                 .disabled(store.isOptimizing)
             Text("네이버에서 장소를 선택하고 ‘선택 장소 읽기’를 누르면 새 거래처 등록과 기존 거래처 연결을 할 수 있습니다.").font(.caption)
             ForEach(planner.plan.nodes, id: \.id) { node in
-                Button {
+                HStack(alignment: .center, spacing: 12) {
+                  Button {
                     inputs.finishEditing()
                     locationDraft = TMapLocationDraft(id: node.id, name: node.name, coordinate: TMapBridge.coordinate(planner.plan, id: node.id))
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(node.name).foregroundColor(.primary)
+                        Text(node.id == "depot" ? "출발지" : node.id == "destination" ? "최종 도착지" : "이번 배송지").font(.caption2).foregroundColor(.secondary)
                         if let place = planner.plan.naverPlace(node.id), !place.preferredAddress.isEmpty {
                             Text("네이버: \(place.preferredAddress)").font(.caption).foregroundColor(.secondary)
                         }
@@ -228,7 +250,15 @@ struct TMapScreen: View {
                             if let address = coordinate.detailAddress, !address.isEmpty { Text(address).font(.caption).foregroundColor(.secondary) }
                         } else { Text("좌표 입력 필요").font(.caption).foregroundColor(.orange) }
                     }
-                }.disabled(store.isOptimizing)
+                  }.buttonStyle(.borderless).disabled(store.isOptimizing)
+                  Spacer(minLength: 0)
+                  Button(role: .destructive) {
+                      inputs.finishEditing()
+                      deleteLocation = TMapLocationDraft(id: node.id, name: node.name, coordinate: nil)
+                      showDeleteLocation = true
+                  } label: { Label(node.id == "depot" ? "위치 삭제" : "삭제", systemImage: "trash") }
+                  .buttonStyle(.borderless).disabled(store.isOptimizing || planner.isComputing)
+                }
             }
             Text("확인한 네이버 하역 지점이 있으면 그 좌표를 사용합니다. 별도로 입력할 때도 차량이 서는 실제 지점을 지정하세요.").font(.caption)
         }
@@ -274,7 +304,7 @@ private struct TMapRouteMap: View {
             }
             ForEach(route.rows) { row in
                 if let coordinate = row.coordinate ?? TMapBridge.coordinate(plan, id: row.visitID) {
-                    Marker(row.visitID == "depot" ? "회사" : "\(row.position). \(plan.name(row.visitID))", coordinate: CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude))
+                    Marker((row.visitID == "depot" || row.visitID == "destination") ? "최종 도착" : "\(row.position). \(plan.name(row.visitID))", coordinate: CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude))
                 }
             }
         }.mapControls { MapCompass(); MapScaleView() }
@@ -375,7 +405,7 @@ private struct TMapLocationEditor: View {
                 }
                 DisclosureGroup("티맵 장소 ID · 알고 있는 경우") {
                     NativeTextField("티맵 검색 결과의 장소 ID", text: $poiID).frame(minHeight: 44)
-                    Text("선택 입력입니다. 티맵 검색 결과의 ID와 현재 하역 좌표가 같은 장소인지 확인하세요. 네이버 장소 ID는 사용할 수 없습니다. 회사 ID는 회사 복귀 목적지에도 전달합니다.").font(.caption)
+                    Text("선택 입력입니다. 티맵 검색 결과의 ID와 현재 하역 좌표가 같은 장소인지 확인하세요. 네이버 장소 ID는 사용할 수 없습니다. 도착지 ID는 최종 도착 장소에 전달합니다.").font(.caption)
                 }
                 if let error = error { Text(error).foregroundColor(.red) }
             }.navigationTitle("하역 위치")

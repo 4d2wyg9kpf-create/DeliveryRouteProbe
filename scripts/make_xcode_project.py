@@ -14,18 +14,20 @@ def add(name,body):objects.append(f'{uid(name)} = {{ {body} }};')
 for f in files:
     add('ref:'+f.name, f'isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {q(str(f.relative_to(ROOT)))}; sourceTree = "<group>";')
     add('build:'+f.name, f'isa = PBXBuildFile; fileRef = {uid("ref:"+f.name)};')
+add('ref:Assets', 'isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = DeliveryRouteProbe.swiftpm/Assets.xcassets; sourceTree = "<group>";')
+add('build:Assets', f'isa = PBXBuildFile; fileRef = {uid("ref:Assets")};')
 add('product','isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DeliveryRouteProbe.app; sourceTree = BUILT_PRODUCTS_DIR;')
-add('main', 'isa = PBXGroup; children = ('+','.join(uid('ref:'+f.name) for f in files)+','+uid('products')+'); sourceTree = "<group>";')
+add('main', 'isa = PBXGroup; children = ('+','.join(uid('ref:'+f.name) for f in files)+','+uid('ref:Assets')+','+uid('products')+'); sourceTree = "<group>";')
 add('products', f'isa = PBXGroup; children = ({uid("product")}); name = Products; sourceTree = "<group>";')
 add('sources', 'isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ('+','.join(uid('build:'+f.name) for f in files)+'); runOnlyForDeploymentPostprocessing = 0;')
 add('frameworks','isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;')
-add('resources','isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;')
+add('resources',f'isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ({uid("build:Assets")}); runOnlyForDeploymentPostprocessing = 0;')
 for level in ['project','target']:
     for config in ['Debug','Release']:
         settings={'IPHONEOS_DEPLOYMENT_TARGET':'18.0','SDKROOT':'iphoneos'}
         if level=='project':settings.update({'CLANG_ENABLE_MODULES':'YES','CLANG_ENABLE_OBJC_ARC':'YES'})
         else:
-            settings.update({'PRODUCT_NAME':'$(TARGET_NAME)','PRODUCT_BUNDLE_IDENTIFIER':'kr.deliverytools.routeprobe','SWIFT_VERSION':'5.0','SWIFT_STRICT_CONCURRENCY':'minimal','TARGETED_DEVICE_FAMILY':'1,2','INFOPLIST_FILE':'native/Info.plist','GENERATE_INFOPLIST_FILE':'NO','CODE_SIGN_STYLE':'Automatic','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','SUPPORTS_MACCATALYST':'NO','MARKETING_VERSION':'0.12.2','CURRENT_PROJECT_VERSION':'23','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
+            settings.update({'ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon','PRODUCT_NAME':'$(TARGET_NAME)','PRODUCT_BUNDLE_IDENTIFIER':'kr.deliverytools.routeprobe','SWIFT_VERSION':'5.0','SWIFT_STRICT_CONCURRENCY':'minimal','TARGETED_DEVICE_FAMILY':'1,2','INFOPLIST_FILE':'native/Info.plist','GENERATE_INFOPLIST_FILE':'NO','CODE_SIGN_STYLE':'Automatic','SUPPORTED_PLATFORMS':'iphoneos iphonesimulator','SUPPORTS_MACCATALYST':'NO','MARKETING_VERSION':'0.13.0','CURRENT_PROJECT_VERSION':'24','LD_RUNPATH_SEARCH_PATHS':'$(inherited) @executable_path/Frameworks'})
             if config=='Debug':settings.update({'SWIFT_OPTIMIZATION_LEVEL':'-Onone','SWIFT_ACTIVE_COMPILATION_CONDITIONS':'DEBUG'})
             else:settings.update({'SWIFT_OPTIMIZATION_LEVEL':'-O','SWIFT_COMPILATION_MODE':'wholemodule','DEBUG_INFORMATION_FORMAT':'dwarf-with-dsym'})
         add(level+config, 'isa = XCBuildConfiguration; buildSettings = {'+' '.join(f'{k} = {q(v)};' for k,v in settings.items())+f'}}; name = {config};')

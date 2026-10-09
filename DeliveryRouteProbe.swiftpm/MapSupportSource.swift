@@ -285,7 +285,7 @@ enum NaverPlaceRootScript {
       const frame=frames[0];
       if(frame){
         let f;try{f=new URL(frame.getAttribute('src')||'',url.href);}catch(_){return blocked('선택 장소의 상세 화면을 기다린 뒤 다시 읽어 주세요.');}
-        const m=/^\/place\/(\d+)(?:\/|$)/.exec(f.pathname);
+        const m=/^\/(?:place|restaurant|cafe|hospital|beauty|hairshop|accommodation)\/(\d+)(?:\/|$)/.exec(f.pathname);
         if(f.protocol!=='https:'||f.hostname!=='pcmap.place.naver.com'||!m)return blocked('선택한 장소 상세 화면을 읽지 못했습니다.');
         const selected=/\/entry\/place\/(\d+)(?:\/|$)/.exec(url.pathname);
         if(selected&&selected[1]!==m[1])return blocked('지도와 상세 패널의 장소가 다릅니다. 잠시 뒤 다시 읽어 주세요.');
@@ -348,7 +348,7 @@ enum NaverPlaceDetailScript {
       const tidy=x=>String(x||'').replace(/\s+/g,' ').trim();
       const shown=e=>{if(!e||!e.getClientRects().length)return false;for(let p=e;p&&p.nodeType===1;p=p.parentElement){const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden'||s.opacity==='0')return false;}return true;};
       let url;try{url=new URL(location.href);}catch(_){return JSON.stringify({ok:false,message:'장소 상세 화면을 읽지 못했습니다.'});}
-      const id=/^\/place\/(\d+)(?:\/|$)/.exec(url.pathname);
+      const id=/^\/(?:place|restaurant|cafe|hospital|beauty|hairshop|accommodation)\/(\d+)(?:\/|$)/.exec(url.pathname);
       if(url.protocol!=='https:'||url.hostname!=='pcmap.place.naver.com'||!id)return JSON.stringify({ok:false,message:'네이버 장소 상세 화면에서 읽어 주세요.'});
       const names=[...document.querySelectorAll('.IY7ZX')].filter(shown);
       const name=names.length===1?tidy(names[0].textContent):tidy([...document.querySelectorAll('h1')].find(shown)?.textContent);
@@ -366,7 +366,140 @@ enum NaverPlaceDetailScript {
           if(key==='지번')jibunAddress=tidy(copy.textContent);
         }
       }
+      if(!address&&!roadAddress&&!jibunAddress)return JSON.stringify({ok:false,message:'장소 주소가 준비되지 않았습니다. 장소 홈 화면이 열린 뒤 다시 읽어 주세요.'});
       return JSON.stringify({ok:true,placeID:id[1],name,address,roadAddress,jibunAddress});
+    }
+    """#
+}
+enum NaverFrameBridgeScript {
+    static let source = #"""
+    function installNaverFrameBridge(detailReader, listReader) {
+      'use strict';
+      const channel='delivery-naver-dom-v2';
+      if(location.protocol!=='https:'||!['pcmap.place.naver.com','pages.map.naver.com'].includes(location.hostname))return;
+      const jobs=new Map();
+      window.addEventListener('message',event=>{
+        const request=event.data;
+        if(event.origin!=='https://map.naver.com'||event.source!==window.parent||!request||request.channel!==channel||!/^[-a-zA-Z0-9]{16,80}$/.test(request.requestID||''))return;
+        const allowed=location.hostname==='pcmap.place.naver.com'?request.kind==='place'&&request.command==='read':request.kind==='list'&&['read','select'].includes(request.command);
+        if(!allowed)return;
+        if(!jobs.has(request.requestID)){
+          if(jobs.size>=12)jobs.delete(jobs.keys().next().value);
+          const job=(async()=>{
+            try {
+              let value;
+              if(request.kind==='list')value=JSON.parse(await listReader(request.command,request.args||{}));
+              else {
+                const until=Date.now()+8000;
+                do{value=JSON.parse(detailReader());if(value.ok)break;await new Promise(resolve=>setTimeout(resolve,180));}while(Date.now()<until);
+              }
+              return value;
+            }catch(error){return {ok:false,message:error.message||'네이버 화면을 읽지 못했습니다.'};}
+          })();
+          jobs.set(request.requestID,job);
+        }
+        jobs.get(request.requestID).then(result=>event.source.postMessage({channel,requestID:request.requestID,kind:request.kind,result},event.origin));
+      });
+    }
+    """#
+}
+enum NaverFrameRequestScript {
+    static let source = #"""
+    async function requestNaverFrame(kind,command,requestID,args) {
+      'use strict';
+      const channel='delivery-naver-dom-v2';
+      if(location.protocol!=='https:'||location.hostname!=='map.naver.com')return JSON.stringify({ok:false,message:'네이버 지도에서 읽어 주세요.'});
+      const selector=kind==='place'?'#entryIframe':'#myPlaceBookmarkListIframe';
+      const expected=kind==='place'?'https://pcmap.place.naver.com':'https://pages.map.naver.com';
+      const frames=[...document.querySelectorAll(selector)];
+      if(frames.length!==1)return JSON.stringify({ok:false,message:kind==='place'?'장소 상세 화면을 하나 열어 주세요.':'네이버 저장 목록에서 가져올 폴더를 열어 주세요.'});
+      const frame=frames[0];let url;try{url=new URL(frame.getAttribute('src'),location.href);}catch(_){return JSON.stringify({ok:false,message:'상세 화면이 열리는 중입니다. 다시 읽어 주세요.'});}
+      if(url.origin!==expected)return JSON.stringify({ok:false,message:'네이버 상세 화면의 출처를 확인하지 못했습니다.'});
+      // Request the CURRENT frame on every tap, rather than caching transient WKFrameInfo.
+      return await new Promise(resolve=>{
+        let timer,timeout,done=false;
+        const finish=value=>{if(done)return;done=true;clearInterval(timer);clearTimeout(timeout);window.removeEventListener('message',receive);resolve(JSON.stringify(value));};
+        const receive=event=>{
+          const data=event.data;
+          if(event.source!==frame.contentWindow||event.origin!==expected||data?.channel!==channel||data.requestID!==requestID||data.kind!==kind)return;
+          let current;try{current=new URL(frame.getAttribute('src'),location.href).href;}catch(_){current='';}
+          if(frame!==document.querySelector(selector)||current!==url.href){finish({ok:false,message:'읽는 동안 상세 화면이 바뀌었습니다. 다시 읽어 주세요.'});return;}
+          finish(data.result||{ok:false,message:'상세 화면에서 빈 응답이 왔습니다.'});
+        };
+        const send=()=>{
+          if(!frame.isConnected){finish({ok:false,message:'읽는 동안 상세 화면이 닫혔습니다.'});return;}
+          frame.contentWindow.postMessage({channel,kind,command,requestID,args},expected);
+        };
+        window.addEventListener('message',receive);
+        timeout=setTimeout(()=>finish({ok:false,message:'네이버 상세 화면의 응답이 지연됐습니다. 새로고침 후 다시 읽어 주세요.'}),kind==='list'&&command==='read'?35000:12000);
+        timer=setInterval(send,300);send();
+      });
+    }
+    """#
+}
+enum NaverSavedListScript {
+    static let source = #"""
+    async function readNaverSavedList(command,args) {
+      'use strict';
+      const tidy=x=>String(x||'').replace(/\s+/g,' ').trim(),out=x=>JSON.stringify(x);
+      const url=new URL(location.href),match=/^\/save-pages\/pc\/detail-list\/([a-zA-Z0-9_-]+)(?:\/|$)/.exec(url.pathname);
+      if(url.protocol!=='https:'||url.hostname!=='pages.map.naver.com'||!match)return out({ok:false,message:'가져올 저장 폴더를 선택해 주세요. 폴더 안의 장소를 한 번에 가져옵니다.'});
+      const folderID=match[1],wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+      const cards=()=>[...document.querySelectorAll('li[role="button"][class*="place_info_card"]')];
+      const record=(row,index)=>{
+        const title=row.querySelector('strong[class*="main_title"]')||row.querySelector('strong');
+        const visible=title?.querySelector('[aria-hidden="true"]');
+        const clean=title?.cloneNode(true);clean?.querySelectorAll('[class*="blind"]').forEach(e=>e.remove());
+        const name=tidy(visible?.textContent||clean?.textContent);
+        const fields=[...row.querySelectorAll('[class*="place_info_item"]')].map(e=>tidy(e.textContent));
+        const address=fields.findLast(x=>/^(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충청|충북|충남|전라|전북|전남|경상|경북|경남|제주)/.test(x))||'';
+        return {index,name,address,key:name+'|'+address};
+      };
+      const header=()=>tidy(document.querySelector('header')?.textContent);
+      const total=()=>{const m=/저장된 장소 수\s*([\d,]+)개/.exec(header());return m?Number(m[1].replace(/,/g,'')):null;};
+      if(command==='select'){
+        if(args.folderID!==folderID)return out({ok:false,message:'가져오는 중 저장 폴더가 바뀌었습니다.'});
+        const rows=cards(),row=rows[args.index];
+        if(!row||record(row,args.index).key!==args.key)return out({ok:false,message:'저장 목록의 순서나 장소가 바뀌었습니다. 목록을 다시 가져와 주세요.'});
+        row.scrollIntoView({block:'center'});row.click();
+        return out({ok:true,folderID,index:args.index,key:args.key});
+      }
+      if(command!=='read')return out({ok:false,message:'목록 읽기 요청을 확인해 주세요.'});
+      if(/비공개|확인할 수 없습니다|로그인 후/.test(header()||tidy(document.body.textContent).slice(0,500)))return out({ok:false,message:'저장 목록을 열 수 없습니다. 네이버 로그인과 폴더 공개·접근 상태를 확인해 주세요.'});
+      const all=[...document.querySelectorAll('button[aria-pressed]')].find(e=>tidy(e.textContent)==='전체');
+      if(all&&all.getAttribute('aria-pressed')!=='true'){all.click();await wait(450);}
+      const until=Date.now()+28000;let stable=0,last=-1;
+      while(Date.now()<until){
+        if(new URL(location.href).pathname!==url.pathname)return out({ok:false,message:'읽는 동안 저장 폴더가 바뀌었습니다.'});
+        const expected=total(),rows=cards();
+        if(expected!=null&&expected>1000)return out({ok:false,message:'한 번에 1,000곳까지 가져올 수 있습니다. 네이버에서 폴더를 나눠 주세요.'});
+        if(expected!=null&&rows.length>=expected)break;
+        if(rows.length===last)stable++;else{stable=0;last=rows.length;}
+        if(stable>9)break;
+        rows.at(-1)?.scrollIntoView({block:'end'});
+        const scrollers=[document.scrollingElement,...document.querySelectorAll('div,ul')].filter(e=>e&&e.clientHeight>100&&e.scrollHeight>e.clientHeight+30);
+        for(const element of scrollers)element.scrollTop=element.scrollHeight;
+        await wait(500);
+      }
+      const expected=total(),rows=cards().map(record),title=tidy(document.querySelector('h1')?.textContent);
+      if(expected==null)return out({ok:false,message:'저장 목록의 전체 개수를 확인하지 못했습니다. 목록 화면을 새로고침해 주세요.'});
+      if(rows.length!==expected)return out({ok:false,message:'전체 '+expected+'곳 중 '+rows.length+'곳만 로딩됐습니다. 누락을 막기 위해 저장을 중지했습니다. 다시 가져와 주세요.'});
+      if(rows.some(x=>!x.name))return out({ok:false,message:'이름이 없는 저장 항목이 있어 목록을 확인해 주세요.'});
+      return out({ok:true,folderID,title,total:expected,rows});
+    }
+    """#
+}
+enum NaverMapPanelScript {
+    static let source = #"""
+    async function setNaverMapPanel(showMap) {
+      'use strict';
+      if(location.protocol!=='https:'||location.hostname!=='map.naver.com')return JSON.stringify({ok:false,message:'네이버 지도 화면에서 전환해 주세요.'});
+      const button=[...document.querySelectorAll('button[aria-expanded]')].find(e=>/패널 (접기|펼치기)/.test(e.textContent));
+      if(!button)return JSON.stringify({ok:false,message:'지도 패널 버튼이 준비되지 않았습니다. 로딩 후 다시 눌러 주세요.'});
+      const expanded=button.getAttribute('aria-expanded')==='true';
+      if(expanded===showMap)button.click();
+      await new Promise(resolve=>setTimeout(resolve,300));
+      return JSON.stringify({ok:true,mapVisible:button.getAttribute('aria-expanded')==='false'});
     }
     """#
 }

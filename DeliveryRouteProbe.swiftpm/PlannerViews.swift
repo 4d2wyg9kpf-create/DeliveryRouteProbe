@@ -18,6 +18,7 @@ struct PlannerScreen: View {
     @State private var legDraft: DeliveryLeg?
     @State private var roadLegDraft: DeliveryLeg?
     @State private var captureDraft: CaptureImportDraft?
+    @State private var showCustomers = false
     @State private var selectedFrom = "depot"
     @State private var showExport = false
     @State private var preparingInputDiagnostics = false
@@ -118,6 +119,7 @@ struct PlannerScreen: View {
             .fileExporter(isPresented: $showExport, document: exportDocument, contentType: .json, defaultFilename: exportName) { result in
                 if case .failure(let error) = result { store.errorMessage = error.localizedDescription }
             }
+            .sheet(isPresented: $showCustomers) { NaverCustomerCatalogView(planner: store, browser: browser) }
             .fileImporter(isPresented: $showImport, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
                 switch result {
                 case .success(let urls): if let url = urls.first { store.importPlan(url); selectedFrom = "depot" }
@@ -125,7 +127,7 @@ struct PlannerScreen: View {
                 }
             }
             .onChange(of: store.result?.status) { value in if value != nil { section = 3 } }
-            .onChange(of: store.plan.visits.map(\.id)) { ids in
+            .onChange(of: store.plan.nodes.map(\.id)) { ids in
                 if selectedFrom != "depot" && !ids.contains(selectedFrom) { selectedFrom = "depot" }
             }
         }
@@ -136,23 +138,24 @@ struct PlannerScreen: View {
             Section("출발과 종료") {
                 NativeTextField("운행 날짜 YYYY-MM-DD", text: $store.plan.planDate, keyboard: .numbersAndPunctuation)
                     .frame(minHeight: 44)
-                Text("출발·최종 도착: 맑은아침농산").bold()
+                Text("출발: \(store.plan.originName) · 도착: \(store.plan.finishName)").bold()
+                Button("출발지·도착지 · 이번 배송 선택") { showCustomers = true }
                 Picker("출발 시", selection: Binding(get: { store.plan.startMinute/60 }, set: { store.plan.startMinute = $0*60 + store.plan.startMinute%60 })) {
                     ForEach(0..<24) { Text("\($0)시").tag($0) }
                 }
                 Picker("출발 분", selection: Binding(get: { store.plan.startMinute%60 }, set: { store.plan.startMinute = store.plan.startMinute/60*60 + $0 })) {
                     ForEach(0..<60) { Text("\($0)분").tag($0) }
                 }
-                NumberRow(title: "회사에서 출발을 늦출 수 있는 한도(분)", value: $store.plan.originWaitMinutes)
-                Text("마지막 거래처에서 회사로 돌아오는 이동시간까지 계산합니다.").font(.caption)
+                NumberRow(title: "출발을 늦출 수 있는 한도(분)", value: $store.plan.originWaitMinutes)
+                Text("마지막 거래처에서 최종 도착지로 가는 이동시간까지 계산합니다.").font(.caption)
             }
             Section("시간 계산 기준") {
                 Text("거래처에 일찍 도착해 대기하는 일정도 비교합니다. 조기 도착을 허용하면 시간 구간은 작업 시작에 적용하고, 허용하지 않으면 실제 도착과 작업 시작을 같은 시각으로 계산합니다. 회피 구간에는 도착·작업 시작을 하지 않습니다.")
                 Text("기본 체류시간에 조기 도착 대기, 별도 허용한 추가 대기, 휴식을 구분해서 더합니다. 시간 구간의 양 끝은 포함하며 회피 끝 시각은 허용합니다. 다음 날은 24:00 이상으로 입력합니다.")
             }.font(.caption)
             Section("1시간 휴식") {
-                Text("실제 회사 출발이 11시 전이고 회사 복귀가 13시 전에 끝나지 않으면, 11~13시에 시작하는 연속 60분 휴식을 넣습니다. 휴식은 늦어도 14시에 끝납니다.")
-                Text("휴식 가능으로 표시한 거래처에서만 배치합니다. 작업 전 대기시간에 쉴 수 있으면 그 60분을 중복해서 더하지 않습니다. 마지막 거래처에서 회사로 돌아오는 구간도 휴식 필요 여부와 완료시각에 포함합니다.")
+                Text("실제 출발이 11시 전이고 최종 도착가 13시 전에 끝나지 않으면, 11~13시에 시작하는 연속 60분 휴식을 넣습니다. 휴식은 늦어도 14시에 끝납니다.")
+                Text("휴식 가능으로 표시한 거래처에서만 배치합니다. 작업 전 대기시간에 쉴 수 있으면 그 60분을 중복해서 더하지 않습니다. 마지막 거래처에서 최종 도착지로 가는 구간도 휴식 필요 여부와 완료시각에 포함합니다.")
             }.font(.caption)
             Section("계산 범위") {
                 Text("저장한 구간 이동시간으로 한 차량의 방문 순서를 계산합니다. 미등록 구간은 사용할 수 없습니다. 네이버 저장값은 미래 교통정보가 아니며, 경로·교통 상황이 바뀌면 갱신이 필요합니다.")
@@ -234,7 +237,7 @@ struct PlannerScreen: View {
                         Text("운전 \(result.totalTravelMinutes)분 · 거래처 \(result.rows.count)곳").font(.subheadline)
                         Text(result.loadingValidated ? "이 배치의 적재 조건 통과" : "적재 조건 미검증").font(.caption)
                         Text(result.roadEvidenceValidated == true ? "선택한 도로 조건의 등록 근거 충족" : "도로 조건 전체 미검증").font(.caption)
-                        if let fare = result.totalClass1TollWon { Text("회사 복귀 포함 1종 통행료: \(fare)원").font(.subheadline) }
+                        if let fare = result.totalClass1TollWon { Text("최종 도착 포함 1종 통행료: \(fare)원").font(.subheadline) }
                         else { Text("1종 통행료 합계: 미확인 구간 있음").font(.caption) }
                         if let cargo = result.cargo {
                             NavigationLink("출발·방문별 적재도와 상하차 순서") { CargoResultView(plan: planForCargoResult(result), result: cargo) }
@@ -281,9 +284,9 @@ struct PlannerScreen: View {
                     }.padding(.vertical, 4)
                 }
                 if store.plan.returnToOrigin, let last = result.rows.last {
-                    Section("회사 복귀") {
-                        Text("\(store.plan.name(last.visitID)) → \(store.plan.originName) · \(result.returnMinutes)분")
-                        if let url = store.plan.selectedLeg(result.returnLegID, from: last.visitID, to: "depot")?.pageURL { Button("복귀 구간 지도 열기") { openRoute(url) } }
+                    Section("최종 도착") {
+                        Text("\(store.plan.name(last.visitID)) → \(store.plan.finishName) · \(result.returnMinutes)분")
+                        if let url = store.plan.selectedLeg(result.returnLegID, from: last.visitID, to: store.plan.finishNodeID ?? "depot")?.pageURL { Button("복귀 구간 지도 열기") { openRoute(url) } }
                     }
                 }
                 Text("지도 주소를 다시 열면 네이버가 경로를 재계산할 수 있습니다. 이 결과는 저장한 이동시간에 따른 일정 후보이며 실제 길안내의 경로 고정을 보장하지 않습니다.").font(.caption).foregroundColor(.secondary)

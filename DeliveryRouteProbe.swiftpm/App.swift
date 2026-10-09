@@ -21,6 +21,7 @@ struct DeliveryRouteProbeApp: App {
 struct DeliveryRootView: View {
     @StateObject private var model = BrowserModel()
     @StateObject private var planner = PlannerStore()
+    @StateObject private var customers = NaverCustomerStore()
     @StateObject private var tmap = TMapStore.shared
     @StateObject private var trip = TripStore.shared
     @StateObject private var inputs = NativeInputSession()
@@ -28,7 +29,10 @@ struct DeliveryRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         TabView(selection: $selectedTab) {
-            TMapScreen(store: tmap, planner: planner) { url in model.openRecordedRoute(url); selectedTab = 0 }
+            TMapScreen(store: tmap, planner: planner, browser: model) { url in
+                if url.contains("/favorite") { model.openSavedLists(customers) } else { model.openRecordedRoute(url) }
+                selectedTab = 0
+            }
                 .tabItem { Label("티맵 최적화", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }.tag(3)
             Group {
                 // Do not construct/attach a web view behind the planner.
@@ -38,7 +42,7 @@ struct DeliveryRootView: View {
             .disabled(selectedTab != 0)
             .tabItem { Label("네이버 지도", systemImage: "map") }.tag(0)
             PlannerScreen(store: planner, browser: model) { url in
-                model.openRecordedRoute(url)
+                if url.contains("/favorite") { model.openSavedLists(customers) } else { model.openRecordedRoute(url) }
                 selectedTab = 0
             }
             .disabled(selectedTab != 1)
@@ -50,6 +54,11 @@ struct DeliveryRootView: View {
             .tabItem { Label("운행 안내", systemImage: "truck.box") }.tag(2)
         }
         .environmentObject(inputs)
+        .environmentObject(customers)
+        .onAppear {
+            do { try customers.remember(planner.plan) }
+            catch { customers.errorMessage = error.localizedDescription }
+        }
         .onAppear { InputDiagnostics.shared.start() }
         .onChange(of: selectedTab) { _, _ in inputs.finishEditing() }
         .onChange(of: scenePhase) { phase in
@@ -70,10 +79,18 @@ struct ProbeView: View {
     @ObservedObject var planner: PlannerStore
     @State private var showExport = false
     @State private var exportDocument = CaptureDocument()
-    @State private var mapExpanded = false
+    @State private var mapExpanded = UIDevice.current.userInterfaceIdiom == .phone
+    @State private var showCustomers = false
+    @EnvironmentObject private var customers: NaverCustomerStore
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Button("지도 보기") { mapExpanded = true; model.showMapPanel(true) }
+                Button("검색·장소") { mapExpanded = true; model.showMapPanel(false) }
+                Spacer()
+                Button("이번 배송 선택") { showCustomers = true }
+            }.buttonStyle(.bordered).font(.subheadline).padding(.horizontal, 12).padding(.top, 6)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     Button { _ = model.webView.goBack() } label: { Image(systemName: "chevron.left") }
@@ -82,22 +99,22 @@ struct ProbeView: View {
                         .disabled(!model.canGoForward).accessibilityLabel("앞으로")
                     Button { model.webView.reload() } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("새로고침")
-                    Button("지도", action: model.openHome)
-                    Button("저장 목록") { model.openRecordedRoute("https://map.naver.com/p/favorite") }
+                    Button("지도 홈", action: model.openHome)
+                    Button("저장 목록 전체 가져오기") { mapExpanded = true; model.openSavedLists(customers) }
                     Button(model.isReadingPlace ? "장소 읽는 중" : "선택 장소 읽기", action: model.readSelectedPlace)
                         .buttonStyle(.borderedProminent)
-                        .disabled(model.isReading || model.isReadingBike || model.isReadingPlace || model.isLoading)
+                        .disabled(model.isReading || model.isReadingBike || model.isReadingPlace || model.isImportingSavedList || model.isLoading)
                     Button("예제 경로", action: model.openSample)
                     Button(action: model.readScreen) {
                         Label(model.isReading ? "읽는 중" : "화면 읽기", systemImage: "doc.text.viewfinder")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.isReading || model.isReadingBike || model.isReadingPlace || model.isLoading)
+                    .disabled(model.isReading || model.isReadingBike || model.isReadingPlace || model.isImportingSavedList || model.isLoading)
                     Button(model.isReadingBike ? "종점 읽는 중" : "자전거 종점 읽기") {
                         mapExpanded = true
                         // Give the full-width map one layout pass before DOM reading.
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { model.readBikeEndpoint() }
-                    }.disabled(model.isReading || model.isReadingBike || model.isReadingPlace || model.isLoading)
+                    }.disabled(model.isReading || model.isReadingBike || model.isReadingPlace || model.isImportingSavedList || model.isLoading)
                     Button(mapExpanded ? "읽은 정보" : "지도 넓게") { mapExpanded.toggle() }
                         .disabled(model.isReadingBike)
                     Button("기록 내보내기") {
@@ -112,6 +129,9 @@ struct ProbeView: View {
                 }
                 .buttonStyle(.bordered)
                 .padding(.horizontal, 12).padding(.vertical, 8)
+            }
+            if model.isImportingSavedList || model.waitingForSavedFolder || !model.savedListProgress.isEmpty {
+                NaverSavedListStatusView(browser: model) { showCustomers = true }
             }
             if model.isLoading { ProgressView(value: model.progress).progressViewStyle(.linear) }
             if mapExpanded {
@@ -147,6 +167,7 @@ struct ProbeView: View {
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .onAppear { model.startIfNeeded() }
+        .sheet(isPresented: $showCustomers) { NaverCustomerCatalogView(planner: planner, browser: model) }
         .onDisappear { model.endMapEditingIfLoaded() }
         .fileExporter(isPresented: $showExport, document: exportDocument, contentType: .json, defaultFilename: "배송경로_확인기록") { result in
             if case .failure(let error) = result { model.errorMessage = "내보내기 실패: \(error.localizedDescription)" }

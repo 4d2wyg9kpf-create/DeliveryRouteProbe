@@ -93,13 +93,13 @@ struct TripScreen: View {
         }
     }
     private var startSection: some View {
-        Section("회사 출발") {
-            Text("맑은아침농산에서 출발하여 회사로 복귀합니다.")
+        Section("출발") {
+            Text("\(planner.plan.originName)에서 출발 · 최종 도착: \(planner.plan.finishName)")
             if let result = planner.result, result.status == "candidate", result.loadingValidated, let data = planner.resultData {
                 Text("\(planner.plan.planDate) · 최신 계산 결과 · \(result.rows.count)곳")
-                TripMinutePicker(title: "이 운행의 실제 회사 출발", minute: $departureMinute)
+                TripMinutePicker(title: "이 운행의 실제 출발", minute: $departureMinute)
                 Text("선택한 배치대로 실었는지 확인하세요. 실제 출발 시각으로 일정을 다시 계산하되 실은 배치는 유지합니다. 출발 기록을 저장한 뒤 등록된 네이버 경로를 엽니다.").font(.caption)
-                Button("이 배치로 실었음 · 회사 출발 및 경로 열기") {
+                Button("이 배치로 실었음 · 출발 및 경로 열기") {
                     inputs.finishEditing(); store.start(plan: planner.plan, resultData: data, minute: departureMinute) { url in
                         if let url = url { openMap(url) }
                     }
@@ -111,7 +111,7 @@ struct TripScreen: View {
     }
     @ViewBuilder private func activeSections(_ trip: TripSession, _ report: TripReport) -> some View {
         Section(report.phaseLabel) {
-            Text("\(trip.plan.planDate) · 회사 출발 \(PlannerClock.text(report.originDepartureMinute))")
+            Text("\(trip.plan.planDate) · 출발 \(PlannerClock.text(report.originDepartureMinute))")
             Text("완료 \(report.completedIDs.count)/\(trip.plan.visits.count)곳 · 기록 시각 \(PlannerClock.text(report.clock))").font(.caption)
             if let transit = report.transit {
                 Text("\(trip.plan.name(transit.fromID)) → \(trip.plan.name(transit.toID))").bold()
@@ -154,7 +154,7 @@ struct TripScreen: View {
         }
         if report.phase == "ready" { nextRoute(trip, report) }
         if report.phase == "returned", report.hasCargo {
-            Section("회사에서 남은 화물 내리기") {
+            Section("최종 도착지에서 남은 화물 내리기") {
                 Text("복귀 시 재고를 자동으로 0으로 만들지 않습니다.").font(.caption)
                 Button("실제 하차·재배치 기록") { showWork = true }
             }

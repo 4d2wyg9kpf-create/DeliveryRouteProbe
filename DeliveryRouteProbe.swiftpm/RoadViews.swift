@@ -21,7 +21,7 @@ struct RoadSettingsView: View {
                 RoadNumberRow(title: "추가 여유 높이(mm)", value: policy.clearanceMarginMM)
                 Text("높이는 화물칸 내부 높이가 아닌 차량 전체 높이입니다. 켠 항목의 근거가 없는 경로는 계산에서 제외됩니다.").font(.caption)
             }
-            Section("회사·거래처 하역 위치") {
+            Section("출발지·배송지·도착지 하역 위치") {
                 ForEach(store.plan.nodes, id: \.id) { node in
                     NavigationLink {
                         StopRoadEditor(stopID: node.id, name: node.name, initial: store.plan.access(node.id) ?? StopRoadAccess(), browser: browser, openRoute: openRoute) { value in
@@ -63,13 +63,13 @@ struct RoadSettingsView: View {
                         }
                     }
                 }
-                Text("하역 지점이나 도로 유형을 바꾸면 이전 경로의 연결이 무효가 됩니다. 회사 복귀 구간까지 등록해야 계산할 수 있습니다.").font(.caption)
+                Text("하역 지점이나 도로 유형을 바꾸면 이전 경로의 연결이 무효가 됩니다. 최종 도착 구간까지 등록해야 계산할 수 있습니다.").font(.caption)
             }
         }
         .sheet(item: $roadDraft) { leg in
             RoadLegEditor(leg: leg, plan: store.plan, browser: browser, onSave: store.saveLeg)
         }
-        .onChange(of: store.plan.visits.map(\.id)) { ids in
+        .onChange(of: store.plan.nodes.map(\.id)) { ids in
             if fromID != "depot" && !ids.contains(fromID) { fromID = "depot" }
             if toID != "depot" && !ids.contains(toID) { toID = "" }
         }

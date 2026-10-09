@@ -20,6 +20,8 @@ struct NaverPlaceCapture: Codable, Identifiable {
     var capturedAt: String
     var method: String
     var requestAddress: String?
+    var geocodeProvider: String?
+    var geocodedAddress: String?
     var preferredAddress: String { !roadAddress.isEmpty ? roadAddress : address }
 }
 
@@ -53,6 +55,6 @@ enum NaverPlaceBridge {
 
 extension DeliveryPlan {
     func naverPlace(_ id: String) -> NaverPlaceCapture? {
-        id == "depot" ? naverOrigin : visits.first(where: { $0.id == id })?.naverPlace
+        id == "depot" ? naverOrigin : id == "destination" ? destination?.naverPlace : visits.first(where: { $0.id == id })?.naverPlace
     }
 }

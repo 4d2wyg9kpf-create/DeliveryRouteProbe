@@ -11,9 +11,9 @@ let package = Package(
             name: "DeliveryRouteProbe",
             targets: ["AppModule"],
             bundleIdentifier: "kr.deliverytools.routeprobe",
-            displayVersion: "0.12.2",
-            bundleVersion: "23",
-            appIcon: .placeholder(icon: .map),
+            displayVersion: "0.13.0",
+            bundleVersion: "24",
+            appIcon: .asset("AppIcon"),
             accentColor: .presetColor(.green),
             supportedDeviceFamilies: [.pad, .phone],
             supportedInterfaceOrientations: [

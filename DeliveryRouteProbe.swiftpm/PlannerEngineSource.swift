@@ -726,7 +726,7 @@ enum PlannerEngineSource {
       if(!start||!end||via.some(x=>!x)||via.length>5)return null;
       return {mode:m[4],points:[start,...via,end],selectedIndex:m[5]===undefined?null:+m[5]};
      }
-     function stop(plan,id){return id==='depot'?plan.originAccess:plan.visits.find(v=>v.id===id)?.roadAccess;}
+     function stop(plan,id){return id==='depot'?plan.originAccess:id==='destination'?plan.destination?.roadAccess:plan.visits.find(v=>v.id===id)?.roadAccess;}
      function signature(s){
       if(!s)return 'null';
       const value={roadType:s.roadType,curbConfirmed:s.curbConfirmed===true,curb:token(s.curbPoint?.token)?.token||'',approach:token(s.approachPoint?.token)?.token||'',departure:token(s.departurePoint?.token)?.token||'',entrance:token(s.entrancePoint?.token)?.token||''};
@@ -772,7 +772,7 @@ enum PlannerEngineSource {
       return e;
      }
      function request(plan,fromID,toID){
-      const from=stop(plan,fromID),to=stop(plan,toID),name=id=>id==='depot'?plan.originName:plan.visits.find(v=>v.id===id)?.name||id;
+      const from=stop(plan,fromID),to=stop(plan,toID),name=id=>id==='depot'?plan.originName:id==='destination'?plan.destination?.name:plan.visits.find(v=>v.id===id)?.name||id;
       const errors=fromID===toID?['서로 다른 출발·도착 거래처를 선택해 주세요.']:stopErrors(from,name(fromID),fromID).concat(stopErrors(to,name(toID),toID));
       if(errors.length)return {ok:false,errors};
       const points=[token(from.curbPoint.token)];
@@ -887,7 +887,7 @@ enum PlannerEngineSource {
       const errors=[];
       if(typeof r.requireCurb!=='boolean'||typeof r.requireHeight!=='boolean'||typeof r.requireClass1Toll!=='boolean')errors.push('도로 조건 적용 항목을 확인해 주세요.');
       if(r.requireHeight&&(!int(r.vehicleHeightMM,1,20000)||!int(r.clearanceMarginMM,0,1000)||r.vehicleHeightMM+r.clearanceMarginMM>20000))errors.push('차량 전체 높이와 높이 여유값을 입력해 주세요.');
-      for(const [id,name] of [['depot',plan.originName],...plan.visits.map(v=>[v.id,v.name])])errors.push(...stopErrors(stop(plan,id),name,id));
+      for(const [id,name] of [['depot',plan.originName],...plan.visits.map(v=>[v.id,v.name]),...(plan.destination?[['destination',plan.destination.name]]:[])])errors.push(...stopErrors(stop(plan,id),name,id));
       return [...new Set(errors)];
      }
      return {parseURL,token,request,signature,routeSignature,attach,matchFare,inspect,validate,bikeCaptureValid,entrance,tmapProofSignature,
@@ -1024,12 +1024,13 @@ enum PlannerEngineSource {
         if (n < 1 || n > 30) errors.push('거래처는 1~30곳이어야 합니다.');
         if (!int(plan.startMinute, 0, 1439) || !int(plan.originWaitMinutes, 0, 1440)) errors.push('출발시각 또는 출발지 추가 대기 한도를 확인해 주세요.');
         if (typeof plan.originName !== 'string' || !plan.originName.trim()) errors.push('출발지 이름을 입력해 주세요.');
-        if (typeof plan.returnToOrigin !== 'boolean') errors.push('회사 복귀 여부를 확인해 주세요.');
+        if (typeof plan.returnToOrigin !== 'boolean') errors.push('최종 도착 방식를 확인해 주세요.');
+        if(plan.destination && (typeof plan.destination.name!=='string'||!plan.destination.name.trim()||!plan.returnToOrigin))errors.push('최종 도착지 이름과 도착 방식을 확인해 주세요.');
         const date = new Date(String(plan.planDate) + 'T00:00:00Z');
         if (!/^\d{4}-\d{2}-\d{2}$/.test(plan.planDate || '') || isNaN(date.getTime()) || date.toISOString().slice(0,10) !== plan.planDate) errors.push('운행 날짜를 YYYY-MM-DD로 입력해 주세요.');
         const ids = new Map();
         visits.forEach((v, i) => {
-          if (typeof v.id !== 'string' || !v.id || v.id === 'depot' || ids.has(v.id)) errors.push('거래처 식별자가 없거나 중복됩니다.');
+          if (typeof v.id !== 'string' || !v.id || ['depot','destination'].includes(v.id) || ids.has(v.id)) errors.push('거래처 식별자가 없거나 중복됩니다.');
           ids.set(v.id, i);
         });
         const fixed = new Map(), next = new Map();
@@ -1076,9 +1077,9 @@ enum PlannerEngineSource {
         if (nodes.some((_, i) => cycle(i))) errors.push('선후·바로 다음 방문 조건이 서로 순환합니다.');
         errors.push(...roads.validate(plan));
         const pairCounts = new Map();
-        const legs = new Map(), legByID = new Map(), roadExcluded = [], names = new Map([['depot', plan.originName], ...nodes.map(v => [v.id, v.name])]);
+        const legs = new Map(), legByID = new Map(), roadExcluded = [], names = new Map([['depot', plan.originName], ...nodes.map(v => [v.id, v.name]), ...(plan.destination?[['destination',plan.destination.name]]:[])]);
         const boundIDs=new Set(binding?.legIDs||[]),boundPairs=new Set(plan.legs.filter(l=>boundIDs.has(l.id)).map(l=>key(l.fromID,l.toID)));
-        if(binding && boundIDs.size!==plan.visits.length+1)errors.push('티맵 경로의 회사 복귀 구간이 빠져 있습니다.');
+        if(binding && boundIDs.size!==plan.visits.length+(plan.returnToOrigin?1:0))errors.push('티맵 경로의 회사 복귀 구간이 빠져 있습니다.');
         for (const leg of plan.legs) {
           if(binding && boundPairs.has(key(leg.fromID,leg.toID))&&!boundIDs.has(leg.id))continue;
           if(leg.source==='tmap') {
@@ -1148,7 +1149,9 @@ enum PlannerEngineSource {
         return {rows,rest,lastWorkFinishMinute:finishAtLastStop,originDepartureMinute:rows[0].legDepartureMinute,finishMinute:returnDeparture+returnMinutes,returnMinutes,returnLegID:home?home.id:null};
       }
       function returnOnly(plan,data,base){
-        const r=data.resume,choices=data.legs.get(key(r.fromID,'depot'))||[],previous=r.previous;
+        const r=data.resume;
+        if(!plan.returnToOrigin)return {...base,status:'candidate',messages:['마지막 배송지의 작업이 완료됐습니다.'],rows:[],searchComplete:true,completedDepth:data.n,remainingFromID:r.fromID,replannedAtMinute:r.minute,originDepartureMinute:r.originDepartureMinute,finishMinute:r.minute,currentDepartureMinute:r.minute,lastWorkFinishMinute:r.minute,returnMinutes:0,totalTravelMinutes:0,loadingValidated:data.cargo.enabled,cargo:cargoEngine.trace(data.cargo,[],r.cargoState,r.fromID)};
+        const choices=data.legs.get(key(r.fromID,plan.destination?'destination':'depot'))||[],previous=r.previous;
         let best=null;
         for(const leg of choices){
           const endings=[{departure:r.minute,rest:null}];
@@ -1203,7 +1206,7 @@ enum PlannerEngineSource {
         let minReturn = 0;
         if (plan.returnToOrigin) {
           minReturn = Infinity;
-          for (const leg of [...legs.values()].flat()) if (leg.toID === 'depot') minReturn = Math.min(minReturn,leg.minutes);
+          for (const leg of [...legs.values()].flat()) if (leg.toID === (plan.destination?'destination':'depot')) minReturn = Math.min(minReturn,leg.minutes);
         }
         const bound = state => {
           let value = earliest(state.timings) + minReturn;
@@ -1241,8 +1244,8 @@ enum PlannerEngineSource {
               }
               if (!possible) continue;
               if (rank===n) {
-                const homes=plan.returnToOrigin?legs.get(key(v.id,'depot')):[null];
-                if(!homes?.length){missing.add(key(v.id,'depot'));continue;}
+                const homes=plan.returnToOrigin?legs.get(key(v.id,plan.destination?'destination':'depot')):[null];
+                if(!homes?.length){missing.add(key(v.id,plan.destination?'destination':'depot'));continue;}
                 for(const home of homes){
                 const returnMinutes=home?home.minutes:0,drive=candidate.drive+returnMinutes;
                 for(const timing of timings) {
@@ -1402,20 +1405,21 @@ enum PlannerEngineSource {
      function replay(trip){
       if(![1,2].includes(trip?.schemaVersion)||!trip.plan||!Array.isArray(trip.events)||!trip.events.length||trip.events.length>2000)fail('운행 기록 형식을 확인해 주세요.');
       const plan=copy(trip.plan);
-      if(plan.originName!=='맑은아침농산'||!plan.returnToOrigin||!Array.isArray(plan.visits)||plan.visits.length<1||plan.visits.length>30)fail('회사 출발·복귀와 거래처 목록을 확인해 주세요.');
+      if(!tidy(plan.originName)||!Array.isArray(plan.visits)||plan.visits.length<1||plan.visits.length>30)fail('출발·최종 도착와 거래처 목록을 확인해 주세요.');
       // Expired provider estimates cannot guide a new departure, but actual past events must remain replayable.
       const invalid=planner.validate(plan,{historical:true});if(invalid.length)fail(invalid.join('\n'));
       if(!plan.cargo?.enabled||plan.cargo.autoLayout?.enabled)fail('운행은 확정한 적재 배치로 시작해야 합니다.');
       const added=[];
       for(const e of trip.events)if(e.type==='addPosition'){if(!e.column)fail('재배치 자리 정보가 없습니다.');plan.cargo.columns.push(copy(e.column));added.push(e.column.id);}
       const d=cargo.prepare(plan);if(d.errors.length)fail(d.errors.join('\n'));
+      const endID=plan.returnToOrigin?(plan.destination?'destination':'depot'):null;
       const visits=new Map(plan.visits.map(v=>[v.id,v])),eventIDs=new Set(),available=new Set(trip.plan.cargo.columns.map(c=>c.id));
       const state={phase:'new',clock:0,currentID:'depot',completedIDs:[],cargoState:d.initial,totals:Object.create(null),targets:Object.create(null),rests:[],warnings:[],originDepartureMinute:null,readyMinute:0,restAfterReady:0,priorityNextID:'',travelMinutes:0,serviceStarts:Object.create(null),actualLegIDs:[],movedUnits:0};
       const quantity=(l,op)=>state.targets[l.id]?.[op]??l.quantity;
       const done=(where,l,op)=>state.totals[where]?.[l.id]?.[op]||0;
       function warn(s){if(!state.warnings.includes(s))state.warnings.push(s);}
       function nextAllowed(id){
-       if(id==='depot'){if(state.completedIDs.length!==plan.visits.length)fail('아직 작업 완료하지 않은 거래처가 있습니다.');return;}
+       if(id===endID){if(state.completedIDs.length!==plan.visits.length)fail('아직 작업 완료하지 않은 거래처가 있습니다.');return;}
        const v=visits.get(id),rank=state.completedIDs.length+1;if(!v||state.completedIDs.includes(id))fail('다음 거래처를 확인해 주세요.');
        if(state.priorityNextID&&state.priorityNextID!==id)fail('급한 거래처로 지정한 곳을 먼저 방문해야 합니다.');
        if(v.fixedPosition&&v.fixedPosition!==rank||rank<v.minPosition||rank>v.maxPosition||plan.visits.some(x=>x.fixedPosition===rank&&x.id!==id))fail('지정한 고정 순번·순번 범위와 충돌합니다.');
@@ -1432,15 +1436,15 @@ enum PlannerEngineSource {
        const e=trip.events[index];
        if(typeof e.id!=='string'||!e.id||eventIDs.has(e.id)||!int(e.minute,0,4319)||index&&e.minute<state.clock)fail('기록 식별자나 시간 순서를 확인해 주세요.');eventIDs.add(e.id);
        if(e.endMinute!==undefined&&(!['work','rest'].includes(e.type)||!int(e.endMinute,e.minute,4319)))fail('작업·휴식 종료시각을 확인해 주세요.');
-       if(index===0&&e.type!=='start')fail('첫 기록은 회사 출발이어야 합니다.');
+       if(index===0&&e.type!=='start')fail('첫 기록은 출발지 출발이어야 합니다.');
        if(e.type==='start'){
-        if(index!==0||e.minute>1439)fail('회사 출발 기록이 중복되거나 날짜 범위를 벗어납니다.');state.originDepartureMinute=e.minute;depart(e);
+        if(index!==0||e.minute>1439)fail('출발지 출발 기록이 중복되거나 날짜 범위를 벗어납니다.');state.originDepartureMinute=e.minute;depart(e);
        }else if(e.type==='arrive'){
         if(state.phase!=='driving')fail('이동 중일 때 도착을 기록할 수 있습니다.');
         state.travelMinutes+=e.minute-state.transit.startMinute;state.currentID=state.transit.toID;state.transit=null;
-        state.phase=state.currentID==='depot'?'returned':'atStop';state.arrivalMinute=e.minute;state.readyMinute=e.minute;
-        if(state.currentID==='depot'){
-         if(state.originDepartureMinute<660&&e.minute>=780&&!state.rests.some(r=>r.qualifies))warn('회사 복귀까지 11~13시에 시작한 연속 60분 휴식이 기록되지 않았습니다.');
+        state.phase=state.currentID===endID?'returned':'atStop';state.arrivalMinute=e.minute;state.readyMinute=e.minute;
+        if(state.currentID===endID){
+         if(state.originDepartureMinute<660&&e.minute>=780&&!state.rests.some(r=>r.qualifies))warn('최종 도착까지 11~13시에 시작한 연속 60분 휴식이 기록되지 않았습니다.');
         }else{
          const v=visits.get(state.currentID),windows=planner.allowedWindows({arrivalWindowsText:v.allowEarlyArrival?'':v.arrivalWindowsText,avoidWindowsText:v.avoidWindowsText});
          if(!windows.some(([a,b])=>e.minute>=a&&e.minute<=b))warn(v.name+': 실제 도착이 허용 시간·회피 시간 조건을 벗어났습니다.');
@@ -1452,7 +1456,7 @@ enum PlannerEngineSource {
          const lot=d.lots.find(l=>l.id===action.lotID);if(!lot)fail('화물 묶음이 없습니다.');
          if(action.operation!=='relocate'){
           if(state.phase==='ready')fail('상하차 수량을 추가하려면 작업 완료를 다시 열어 주세요.');
-          if(state.phase==='returned'){if(action.operation!=='unload')fail('회사 복귀 뒤에는 하차만 기록합니다.');}
+          if(state.phase==='returned'){if(action.operation!=='unload')fail('최종 도착 뒤에는 하차만 기록합니다.');}
           else if((action.operation==='load'?lot.loadAt:lot.unloadAt)!==state.currentID)fail('현재 거래처의 상하차 화물을 선택해 주세요.');
          }
          for(const id of [action.columnID||lot.columnID,action.fromColumnID,action.toColumnID].filter(Boolean))if(!available.has(id))fail('아직 등록하지 않은 재배치 자리입니다.');
@@ -1460,7 +1464,7 @@ enum PlannerEngineSource {
          const moved=cargo.move(d,state.cargoState,action,true);if(!moved.ok)fail(moved.reason);state.cargoState=moved.state;
          if(action.operation!=='relocate'){
           state.totals[state.currentID]??=Object.create(null);state.totals[state.currentID][lot.id]??={load:0,unload:0};state.totals[state.currentID][lot.id][action.operation]+=action.quantity;
-          if(state.currentID!=='depot'&&state.serviceStarts[state.currentID]===undefined){
+          if(state.phase!=='returned'&&state.serviceStarts[state.currentID]===undefined){
            state.serviceStarts[state.currentID]=e.minute;const v=visits.get(state.currentID);
            if(!planner.allowedWindows(v).some(([a,b])=>e.minute>=a&&e.minute<=b))warn(v.name+': 실제 작업 시작이 허용 시간 조건을 벗어났습니다.');
           }
@@ -1472,7 +1476,7 @@ enum PlannerEngineSource {
         const differences=d.lots.filter(l=>l.loadAt===state.currentID||l.unloadAt===state.currentID).filter(l=>{const op=l.loadAt===state.currentID?'load':'unload';return done(state.currentID,l,op)!==quantity(l,op);});
         if(differences.length&&!e.allowVariance)fail('주문과 다른 실제 수량을 확인한 뒤 작업 완료를 기록해 주세요.');
         const v=visits.get(state.currentID);if(differences.length)warn(v.name+': 주문과 다른 상하차 수량으로 완료했습니다.');
-        state.completedIDs.push(state.currentID);state.phase='ready';state.readyMinute=e.minute;state.restAfterReady=0;
+        state.completedIDs.push(state.currentID);state.phase=(!plan.returnToOrigin&&state.completedIDs.length===plan.visits.length)?'returned':'ready';state.readyMinute=e.minute;state.restAfterReady=0;
        }else if(e.type==='reopen'){
         if(state.phase!=='ready')fail('현재 거래처의 작업 완료만 다시 열 수 있습니다.');state.completedIDs.pop();state.phase='atStop';
        }else if(e.type==='depart'){
@@ -1532,7 +1536,7 @@ enum PlannerEngineSource {
      function apply(trip,command){
       const next=copy(trip);replay(next);
       if(command.type==='undo'){
-       if(next.events.length<=1)fail('회사 출발 이후의 마지막 기록만 되돌릴 수 있습니다.');
+       if(next.events.length<=1)fail('출발지 출발 이후의 마지막 기록만 되돌릴 수 있습니다.');
        next.voidedEvents??=[];next.voidedEvents.push(next.events.pop());if(next.voidedEvents.length>2000)fail('취소 기록 한도에 도달했습니다.');
       }else {next.events.push(copy(command));if(command.type==='routeUpdate')next.schemaVersion=2;}
       return {ok:true,trip:next,report:report(replay(next)),errors:[]};
@@ -1591,7 +1595,7 @@ enum PlannerEngineSource {
      function packet(runtime,leg,result,fresh){
       if(!leg)return null;
       if(leg.source==='tmap'&&(!Number.isFinite(Date.parse(leg.apiExpiresAt))||Date.now()>=Date.parse(leg.apiExpiresAt)))return null;
-      const {plan,state:s}=runtime,v=plan.visits.find(v=>v.id===leg.toID),access=leg.toID==='depot'?plan.originAccess:v?.roadAccess;
+      const {plan,state:s}=runtime,v=leg.toID==='destination'?plan.destination:plan.visits.find(v=>v.id===leg.toID),access=leg.toID==='depot'?plan.originAccess:v?.roadAccess;
       let capture=null;try{capture=JSON.parse(leg.captureJSON||'null');}catch(_){}
       const sig=roads.routeSignature(capture),page=roads.parseURL(leg.pageURL),saved=roads.parseURL(capture?.pageURL);
       const details=!!sig&&page?.mode==='car'&&JSON.stringify(page.points)===JSON.stringify(saved?.points)&&(page.selectedIndex??0)===(saved.selectedIndex??0);

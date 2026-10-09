@@ -69,6 +69,14 @@ struct DeliveryLeg: Codable, Identifiable {
     }
 }
 
+struct DeliveryDestination: Codable {
+    var name: String
+    var tmapCoordinate: TMapCoordinate?
+    var roadAccess: StopRoadAccess?
+    var naverPlace: NaverPlaceCapture?
+    var customerID: String?
+}
+
 struct DeliveryPlan: Codable {
     static let companyName = "맑은아침농산"
     var schemaVersion = 3
@@ -85,12 +93,17 @@ struct DeliveryPlan: Codable {
     var tmapOrigin: TMapCoordinate?
     var tmapBinding: TMapPlanBinding?
     var naverOrigin: NaverPlaceCapture?
+    var originCustomerID: String?
+    var destination: DeliveryDestination?
+
+    var finishNodeID: String? { returnToOrigin ? (destination == nil ? "depot" : "destination") : nil }
+    var finishName: String { finishNodeID.map { name($0) } ?? "마지막 배송지" }
 
     func name(_ id: String) -> String {
-        id == "depot" ? originName : visits.first(where: { $0.id == id })?.name ?? "삭제된 거래처"
+        id == "depot" ? originName : id == "destination" ? destination?.name ?? "도착지" : visits.first(where: { $0.id == id })?.name ?? "삭제된 거래처"
     }
     var nodes: [(id: String, name: String)] {
-        [(id: "depot", name: originName)] + visits.map { (id: $0.id, name: $0.name) }
+        [(id: "depot", name: originName)] + visits.map { (id: $0.id, name: $0.name) } + (destination.map { [(id: "destination", name: $0.name)] } ?? [])
     }
     func leg(from: String, to: String) -> DeliveryLeg? {
         legs.first { $0.fromID == from && $0.toID == to }

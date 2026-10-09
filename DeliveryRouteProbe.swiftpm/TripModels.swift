@@ -218,7 +218,7 @@ struct TripReport: Decodable {
     var isStopped: Bool { ["atStop", "ready"].contains(phase) }
     var hasCargo: Bool { snapshot.inventory.contains { $0.quantity > 0 } }
     var phaseLabel: String {
-        ["driving": "이동 중", "atStop": "거래처 작업 중", "ready": "작업 완료 · 정차 중", "returned": "회사 복귀"][phase] ?? phase
+        ["driving": "이동 중", "atStop": "거래처 작업 중", "ready": "작업 완료 · 정차 중", "returned": "최종 도착"][phase] ?? phase
     }
 }
 

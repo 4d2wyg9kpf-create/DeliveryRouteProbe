@@ -25,7 +25,7 @@ enum RoadEngineSource {
       if(!start||!end||via.some(x=>!x)||via.length>5)return null;
       return {mode:m[4],points:[start,...via,end],selectedIndex:m[5]===undefined?null:+m[5]};
      }
-     function stop(plan,id){return id==='depot'?plan.originAccess:plan.visits.find(v=>v.id===id)?.roadAccess;}
+     function stop(plan,id){return id==='depot'?plan.originAccess:id==='destination'?plan.destination?.roadAccess:plan.visits.find(v=>v.id===id)?.roadAccess;}
      function signature(s){
       if(!s)return 'null';
       const value={roadType:s.roadType,curbConfirmed:s.curbConfirmed===true,curb:token(s.curbPoint?.token)?.token||'',approach:token(s.approachPoint?.token)?.token||'',departure:token(s.departurePoint?.token)?.token||'',entrance:token(s.entrancePoint?.token)?.token||''};
@@ -71,7 +71,7 @@ enum RoadEngineSource {
       return e;
      }
      function request(plan,fromID,toID){
-      const from=stop(plan,fromID),to=stop(plan,toID),name=id=>id==='depot'?plan.originName:plan.visits.find(v=>v.id===id)?.name||id;
+      const from=stop(plan,fromID),to=stop(plan,toID),name=id=>id==='depot'?plan.originName:id==='destination'?plan.destination?.name:plan.visits.find(v=>v.id===id)?.name||id;
       const errors=fromID===toID?['서로 다른 출발·도착 거래처를 선택해 주세요.']:stopErrors(from,name(fromID),fromID).concat(stopErrors(to,name(toID),toID));
       if(errors.length)return {ok:false,errors};
       const points=[token(from.curbPoint.token)];
@@ -186,7 +186,7 @@ enum RoadEngineSource {
       const errors=[];
       if(typeof r.requireCurb!=='boolean'||typeof r.requireHeight!=='boolean'||typeof r.requireClass1Toll!=='boolean')errors.push('도로 조건 적용 항목을 확인해 주세요.');
       if(r.requireHeight&&(!int(r.vehicleHeightMM,1,20000)||!int(r.clearanceMarginMM,0,1000)||r.vehicleHeightMM+r.clearanceMarginMM>20000))errors.push('차량 전체 높이와 높이 여유값을 입력해 주세요.');
-      for(const [id,name] of [['depot',plan.originName],...plan.visits.map(v=>[v.id,v.name])])errors.push(...stopErrors(stop(plan,id),name,id));
+      for(const [id,name] of [['depot',plan.originName],...plan.visits.map(v=>[v.id,v.name]),...(plan.destination?[['destination',plan.destination.name]]:[])])errors.push(...stopErrors(stop(plan,id),name,id));
       return [...new Set(errors)];
      }
      return {parseURL,token,request,signature,routeSignature,attach,matchFare,inspect,validate,bikeCaptureValid,entrance,tmapProofSignature,

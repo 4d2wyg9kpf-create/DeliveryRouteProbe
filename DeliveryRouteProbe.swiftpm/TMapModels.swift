@@ -87,6 +87,7 @@ struct TMapRequest: Codable {
     var url: String
     var body: String
     var wireIDs: [String: String]
+    var endNodeID: String?
 }
 struct TMapTimeStop: Decodable, Identifiable {
     var id: String
@@ -189,6 +190,7 @@ enum TMapBridge {
     }
     static func coordinate(_ plan: DeliveryPlan, id: String) -> TMapCoordinate? {
         if id == "depot", let value = plan.tmapOrigin { return value }
+        if id == "destination", let value = plan.destination?.tmapCoordinate { return value }
         if let value = plan.visits.first(where: { $0.id == id })?.tmapCoordinate { return value }
         guard let access = plan.access(id), access.curbConfirmed, let token = access.curbPoint?.token else { return nil }
         let parts = token.split(separator: ",", omittingEmptySubsequences: false)

@@ -9,7 +9,7 @@ struct NaverPlaceConnectionButton: View {
     var body: some View {
         Group {
             if let capture = browser.placeCapture {
-                Button("읽은 네이버 장소를 거래처·회사에 연결") { inputs.finishEditing(); draft = capture }
+                Button("읽은 네이버 장소를 배송계획에 연결") { inputs.finishEditing(); draft = capture }
                     .disabled(planner.isComputing || browser.isReadingPlace)
             }
         }
@@ -23,6 +23,8 @@ struct NaverPlaceReadPanel: View {
     let capture: NaverPlaceCapture
     @ObservedObject var planner: PlannerStore
     @ObservedObject var browser: BrowserModel
+    @EnvironmentObject private var customers: NaverCustomerStore
+    @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Label("읽은 네이버 장소", systemImage: "mappin.and.ellipse").font(.headline)
@@ -31,11 +33,17 @@ struct NaverPlaceReadPanel: View {
             if !capture.jibunAddress.isEmpty { Text("지번 \(capture.jibunAddress)").font(.caption) }
             if let point = capture.coordinate {
                 Text("경도 \(point.longitude, specifier: "%.6f") · 위도 \(point.latitude, specifier: "%.6f")").font(.caption)
+                if capture.geocodeProvider == "Apple" { Text("주소 → 건물 좌표 변환 · Apple").font(.caption).foregroundColor(.secondary) }
                 if let resolution = capture.screenResolutionMeters {
                     Text("화면 판독 간격 약 \(resolution, specifier: "%.1f")m · 실제 지도 정확도와는 다릅니다.").font(.caption2).foregroundColor(.secondary)
                 }
             } else { Text(capture.coordinateIssue).font(.caption).foregroundColor(.orange) }
+            Button("거래처 목록에 저장") {
+                do { try customers.save(capture); error = nil; browser.status = "거래처 목록에 저장했습니다. 이번 배송에 나갈 곳은 목록에서 체크하세요." }
+                catch { self.error = error.localizedDescription }
+            }.buttonStyle(.borderedProminent).disabled(capture.coordinate == nil)
             NaverPlaceConnectionButton(planner: planner, browser: browser)
+            if let error { Text(error).font(.caption).foregroundColor(.red) }
             Text("연결 전에 현재 선택 장소를 다시 확인합니다. 검색 표식을 차량 정차 위치로 사용할지는 연결 화면에서 선택합니다.").font(.caption2).foregroundColor(.secondary)
         }.padding(10).background(Color.blue.opacity(0.08)).cornerRadius(8)
     }
@@ -44,6 +52,7 @@ struct NaverPlaceReadPanel: View {
 private struct NaverPlaceImportView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var inputs: NativeInputSession
+    @EnvironmentObject private var customers: NaverCustomerStore
     let capture: NaverPlaceCapture
     @ObservedObject var planner: PlannerStore
     @ObservedObject var browser: BrowserModel
@@ -73,7 +82,8 @@ private struct NaverPlaceImportView: View {
                             Marker(capture.name, coordinate: CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude))
                         }.frame(height: 200)
                         Text("경도 \(point.longitude, specifier: "%.6f") · 위도 \(point.latitude, specifier: "%.6f")").font(.caption)
-                        if let resolution = capture.screenResolutionMeters {
+                        if capture.geocodeProvider == "Apple" { Text("주소 → 건물 좌표 변환 · Apple").font(.caption).foregroundColor(.secondary) }
+                if let resolution = capture.screenResolutionMeters {
                             Text("표식 화면 판독 간격 약 \(resolution, specifier: "%.1f")m").font(.caption)
                         }
                     } else { Text(capture.coordinateIssue).font(.caption).foregroundColor(.orange) }
@@ -111,7 +121,8 @@ private struct NaverPlaceImportView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { inputs.finishEditing(); dismiss() }.disabled(isConnecting) } }
             .interactiveDismissDisabled(isConnecting)
             .onAppear {
-                if let matched = planner.plan.visits.first(where: { $0.naverPlace?.selectionKey == capture.selectionKey }) { targetID = matched.id }
+                if planner.plan.naverOrigin?.selectionKey == capture.selectionKey || planner.plan.originName.replacingOccurrences(of: " ", with: "") == capture.name.replacingOccurrences(of: " ", with: "") { targetID = "depot" }
+                else if let matched = planner.plan.visits.first(where: { $0.naverPlace?.selectionKey == capture.selectionKey }) { targetID = matched.id }
                 else if planner.plan.visits.count >= 30 { targetID = planner.plan.visits.first?.id ?? "depot" }
             }
             .onChange(of: targetID) { _, _ in curbConfirmed = false }
@@ -136,6 +147,7 @@ private struct NaverPlaceImportView: View {
                         "targetID": targetID, "newVisit": try TMapBridge.object(newVisit), "useCoordinate": useCoordinate,
                         "curbConfirmed": curbConfirmed, "requestAddress": address.trimmingCharacters(in: .whitespacesAndNewlines)], as: NaverPlaceAttachment.self)
                     planner.errorMessage = nil; planner.plan = value.plan; planner.saveNow()
+                    try customers.remember(planner.plan)
                     browser.status = value.coordinateChanged ? "네이버 장소를 연결했습니다. 위치가 바뀐 구간은 새 경로를 확인해 주세요." : "네이버 장소를 배송계획에 연결했습니다."
                     if planner.errorMessage == nil { dismiss() }
                     else { error = planner.errorMessage }

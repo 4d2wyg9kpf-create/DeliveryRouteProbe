@@ -72,11 +72,11 @@ final class PlannerStore: ObservableObject {
         guard [2, 3].contains(value.schemaVersion), value.visits.count <= 30, value.legs.count <= 5611 else {
             throw PlannerFailure.message("지원하는 계획 형식은 버전 2·3, 거래처 30곳 이하입니다.")
         }
-        guard value.originName == DeliveryPlan.companyName, value.returnToOrigin else {
-            throw PlannerFailure.message("출발지와 최종 도착지가 맑은아침농산인 계획만 불러올 수 있습니다.")
+        guard !value.originName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, value.destination == nil || (value.returnToOrigin && !value.destination!.name.isEmpty) else {
+            throw PlannerFailure.message("출발지와 최종 도착지 설정을 확인해 주세요.")
         }
         let ids = value.visits.map(\.id)
-        guard Set(ids).count == ids.count, !ids.contains("depot"), !ids.contains("") else {
+        guard Set(ids).count == ids.count, !ids.contains("depot"), !ids.contains("destination"), !ids.contains("") else {
             throw PlannerFailure.message("거래처 식별자가 중복되거나 잘못됐습니다.")
         }
         guard Set(value.legs.map(\.id)).count == value.legs.count,
@@ -161,6 +161,7 @@ final class PlannerStore: ObservableObject {
     }
 
     func removeVisit(_ id: String) {
+        guard id != "depot", plan.visits.contains(where: { $0.id == id }) else { return }
         var next = plan
         next.visits.removeAll { $0.id == id }
         next.legs.removeAll { $0.fromID == id || $0.toID == id }
@@ -170,7 +171,40 @@ final class PlannerStore: ObservableObject {
             next.visits[index].afterIDs.removeAll { $0 == id }
             if next.visits[index].immediatelyAfterID == id { next.visits[index].immediatelyAfterID = "" }
         }
+        next.tmapBinding = nil
+        for index in next.legs.indices where next.legs[index].source == "tmap" { next.legs[index].locationInvalidated = true }
         plan = next
+        saveNow()
+    }
+
+    func clearOriginLocation() {
+        var next = plan
+        next.tmapOrigin = nil; next.naverOrigin = nil; next.originAccess = nil; next.originCustomerID = nil; next.tmapBinding = nil
+        for index in next.legs.indices where next.legs[index].fromID == "depot" || next.legs[index].toID == "depot" || next.legs[index].source == "tmap" {
+            next.legs[index].locationInvalidated = true
+        }
+        plan = next; saveNow()
+    }
+
+    func clearDestination() {
+        var next = plan; next.destination = nil; next.tmapBinding = nil
+        next.legs.removeAll { $0.fromID == "destination" || $0.toID == "destination" }
+        for index in next.legs.indices where next.legs[index].source == "tmap" { next.legs[index].locationInvalidated = true }
+        plan = next; saveNow()
+    }
+
+    func saveLocation(_ coordinate: TMapCoordinate, id: String) {
+        var next = plan
+        let previous = TMapBridge.coordinate(next, id: id)
+        if id == "depot" { next.tmapOrigin = coordinate }
+        else if id == "destination" { next.destination?.tmapCoordinate = coordinate }
+        else if let index = next.visits.firstIndex(where: { $0.id == id }) { next.visits[index].tmapCoordinate = coordinate }
+        if previous?.longitude != coordinate.longitude || previous?.latitude != coordinate.latitude {
+            next.tmapBinding = nil
+            if var access = next.access(id) { access.curbConfirmed = false; access.curbEntranceToken = nil; access.bikeEntrance?.entranceConfirmed = false; next.setAccess(access, id: id) }
+            for index in next.legs.indices where next.legs[index].fromID == id || next.legs[index].toID == id || next.legs[index].source == "tmap" { next.legs[index].locationInvalidated = true }
+        }
+        plan = next; saveNow()
     }
 
     func saveLeg(_ leg: DeliveryLeg) {

@@ -20,8 +20,14 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     @Published var isReadingBike = false
     @Published var isReadingPlace = false
     @Published var placeCapture: NaverPlaceCapture?
-    private var placeFrame: WKFrameInfo?
     private var placeReadID: UUID?
+    @Published var isImportingSavedList = false
+    @Published var waitingForSavedFolder = false
+    @Published var savedListProgress = ""
+    @Published var savedListReport: NaverSavedListReport?
+    private var savedListTask: Task<Void, Never>?
+    private var savedFolderTimer: Timer?
+    private var savedFolderCheckRunning = false
     @Published var bikeCapture: BikeEntranceCapture?
     private var bikeReadID: UUID?
     @Published var status = "예제 경로 또는 네이버 지도에서 자동차 길찾기를 열어 주세요."
@@ -45,11 +51,11 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.preferredContentMode = .desktop
         configuration.websiteDataStore = .default()
-        configuration.userContentController.add(NaverPlaceFrameHandler(owner: self), name: "deliveryNaverPlaceFrame")
-        configuration.userContentController.addUserScript(WKUserScript(source: #"if (location.protocol === 'https:' && location.hostname === 'pcmap.place.naver.com') { window.webkit.messageHandlers.deliveryNaverPlaceFrame.postMessage('ready'); }"#, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        NaverWebReader.configure(configuration)
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        if UIDevice.current.userInterfaceIdiom == .phone { webView.pageZoom = 0.72 }
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.keyboardDismissMode = .interactive
 
@@ -82,7 +88,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     func startIfNeeded() {
         guard !hasLoaded else { return }
         hasLoaded = true
-        openSample()
+        openHome()
     }
 
     func openHome() { open("https://map.naver.com/") }
@@ -98,73 +104,119 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
     private func open(_ value: String) {
         guard let url = URL(string: value) else { return }
+        cancelSavedListImport()
         hasLoaded = true
         errorMessage = nil
         bikeReadID = nil
         isReadingBike = false
         bikeCapture = nil
         placeCapture = nil
+        placeReadID = nil
+        isReadingPlace = false
         webView.load(URLRequest(url: url))
-    }
-
-    fileprivate func rememberPlaceFrame(_ frame: WKFrameInfo) {
-        guard !frame.isMainFrame, frame.securityOrigin.host == "pcmap.place.naver.com",
-              frame.request.url?.scheme == "https", frame.request.url?.path.hasPrefix("/place/") == true else { return }
-        placeFrame = frame
-    }
-
-    private func evaluatePlaceScript(_ source: String, frame: WKFrameInfo? = nil,
-                                     completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        webView.callAsyncJavaScript("return (" + source + ")();", arguments: [:], in: frame, in: .page) { outcome in
-            DispatchQueue.main.async {
-                do {
-                    let raw = try outcome.get()
-                    guard let text = raw as? String, let data = text.data(using: .utf8),
-                          let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                        throw PlannerFailure.message("네이버 장소 정보를 읽지 못했습니다.")
-                    }
-                    guard object["ok"] as? Bool == true else {
-                        throw PlannerFailure.message(object["message"] as? String ?? "검색 결과의 장소를 하나 선택하고 다시 읽어 주세요.")
-                    }
-                    completion(.success(object))
-                } catch { completion(.failure(error)) }
-            }
-        }
     }
 
     private func loadSelectedPlace(completion: @escaping (Result<NaverPlaceCapture, Error>) -> Void) {
         guard !webView.isLoading, webView.url?.scheme == "https", webView.url?.host == "map.naver.com" else {
             completion(.failure(PlannerFailure.message("네이버 지도에서 검색·저장 장소나 주소를 선택한 뒤 읽어 주세요."))); return
         }
-        evaluatePlaceScript(NaverPlaceRootScript.source) { [weak self] beforeResult in
-            guard let self = self else { return }
+        Task {
             do {
-                let before = try beforeResult.get()
-                let finish: ([String: Any]) -> Void = { [weak self] detail in
-                    guard let self = self else { return }
-                    self.evaluatePlaceScript(NaverPlaceRootScript.source) { afterResult in
-                        do {
-                            let after = try afterResult.get()
-                            let value = try NaverPlaceBridge.call("merge", ["before": before, "after": after, "detail": detail,
-                                                                          "now": Date().timeIntervalSince1970 * 1000], as: NaverPlaceCapture.self)
-                            completion(.success(value))
-                        } catch { completion(.failure(error)) }
-                    }
-                }
-                if before["kind"] as? String == "place" {
-                    guard let frame = self.placeFrame else {
-                        throw PlannerFailure.message("장소 상세 패널이 준비되지 않았습니다. 상세 화면이 열린 뒤 다시 읽어 주세요.")
-                    }
-                    self.evaluatePlaceScript(NaverPlaceDetailScript.source, frame: frame) { result in
-                        do { finish(try result.get()) } catch { completion(.failure(error)) }
-                    }
-                } else { finish([:]) }
+                try await NaverWebReader.panel(webView, showMap: false)
+                completion(.success(try await NaverWebReader.selected(webView)))
             } catch { completion(.failure(error)) }
         }
     }
 
+    func showMapPanel(_ showMap: Bool) {
+        guard !isImportingSavedList, !isReadingPlace, !isReading, !isReadingBike else { return }
+        Task {
+            do { try await NaverWebReader.panel(webView, showMap: showMap); errorMessage = nil }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func openSavedLists(_ customers: NaverCustomerStore) {
+        guard !isImportingSavedList, !isReadingPlace, !isReading, !isReadingBike else { return }
+        savedFolderTimer?.invalidate(); savedFolderTimer = nil
+        savedListReport = nil; errorMessage = nil
+        if webView.url?.host == "map.naver.com", webView.url?.path.contains("/favorite/") == true,
+           webView.url?.path.contains("/folder/") == true {
+            importSavedList(customers); return
+        }
+        open("https://map.naver.com/p/favorite")
+        waitingForSavedFolder = true
+        status = "가져올 네이버 저장 폴더를 선택해 주세요. 폴더 안의 장소를 좌표·주소와 함께 모두 저장합니다."
+        savedFolderTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self, weak customers] _ in
+            Task { @MainActor in
+                guard let self, let customers, self.waitingForSavedFolder, !self.savedFolderCheckRunning else { return }
+                guard self.webView.url?.host == "map.naver.com", self.webView.url?.path.contains("/favorite") == true,
+                      !self.webView.isLoading else { return }
+                self.savedFolderCheckRunning = true
+                defer { self.savedFolderCheckRunning = false }
+                let ready = try? await NaverWebReader.evaluate(self.webView,
+                    "const f=document.querySelector('#myPlaceBookmarkListIframe'); return JSON.stringify({ok:true,ready:!!f && /https:\\/\\/pages\\.map\\.naver\\.com\\/save-pages\\/pc\\/detail-list\\//.test(f.getAttribute('src')||'')});")
+                if ready?["ready"] as? Bool == true { self.importSavedList(customers) }
+            }
+        }
+    }
+
+    func cancelSavedListImport() {
+        waitingForSavedFolder = false
+        savedFolderTimer?.invalidate(); savedFolderTimer = nil
+        savedListTask?.cancel()
+        if isImportingSavedList { savedListProgress = "가져오기 중단 중… 이미 저장한 거래처는 보존합니다." }
+    }
+
+    func importSavedList(_ customers: NaverCustomerStore) {
+        guard !isImportingSavedList, !isReadingPlace, !isReading, !isReadingBike else { return }
+        waitingForSavedFolder = false; savedFolderTimer?.invalidate(); savedFolderTimer = nil
+        isImportingSavedList = true; savedListProgress = "저장 목록을 끝까지 불러오고 있습니다."; errorMessage = nil
+        savedListTask = Task {
+            defer { isImportingSavedList = false; savedListTask = nil }
+            do {
+                try await NaverWebReader.panel(webView, showMap: false)
+                let object = try await NaverWebReader.frame(webView, kind: "list")
+                let snapshot = try JSONDecoder().decode(NaverSavedListSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+                guard snapshot.total == snapshot.rows.count, snapshot.total <= 1000 else { throw PlannerFailure.message("저장 목록의 전체 개수를 확인해 주세요.") }
+                savedListReport = NaverSavedListReport(title: snapshot.title, total: snapshot.total)
+                for (index, row) in snapshot.rows.enumerated() {
+                    try Task.checkCancellation()
+                    savedListProgress = "\(snapshot.title) · \(index + 1)/\(snapshot.total) · \(row.name)"
+                    do {
+                        _ = try await NaverWebReader.frame(webView, kind: "list", command: "select", args: ["folderID": snapshot.folderID, "index": row.index, "key": row.key])
+                        // The public list click changes the main URL before its detail iframe.
+                        // Wait for BOTH IDs to agree, then read the current document.
+                        let deadline = Date().addingTimeInterval(10)
+                        var root: [String: Any]?
+                        while Date() < deadline {
+                            try Task.checkCancellation()
+                            guard let url = webView.url, url.host == "map.naver.com", url.path.contains("/folder/" + snapshot.folderID) else { throw PlannerFailure.message("가져오는 중 저장 폴더가 바뀌었습니다.") }
+                            let selected = url.path.components(separatedBy: "/place/").last
+                            if url.path.contains("/place/"), let selected,
+                               let read = try? await NaverWebReader.root(webView), read["placeID"] as? String == selected {
+                                root = read; break
+                            }
+                            try await Task.sleep(nanoseconds: 250_000_000)
+                        }
+                        guard root != nil else { throw PlannerFailure.message("저장 장소의 상세 화면을 확인하지 못했습니다.") }
+                        let value = try await NaverWebReader.selected(webView)
+                        let added = try customers.save(value, name: row.name, folder: snapshot.title)
+                        if added { savedListReport?.added += 1 } else { savedListReport?.updated += 1 }
+                    } catch is CancellationError { throw CancellationError() }
+                    catch { savedListReport?.failures.append("\(row.name): \(error.localizedDescription)") }
+                }
+                savedListReport?.completed = true
+                let count = savedListReport?.saved ?? 0
+                savedListProgress = "전체 \(snapshot.total)곳 중 \(count)곳 저장 · 실패 \(savedListReport?.failures.count ?? 0)곳"
+                status = "가져온 거래처 목록에 좌표·주소를 저장했습니다. 배송할 거래처를 선택해 계획에 연결하세요."
+            } catch is CancellationError { savedListProgress = "가져오기를 중단했습니다. 저장한 \(savedListReport?.saved ?? 0)곳은 보존했습니다." }
+            catch { errorMessage = error.localizedDescription; savedListProgress = "저장 목록을 가져오지 못했습니다." }
+        }
+    }
+
     func readSelectedPlace() {
-        guard !isReading, !isReadingBike, !isReadingPlace else { return }
+        guard !isReading, !isReadingBike, !isReadingPlace, !isImportingSavedList else { return }
         let readID = UUID(); placeReadID = readID
         isReadingPlace = true; errorMessage = nil; placeCapture = nil
         status = "선택한 네이버 장소의 좌표·주소를 읽고 있습니다."
@@ -179,7 +231,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
 
     func verifySelectedPlace(_ candidate: NaverPlaceCapture, useCoordinate: Bool, completion: @escaping (Bool) -> Void) {
-        guard !isReading, !isReadingBike, !isReadingPlace else { completion(false); return }
+        guard !isReading, !isReadingBike, !isReadingPlace, !isImportingSavedList else { completion(false); return }
         let readID = UUID(); placeReadID = readID; isReadingPlace = true
         loadSelectedPlace { [weak self] result in
             guard let self = self, self.placeReadID == readID else { completion(false); return }
@@ -194,7 +246,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
 
     func readBikeEndpoint() {
-        guard !isReading, !isReadingBike, !isReadingPlace else { return }
+        guard !isReading, !isReadingBike, !isReadingPlace, !isImportingSavedList else { return }
         guard !webView.isLoading, let address = webView.url?.absoluteString,
               let key = RoadBridge.bikeKey(address) else {
             errorMessage = "네이버에서 경유지 없는 자전거 길찾기 결과를 열어 주세요."
@@ -259,7 +311,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
 
     func readScreen() {
-        guard !isReading, !isReadingBike, !isReadingPlace else { return }
+        guard !isReading, !isReadingBike, !isReadingPlace, !isImportingSavedList else { return }
         placeCapture = nil
         guard let page = webView.url, page.scheme == "https", page.host == "map.naver.com" else {
             errorMessage = "네이버 지도 화면에서 읽어 주세요."
@@ -344,7 +396,8 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         errorMessage = nil
         placeCapture = nil
-        placeFrame = nil
+        placeReadID = nil
+        isReadingPlace = false
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -394,15 +447,6 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         alert.addAction(UIAlertAction(title: "취소", style: .cancel) { _ in completionHandler(false) })
         alert.addAction(UIAlertAction(title: "확인", style: .default) { _ in completionHandler(true) })
         presenter.present(alert, animated: true)
-    }
-}
-
-private final class NaverPlaceFrameHandler: NSObject, WKScriptMessageHandler {
-    weak var owner: BrowserModel?
-    init(owner: BrowserModel) { self.owner = owner }
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        let frame = message.frameInfo
-        DispatchQueue.main.async { [weak self] in self?.owner?.rememberPlaceFrame(frame) }
     }
 }
 

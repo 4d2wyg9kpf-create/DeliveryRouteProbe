@@ -137,10 +137,11 @@ private struct RoadPlanContext: Encodable {
     struct Visit: Encodable { var id: String; var name: String; var roadAccess: StopRoadAccess? }
     var originName: String
     var originAccess: StopRoadAccess?
+    var destination: DeliveryDestination?
     var road: RoadPolicy?
     var visits: [Visit]
     init(_ plan: DeliveryPlan) {
-        originName = plan.originName; originAccess = plan.originAccess; road = plan.road
+        originName = plan.originName; originAccess = plan.originAccess; destination = plan.destination; road = plan.road
         visits = plan.visits.map { Visit(id: $0.id, name: $0.name, roadAccess: $0.roadAccess) }
     }
 }
@@ -185,10 +186,11 @@ enum RoadBridge {
 
 extension DeliveryPlan {
     func access(_ id: String) -> StopRoadAccess? {
-        id == "depot" ? originAccess : visits.first(where: { $0.id == id })?.roadAccess
+        id == "depot" ? originAccess : id == "destination" ? destination?.roadAccess : visits.first(where: { $0.id == id })?.roadAccess
     }
     mutating func setAccess(_ value: StopRoadAccess, id: String) {
         if id == "depot" { originAccess = value }
+        else if id == "destination" { destination?.roadAccess = value }
         else if let index = visits.firstIndex(where: { $0.id == id }) { visits[index].roadAccess = value }
     }
     func selectedLeg(_ id: String?, from: String, to: String) -> DeliveryLeg? {

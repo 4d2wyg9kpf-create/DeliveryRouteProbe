@@ -9,14 +9,18 @@ enum NaverPlaceEngineSource {
       const coordinate=c=>c&&typeof c.longitude==='number'&&typeof c.latitude==='number'&&Number.isFinite(c.longitude)&&Number.isFinite(c.latitude)&&c.longitude>=124&&c.longitude<=132&&c.latitude>=32&&c.latitude<=40;
       function text(value,max,label){if(typeof value!=='string'||value.length>max||/[\x00-\x1f\x7f]/.test(value))fail(label+' 형식을 확인해 주세요.');return tidy(value);}
       function validate(c){
-        if(!c||c.version!==1||!['place','address'].includes(c.kind)||!['rendered_selected_marker_and_tiles','rendered_selected_place_detail','rendered_selected_address_panel'].includes(c.method)||!tidy(c.name)||!Number.isFinite(Date.parse(c.capturedAt)))fail('네이버 장소 판독을 다시 실행해 주세요.');
+        if(!c||c.version!==1||!['place','address'].includes(c.kind)||!['rendered_selected_marker_and_tiles','rendered_selected_place_detail','rendered_selected_address_panel','apple_address_geocoding'].includes(c.method)||!tidy(c.name)||!Number.isFinite(Date.parse(c.capturedAt)))fail('네이버 장소 판독을 다시 실행해 주세요.');
         text(c.name,500,'장소 이름');for(const key of ['address','roadAddress','jibunAddress'])text(c[key],1000,'주소');
         if(c.kind==='place'){
           if(!/^\d{1,30}$/.test(c.placeID)||c.selectionKey!=='place:'+c.placeID||c.sourceURL!=='https://map.naver.com/p/entry/place/'+c.placeID)fail('네이버 장소 식별자가 일치하지 않습니다.');
         }else if(c.placeID!==''||c.selectionKey!=='address:'+tidy(c.name).replace(/\s/g,'')+':'+tidy(c.address).replace(/\s/g,'')||!/^https:\/\/map\.naver\.com\/p\/[^?#]*$/.test(c.sourceURL))fail('네이버 주소 선택 정보를 확인해 주세요.');
         if(c.coordinate!=null){
-          if(c.method!=='rendered_selected_marker_and_tiles')fail('좌표 판독 근거를 다시 확인해 주세요.');
-          if(!coordinate(c.coordinate)||!Number.isFinite(c.screenResolutionMeters)||c.screenResolutionMeters<=0||c.screenResolutionMeters>5||!Number.isSafeInteger(c.tileZoom)||c.tileZoom<0||c.tileZoom>23||!c.point)fail('네이버 표식 좌표를 다시 읽어 주세요.');
+          if(!coordinate(c.coordinate)||!c.point)fail('장소 좌표를 다시 읽어 주세요.');
+          if(c.method==='rendered_selected_marker_and_tiles'){
+            if(!Number.isFinite(c.screenResolutionMeters)||c.screenResolutionMeters<=0||c.screenResolutionMeters>5||!Number.isSafeInteger(c.tileZoom)||c.tileZoom<0||c.tileZoom>23)fail('네이버 표식 좌표를 다시 읽어 주세요.');
+          }else if(c.method==='apple_address_geocoding'){
+            if(c.geocodeProvider!=='Apple'||!addressMatches(c.roadAddress||c.address,c.geocodedAddress))fail('변환한 좌표의 주소가 선택한 장소 주소와 다릅니다.');
+          }else fail('좌표 판독 근거를 다시 확인해 주세요.');
           const p=c.point.token?.split(',');
           if(p?.length!==5||p[3]!==''||p[4]!=='SIMPLE_POI'||!Number.isFinite(+p[0])||!Number.isFinite(+p[1])||!sameName(c.point.name,c.name)||Math.abs(+p[0]/20037508.342789244*180-c.coordinate.longitude)>1e-7||Math.abs(Math.atan(Math.sinh(+p[1]/6378137))*180/Math.PI-c.coordinate.latitude)>1e-7)fail('표식과 좌표의 연결이 다릅니다.');
           let name;try{name=decodeURIComponent(p[2]);}catch(_){fail('표식 이름을 읽지 못했습니다.');}if(!sameName(name,c.name))fail('표식 이름이 다릅니다.');
@@ -40,14 +44,45 @@ enum NaverPlaceEngineSource {
         return validate(result);
       }
       function distance(a,b){const rad=Math.PI/180,x=(a.longitude-b.longitude)*rad*Math.cos((a.latitude+b.latitude)/2*rad),y=(a.latitude-b.latitude)*rad;return Math.hypot(x,y)*6371000;}
+      function normalizedAddress(value){
+        return tidy(value).replace(/^대한민국\s*/,'').split(/[,(]/)[0].replace(/서울특별시/g,'서울').replace(/부산광역시/g,'부산').replace(/대구광역시/g,'대구').replace(/인천광역시/g,'인천').replace(/광주광역시/g,'광주').replace(/대전광역시/g,'대전').replace(/울산광역시/g,'울산').replace(/세종특별자치시/g,'세종').replace(/경기도/g,'경기').replace(/강원특별자치도|강원도/g,'강원').replace(/충청북도/g,'충북').replace(/충청남도/g,'충남').replace(/전북특별자치도|전라북도/g,'전북').replace(/전라남도/g,'전남').replace(/경상북도/g,'경북').replace(/경상남도/g,'경남').replace(/제주특별자치도/g,'제주');
+      }
+      function addressMatches(requested,returned){
+        const a=normalizedAddress(requested),b=normalizedAddress(returned),compact=x=>x.replace(/\s/g,'');
+        if(!a||!b||!/[가-힣].*\d/.test(a))return false;
+        const road=/([가-힣0-9·.]+(?:대로|로|길))\s*(\d+(?:-\d+)?)(?=\s|$)/,ra=road.exec(a),rb=road.exec(b);
+        if(ra){
+          if(!rb||ra[1]!==rb[1]||ra[2]!==rb[2])return false;
+          const prefix=compact(a.slice(0,ra.index));return prefix.length>=2&&compact(b.slice(0,rb.index)).includes(prefix);
+        }
+        return compact(a)===compact(b); // Exact lot-number address only; never accept a district centroid.
+      }
+      function geocode(input){
+        const c=copy(validate(input.capture)),candidates=input.candidates;
+        if(!Array.isArray(candidates))fail('주소 변환 결과를 확인해 주세요.');
+        const exact=candidates.filter(v=>v?.countryCode==='KR'&&coordinate(v.coordinate)&&addressMatches(c.roadAddress||c.address,v.address));
+        if(!exact.length)fail('선택한 주소와 일치하는 건물 좌표를 찾지 못했습니다.');
+        if(exact.some(v=>distance(v.coordinate,exact[0].coordinate)>5))fail('같은 주소에 여러 좌표가 나왔습니다. 지도에서 실제 하역 위치를 선택해 주세요.');
+        const chosen=exact[0],lon=chosen.coordinate.longitude,lat=chosen.coordinate.latitude;
+        c.coordinate={longitude:lon,latitude:lat};c.point={name:c.name,token:[(lon/180*20037508.342789244).toFixed(3),(6378137*Math.log(Math.tan(Math.PI/4+lat*Math.PI/360))).toFixed(3),encodeURIComponent(c.name),'','SIMPLE_POI'].join(',')};
+        c.method='apple_address_geocoding';c.geocodeProvider='Apple';c.geocodedAddress=text(chosen.address,1000,'변환 결과 주소');c.tileZoom=null;c.screenResolutionMeters=null;c.coordinateIssue='';
+        return validate(c);
+      }
+      function enrich(input){
+        const capture=copy(validate(input.capture)),map=validate(input.map);
+        if(capture.kind!=='place'||capture.selectionKey!==map.selectionKey||!sameName(capture.name,map.name)||!coordinate(map.coordinate))fail('선택한 장소와 좌표 지도의 장소가 다릅니다. 다시 읽어 주세요.');
+        if(capture.address&&map.address&&!sameName(capture.address,map.address))fail('좌표를 읽는 동안 장소 주소가 바뀌었습니다. 다시 읽어 주세요.');
+        for(const key of ['coordinate','point','tileZoom','screenResolutionMeters','method'])capture[key]=copy(map[key]);
+        capture.coordinateIssue='';return validate(capture);
+      }
       function sameSelection(input){
         const c=validate(input.capture),fresh=validate(input.fresh);
         if(c.selectionKey!==fresh.selectionKey||!sameName(c.name,fresh.name)||['address','roadAddress','jibunAddress'].some(k=>c[k]!==fresh[k]))return {same:false};
-        if(input.useCoordinate&&(!coordinate(c.coordinate)||!coordinate(fresh.coordinate)||distance(c.coordinate,fresh.coordinate)>Math.max(c.screenResolutionMeters,fresh.screenResolutionMeters)*2))return {same:false};
+        if(input.useCoordinate&&(!coordinate(c.coordinate)||!coordinate(fresh.coordinate)||distance(c.coordinate,fresh.coordinate)>Math.max(c.screenResolutionMeters||0.05,fresh.screenResolutionMeters||0.05)*2))return {same:false};
         return {same:true};
       }
       function previousCoordinate(plan,id){
-        const v=id==='depot'?null:plan.visits.find(v=>v.id===id),explicit=id==='depot'?plan.tmapOrigin:v?.tmapCoordinate;
+        const v=id==='depot'?null:id==='destination'?plan.destination:plan.visits.find(v=>v.id===id),explicit=id==='depot'?plan.tmapOrigin:v?.tmapCoordinate;
         if(coordinate(explicit))return explicit;
         const access=id==='depot'?plan.originAccess:v?.roadAccess;
         if(access?.curbConfirmed){const parts=access.curbPoint?.token?.split(',');if(parts?.length===5&&Math.abs(+parts[0])>1000000){const c={longitude:+parts[0]/20037508.342789244*180,latitude:Math.atan(Math.sinh(+parts[1]/6378137))*180/Math.PI};if(coordinate(c))return c;}}
@@ -63,12 +98,12 @@ enum NaverPlaceEngineSource {
         if(id==='new'){
           if(p.visits.length>=30)fail('거래처는 최대 30곳까지 등록할 수 있습니다.');
           if(!input.newVisit)fail('새 거래처 이름과 식별자를 확인해 주세요.');
-          visit=copy(input.newVisit);if(!visit||typeof visit.id!=='string'||!visit.id||visit.id==='depot'||p.visits.some(v=>v.id===visit.id)||!text(visit.name,500,'거래처 이름'))fail('새 거래처 이름과 식별자를 확인해 주세요.');
+          visit=copy(input.newVisit);if(!visit||typeof visit.id!=='string'||!visit.id||['depot','destination'].includes(visit.id)||p.visits.some(v=>v.id===visit.id)||!text(visit.name,500,'거래처 이름'))fail('새 거래처 이름과 식별자를 확인해 주세요.');
           const duplicate=p.visits.find(v=>v.naverPlace?.selectionKey===capture.selectionKey);
           if(duplicate)fail('이미 연결한 장소입니다. 기존 거래처 '+duplicate.name+'에 연결해 주세요.');
           p.visits.push(visit);
         }else if(id!=='depot'){
-          visit=p.visits.find(v=>v.id===id);if(!visit)fail('연결할 거래처가 변경됐습니다. 다시 선택해 주세요.');
+          visit=id==='destination'?p.destination:p.visits.find(v=>v.id===id);if(!visit)fail('연결할 거래처가 변경됐습니다. 다시 선택해 주세요.');
         }
         const stopID=id==='new'?visit.id:id,old=previousCoordinate(p,stopID);
         const previousCapture=stopID==='depot'?p.naverOrigin:visit.naverPlace;
@@ -98,8 +133,63 @@ enum NaverPlaceEngineSource {
         if(id==='new'&&p.tmapBinding){p.tmapBinding=null;for(const leg of p.legs||[])if(leg.source==='tmap')leg.locationInvalidated=true;}
         return {plan:p,stopID,invalidated,coordinateChanged:!!changed};
       }
-      const api={merge,validate,sameSelection,attach};
-      for(const name of ['merge','sameSelection','attach'])api[name+'JSON']=value=>{try{return JSON.stringify({ok:true,value:api[name](JSON.parse(value))});}catch(e){return JSON.stringify({ok:false,message:e.message});}};
+      function selectCustomers(input){
+        let p=copy(input.plan);const customers=input.customers,selected=input.selectedIDs;
+        if(!p||!Array.isArray(p.visits)||!Array.isArray(customers)||!Array.isArray(selected)||new Set(selected).size!==selected.length)fail('이번 배송 거래처 선택을 확인해 주세요.');
+        const known=new Set(customers.map(c=>c.id));if(known.size!==customers.length||selected.some(id=>!known.has(id)))fail('거래처 목록이 변경됐습니다. 다시 선택해 주세요.');
+        if(selected.length>30)fail('이번 배송은 최대 30곳까지 선택할 수 있습니다. 전체 거래처 목록은 그대로 보관됩니다.');
+        const wanted=new Set(selected),find=v=>customers.find(c=>c.template?.id===v.id||(c.capture&&v.naverPlace?.selectionKey===c.capture.selectionKey));
+        const removed=p.visits.filter(v=>{const c=find(v);return c&&!wanted.has(c.id);}).map(v=>v.id);
+        p.visits=p.visits.filter(v=>!removed.includes(v.id));
+        p.legs=(p.legs||[]).filter(l=>!removed.includes(l.fromID)&&!removed.includes(l.toID));
+        if(p.cargo?.lots)p.cargo.lots=p.cargo.lots.filter(l=>!removed.includes(l.loadAt)&&!removed.includes(l.unloadAt));
+        if(p.cargo?.autoLayout?.transfers)p.cargo.autoLayout.transfers=p.cargo.autoLayout.transfers.filter(t=>!removed.includes(t.fromID)&&!removed.includes(t.toID));
+        for(const visit of p.visits){visit.afterIDs=(visit.afterIDs||[]).filter(id=>!removed.includes(id));if(removed.includes(visit.immediatelyAfterID))visit.immediatelyAfterID='';}
+        let changed=removed.length>0;
+        for(const customer of customers.filter(c=>wanted.has(c.id))){
+          let existing=p.visits.find(v=>v.id===customer.template?.id||(customer.capture&&v.naverPlace?.selectionKey===customer.capture.selectionKey));
+          if(existing&&previousCoordinate(p,existing.id))continue; // Preserve a separately confirmed vehicle position.
+          const candidate=copy(customer.template);
+          if(!candidate||!candidate.id||['depot','destination'].includes(candidate.id)||!text(candidate.name,500,'거래처 이름'))fail('거래처 저장 정보를 확인해 주세요.');
+          if(customer.capture){
+            const capture=validate(customer.capture);if(!coordinate(capture.coordinate))fail(customer.name+'의 좌표를 다시 읽어 주세요.');
+            if(input.curbConfirmed!==true)fail('이번 배송에 사용할 선택 좌표가 실제 정차 위치인지 확인해 주세요.');
+            p=attach({plan:p,capture,targetID:existing?existing.id:'new',newVisit:candidate,useCoordinate:true,curbConfirmed:true,requestAddress:capture.requestAddress||capture.roadAddress||capture.address}).plan;
+          }else if(!existing){
+            if(p.visits.some(v=>v.id===candidate.id))fail('거래처 식별자가 중복됐습니다.');
+            p.visits.push(candidate);
+          }
+          if(!existing)changed=true;
+        }
+        if(p.visits.length>30)fail('이번 배송은 최대 30곳까지 선택할 수 있습니다.');
+        const ids=new Set(p.visits.map(v=>v.id));for(const v of p.visits){v.afterIDs=(v.afterIDs||[]).filter(id=>ids.has(id));if(v.immediatelyAfterID&&!ids.has(v.immediatelyAfterID))v.immediatelyAfterID='';}
+        if(changed){p.tmapBinding=null;for(const leg of p.legs)if(leg.source==='tmap')leg.locationInvalidated=true;}
+        return p;
+      }
+      function endpoints(input){
+        const p=copy(input.plan),customers=input.customers;
+        if(!p||!Array.isArray(p.visits)||!Array.isArray(customers)||!['return','custom','last'].includes(input.endMode))fail('출발지·도착지 선택을 확인해 주세요.');
+        const signature=JSON.stringify([p.originName,p.tmapOrigin,p.originAccess,p.destination,p.returnToOrigin]);
+        function selected(id){
+          const record=customers.find(c=>c.id===id);if(!record?.template)fail('선택한 출발지·도착지가 목록에 없습니다.');
+          const v=record.template,actual=previousCoordinate({visits:[v]},v.id),capture=record.capture?copy(validate(record.capture)):null;
+          if(!actual&&(!capture?.coordinate||input.curbConfirmed!==true))fail('출발지·도착지의 좌표와 실제 정차 위치를 확인해 주세요.');
+          const coord=actual||capture.coordinate,requestAddress=v.tmapCoordinate?.detailAddress||capture?.requestAddress||capture?.roadAddress||capture?.address||'';
+          const access=copy(v.roadAccess||{roadType:'',curbConfirmed:false,note:''});
+          if(!actual){access.curbPoint=copy(capture.point);access.curbConfirmed=true;access.curbEntranceToken=null;if(access.bikeEntrance)access.bikeEntrance.entranceConfirmed=false;}
+          return {name:text(record.name,500,'출발지·도착지 이름'),tmapCoordinate:{...coord,detailAddress:requestAddress,poiID:v.tmapCoordinate?.poiID||null},roadAccess:access,naverPlace:capture,customerID:id};
+        }
+        if(input.originID!=='current'){
+          const value=selected(input.originID);p.originName=value.name;p.tmapOrigin=value.tmapCoordinate;p.originAccess=value.roadAccess;p.naverOrigin=value.naverPlace;p.originCustomerID=value.customerID;
+        }
+        p.returnToOrigin=input.endMode!=='last';p.destination=input.endMode==='custom'?selected(input.destinationID):null;
+        if(signature!==JSON.stringify([p.originName,p.tmapOrigin,p.originAccess,p.destination,p.returnToOrigin])){
+          p.tmapBinding=null;for(const leg of p.legs||[])if(leg.source==='tmap'||['depot','destination'].includes(leg.fromID)||['depot','destination'].includes(leg.toID))leg.locationInvalidated=true;
+        }
+        return p;
+      }
+      const api={merge,validate,sameSelection,attach,enrich,selectCustomers,endpoints,geocode,addressMatches};
+      for(const name of ['merge','sameSelection','attach','enrich','validate','selectCustomers','endpoints','geocode'])api[name+'JSON']=value=>{try{const input=JSON.parse(value);return JSON.stringify({ok:true,value:api[name](name==='validate'?input.capture:input)});}catch(e){return JSON.stringify({ok:false,message:e.message});}};
       return api;
     })();
     if(typeof module!=='undefined')module.exports=DeliveryNaverPlaces;

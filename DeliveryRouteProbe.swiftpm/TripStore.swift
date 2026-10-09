@@ -39,7 +39,7 @@ final class TripStore: ObservableObject {
     @Published private(set) var routeProposal: TripRouteProposal?
     @Published private(set) var isBusy = false
     @Published var errorMessage: String?
-    @Published private(set) var message = "적재 계획을 확정한 뒤 회사 출발을 기록해 주세요."
+    @Published private(set) var message = "적재 계획을 확정한 뒤 출발을 기록해 주세요."
     private var recoveryRequired = false
     // Preserve the full engine record instead of losing unknown fields through Codable.
     private var activeData: Data?
@@ -95,7 +95,7 @@ final class TripStore: ObservableObject {
         guard !isBusy else { return }
         guard !recoveryRequired else { errorMessage = "기존 운행 기록을 먼저 복구해 주세요."; return }
         if let report = report, report.phase != "returned" || report.hasCargo {
-            errorMessage = "현재 운행의 회사 복귀와 남은 화물 하차를 먼저 기록해 주세요."; return
+            errorMessage = "현재 운행의 최종 도착와 남은 화물 하차를 먼저 기록해 주세요."; return
         }
         do {
             let data = try JSONEncoder().encode(plan)
