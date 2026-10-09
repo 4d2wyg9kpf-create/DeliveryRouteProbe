@@ -2,6 +2,12 @@ import SwiftUI
 import WebKit
 import UniformTypeIdentifiers
 
+enum DeliveryAppInfo {
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "개발"
+    }
+}
+
 @main
 @MainActor
 struct DeliveryRouteProbeApp: App {
@@ -155,7 +161,7 @@ struct CapturePanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("배송경로 0.12.0 · 네이버 장소 연결").font(.headline)
+                Text("배송경로 \(DeliveryAppInfo.version) · 네이버 장소 연결").font(.headline)
                 Text(model.status).font(.subheadline).foregroundColor(.secondary)
                 if let place = model.placeCapture { NaverPlaceReadPanel(capture: place, planner: planner, browser: model) }
                 if let bike = model.bikeCapture {
@@ -221,8 +227,12 @@ struct CapturePanel: View {
                         Text("예상 화면의 시간을 위 경로의 이동시간으로 합치지 않았습니다.")
                             .font(.caption).foregroundColor(.secondary)
                     }
-                } else {
-                    Text("1. ‘예제 경로’를 열거나 지도에서 자동차 길찾기를 검색합니다.\n2. 원하는 경로의 ‘상세보기’를 엽니다.\n3. 위의 ‘화면 읽기’를 누릅니다.")
+                } else if model.placeCapture == nil && model.bikeCapture == nil {
+                    Text("거래처 등록: 검색·저장 목록에서 장소의 상세 화면을 연 뒤 ‘선택 장소 읽기’를 누르세요. 장소 이름과 주소를 읽고 배송계획에 연결할 수 있습니다.")
+                        .font(.subheadline)
+                    Text("지도 핀이 보이지 않으면 주소를 먼저 읽습니다. 좌표도 가져오려면 일반 지도와 선택 장소의 핀이 보이도록 표시한 뒤 다시 읽어 주세요.")
+                        .font(.caption).foregroundColor(.secondary)
+                    Text("경로 읽기: 자동차 길찾기의 ‘상세보기’를 연 뒤 ‘화면 읽기’를 누르세요.")
                         .font(.subheadline)
                     Text("높이 입력은 네이버의 ‘차량 기준’ 설정에서 2~5종을 선택하면 확인할 수 있습니다.")
                         .font(.caption).foregroundColor(.secondary)

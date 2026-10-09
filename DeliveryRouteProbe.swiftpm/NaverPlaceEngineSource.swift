@@ -9,12 +9,13 @@ enum NaverPlaceEngineSource {
       const coordinate=c=>c&&typeof c.longitude==='number'&&typeof c.latitude==='number'&&Number.isFinite(c.longitude)&&Number.isFinite(c.latitude)&&c.longitude>=124&&c.longitude<=132&&c.latitude>=32&&c.latitude<=40;
       function text(value,max,label){if(typeof value!=='string'||value.length>max||/[\x00-\x1f\x7f]/.test(value))fail(label+' 형식을 확인해 주세요.');return tidy(value);}
       function validate(c){
-        if(!c||c.version!==1||!['place','address'].includes(c.kind)||c.method!=='rendered_selected_marker_and_tiles'||!tidy(c.name)||!Number.isFinite(Date.parse(c.capturedAt)))fail('네이버 장소 판독을 다시 실행해 주세요.');
+        if(!c||c.version!==1||!['place','address'].includes(c.kind)||!['rendered_selected_marker_and_tiles','rendered_selected_place_detail','rendered_selected_address_panel'].includes(c.method)||!tidy(c.name)||!Number.isFinite(Date.parse(c.capturedAt)))fail('네이버 장소 판독을 다시 실행해 주세요.');
         text(c.name,500,'장소 이름');for(const key of ['address','roadAddress','jibunAddress'])text(c[key],1000,'주소');
         if(c.kind==='place'){
           if(!/^\d{1,30}$/.test(c.placeID)||c.selectionKey!=='place:'+c.placeID||c.sourceURL!=='https://map.naver.com/p/entry/place/'+c.placeID)fail('네이버 장소 식별자가 일치하지 않습니다.');
         }else if(c.placeID!==''||c.selectionKey!=='address:'+tidy(c.name).replace(/\s/g,'')+':'+tidy(c.address).replace(/\s/g,'')||!/^https:\/\/map\.naver\.com\/p\/[^?#]*$/.test(c.sourceURL))fail('네이버 주소 선택 정보를 확인해 주세요.');
         if(c.coordinate!=null){
+          if(c.method!=='rendered_selected_marker_and_tiles')fail('좌표 판독 근거를 다시 확인해 주세요.');
           if(!coordinate(c.coordinate)||!Number.isFinite(c.screenResolutionMeters)||c.screenResolutionMeters<=0||c.screenResolutionMeters>5||!Number.isSafeInteger(c.tileZoom)||c.tileZoom<0||c.tileZoom>23||!c.point)fail('네이버 표식 좌표를 다시 읽어 주세요.');
           const p=c.point.token?.split(',');
           if(p?.length!==5||p[3]!==''||p[4]!=='SIMPLE_POI'||!Number.isFinite(+p[0])||!Number.isFinite(+p[1])||!sameName(c.point.name,c.name)||Math.abs(+p[0]/20037508.342789244*180-c.coordinate.longitude)>1e-7||Math.abs(Math.atan(Math.sinh(+p[1]/6378137))*180/Math.PI-c.coordinate.latitude)>1e-7)fail('표식과 좌표의 연결이 다릅니다.');
@@ -25,17 +26,17 @@ enum NaverPlaceEngineSource {
       function merge(input){
         const before=input.before,after=input.after,detail=input.detail;
         if(!before?.ok||!after?.ok)fail(after?.message||before?.message||'선택 장소를 읽지 못했습니다.');
-        if(before.selectionKey!==after.selectionKey||before.kind!==after.kind||!sameName(before.name,after.name))fail('읽는 동안 선택 장소가 바뀌었습니다. 다시 읽어 주세요.');
+        if(before.selectionKey!==after.selectionKey||before.kind!==after.kind||before.placeID!==after.placeID||(before.name&&after.name&&!sameName(before.name,after.name)))fail('읽는 동안 선택 장소가 바뀌었습니다. 다시 읽어 주세요.');
         let name=after.name,address=after.address,roadAddress=after.roadAddress,jibunAddress=after.jibunAddress;
         if(after.kind==='place'){
-          if(!detail?.ok||detail.placeID!==after.placeID||!sameName(detail.name,after.name))fail('지도 표식과 장소 상세 정보가 다릅니다. 선택한 장소를 다시 읽어 주세요.');
+          if(!detail?.ok||detail.placeID!==after.placeID||(before.name&&!sameName(detail.name,before.name))||(after.name&&!sameName(detail.name,after.name)))fail('지도와 장소 상세 정보가 다릅니다. 선택한 장소를 다시 읽어 주세요.');
           name=detail.name;address=detail.address;roadAddress=detail.roadAddress;jibunAddress=detail.jibunAddress;
         }
         const now=input.now;if(!Number.isFinite(now)||now<1577836800000||now>4102444800000)fail('판독 시각을 확인해 주세요.');
         const result={version:1,kind:after.kind,selectionKey:after.selectionKey,placeID:after.placeID,name,address,roadAddress,jibunAddress,sourceURL:after.sourceURL,
           coordinate:after.coordinate,point:after.coordinate?{...after.point,name,token:after.point.token.split(',').slice(0,2).concat(encodeURIComponent(name),'','SIMPLE_POI').join(',')}:null,
           tileZoom:after.tileZoom,screenResolutionMeters:after.screenResolutionMeters,coordinateIssue:after.coordinateIssue,
-          capturedAt:new Date(now).toISOString(),method:'rendered_selected_marker_and_tiles'};
+          capturedAt:new Date(now).toISOString(),method:after.coordinate?'rendered_selected_marker_and_tiles':after.kind==='place'?'rendered_selected_place_detail':'rendered_selected_address_panel'};
         return validate(result);
       }
       function distance(a,b){const rad=Math.PI/180,x=(a.longitude-b.longitude)*rad*Math.cos((a.latitude+b.latitude)/2*rad),y=(a.latitude-b.latitude)*rad;return Math.hypot(x,y)*6371000;}

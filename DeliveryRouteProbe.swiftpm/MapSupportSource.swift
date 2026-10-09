@@ -269,14 +269,21 @@ enum NaverPlaceRootScript {
       if(url.protocol!=='https:'||url.hostname!=='map.naver.com')return blocked('네이버 지도에서 장소나 주소를 선택해 주세요.');
       if([...document.querySelectorAll('input[role="combobox"]')].some(e=>shown(e)&&e.getAttribute('aria-expanded')==='true'))return blocked('검색어 입력을 마치고 결과의 장소를 선택한 뒤 읽어 주세요.');
       const maps=[...document.querySelectorAll('.mantle_map')].filter(shown);
-      if(maps.length!==1)return blocked('일반 지도와 선택 장소의 표식을 표시해 주세요.');
-      const map=maps[0],pins=[...map.querySelectorAll('.ENTRY_MARKER [data-maps-overlay]')].filter(e=>shown(e.querySelector('.marker_icon_image_wrap')));
-      if(pins.length!==1)return blocked('검색 또는 저장 목록에서 장소 하나를 선택해 주세요.');
-      const pin=pins[0],markerName=tidy(pin.querySelector('.marker_title')?.textContent);
-      if(!markerName)return blocked('선택한 지도 표식의 이름을 읽지 못했습니다.');
+      const map=maps.length===1?maps[0]:null;
+      const selectedIcon=e=>[...e.querySelectorAll('img')].some(image=>{
+        if(!shown(image))return false;
+        try{const src=new URL(image.getAttribute('src')||'',url.href);return src.protocol==='https:'&&src.hostname==='map.pstatic.net'&&src.pathname.startsWith('/resource/api/v2/image/maps/selected-marker/');}catch(_){return false;}
+      });
+      const pins=map?[...map.querySelectorAll('[data-maps-overlay]')].filter(e=>
+        shown(e.querySelector('.marker_icon_image_wrap')||e.querySelector('img'))&&(e.closest('.ENTRY_MARKER')||selectedIcon(e))):[];
+      const pin=pins.length===1?pins[0]:null,markerName=tidy(pin?.querySelector('.marker_title')?.textContent);
       let kind='',placeID='',name=markerName,frameURL='',address='',roadAddress='',jibunAddress='';
-      const frame=document.querySelector('#entryIframe');
-      if(frame&&shown(frame)){
+      // A selected detail panel proves the place ID even when the phone layout
+      // hides or omits the map marker. Marker visibility only gates coordinates.
+      const frames=[...document.querySelectorAll('#entryIframe')].filter(shown);
+      if(frames.length>1)return blocked('장소 상세 화면을 하나만 열고 다시 읽어 주세요.');
+      const frame=frames[0];
+      if(frame){
         let f;try{f=new URL(frame.getAttribute('src')||'',url.href);}catch(_){return blocked('선택 장소의 상세 화면을 기다린 뒤 다시 읽어 주세요.');}
         const m=/^\/place\/(\d+)(?:\/|$)/.exec(f.pathname);
         if(f.protocol!=='https:'||f.hostname!=='pcmap.place.naver.com'||!m)return blocked('선택한 장소 상세 화면을 읽지 못했습니다.');
@@ -285,12 +292,13 @@ enum NaverPlaceRootScript {
         kind='place';placeID=m[1];frameURL=f.href;
       }else{
         const titles=[...document.querySelectorAll('.address_info_area .address_title')].filter(shown);
-        if(titles.length!==1)return blocked('선택 장소의 상세 정보 또는 주소 패널을 열어 주세요.');
+        if(titles.length!==1)return blocked('검색 또는 저장 목록에서 장소 하나를 선택해 주세요.');
         const panel=titles[0].closest('.scroll_box')||titles[0].closest('.scroll_area');
         const names=panel?[...panel.querySelectorAll('.title_box .title')].filter(shown):[];
         if(names.length!==1)return blocked('주소 검색 결과를 하나로 구분하지 못했습니다.');
         kind='address';name=tidy(names[0].textContent);address=roadAddress=tidy(titles[0].textContent);
-        if(!name.replace(/\s/g,'').includes(markerName.replace(/\s/g,'')))return blocked('주소 패널과 지도 표식이 다릅니다. 주소를 다시 선택해 주세요.');
+        if(!name||!address)return blocked('선택한 주소가 표시된 상세 패널을 열어 주세요.');
+        if(markerName&&!name.replace(/\s/g,'').includes(markerName.replace(/\s/g,'')))return blocked('주소 패널과 지도 표식이 다릅니다. 주소를 다시 선택해 주세요.');
         const labels=[...panel.querySelectorAll('.label_address_land')];
         if(labels.length===1){const row=labels[0].parentElement.cloneNode(true);row.querySelectorAll('.label_address_land,button,a,[role="button"]').forEach(e=>e.remove());jibunAddress=tidy(row.textContent);}
       }
@@ -299,6 +307,8 @@ enum NaverPlaceRootScript {
         sourceURL:kind==='place'?'https://map.naver.com/p/entry/place/'+placeID:url.origin+url.pathname,
         coordinate:null,mercatorX:null,mercatorY:null,tileZoom:null,screenResolutionMeters:null,point:null,coordinateIssue:''};
       const partial=message=>out({...base,coordinateIssue:message});
+      if(!map)return partial('선택 장소의 이름·주소는 상세 패널에서 읽습니다. 좌표도 가져오려면 일반 지도가 보이도록 표시하고 다시 읽어 주세요.');
+      if(!pin||!markerName)return partial('선택 장소의 지도 핀을 확인할 수 없어 주소만 읽습니다. 좌표가 필요하면 지도를 표시하고 장소를 다시 선택해 주세요.');
       const view=(url.searchParams.get('c')||'').split(',');
       if(view.length&&view.length!==1&&(!view.slice(0,4).every(x=>Number.isFinite(Number(x)))||Number(view[1])!==0||Number(view[2])!==0))return partial('지도의 회전·기울기를 해제하고 다시 읽으면 좌표를 가져올 수 있습니다.');
       if(!axisAligned(pin)||!axisAligned(map))return partial('지도 회전이나 변형이 있어 좌표를 확정하지 않았습니다.');

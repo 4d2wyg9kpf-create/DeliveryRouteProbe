@@ -34,7 +34,7 @@ struct TMapScreen: View {
                 }
                 locationsSection
             }
-            .navigationTitle("티맵 배송경로 0.12.0")
+            .navigationTitle("티맵 배송경로 \(DeliveryAppInfo.version)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

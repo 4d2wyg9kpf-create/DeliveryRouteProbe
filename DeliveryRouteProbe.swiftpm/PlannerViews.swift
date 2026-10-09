@@ -63,7 +63,7 @@ struct PlannerScreen: View {
                     }
                 }
             }
-            .navigationTitle("배송계획 0.12.0")
+            .navigationTitle("배송계획 \(DeliveryAppInfo.version)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -306,7 +306,7 @@ struct PlannerScreen: View {
             do {
                 let data = try await InputDiagnostics.shared.makeReport()
                 exportDocument = CaptureDocument(data: data)
-                exportName = "DeliveryRouteProbe_입력진단_0.12.0"
+                exportName = "DeliveryRouteProbe_입력진단_\(DeliveryAppInfo.version)"
                 showExport = true
             } catch {
                 store.errorMessage = "입력 진단 내보내기 실패: \(error.localizedDescription)"
