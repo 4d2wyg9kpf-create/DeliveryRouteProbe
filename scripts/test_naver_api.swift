@@ -27,6 +27,7 @@ private final class Fixture {
     var headStatus = 200
     var cancelGET = false
     var delayGET = false
+    var getRelease: CheckedContinuation<Void, Never>?
     var mismatchedAddress = false
     var nestedError = false
     var serverErrorDetails = ""
@@ -57,7 +58,7 @@ private final class Fixture {
             try require(try used(provider) > 0, "request dispatched before persisted reservation")
             if request.url!.host == "naverapihub.apigw.ntruss.com" { try require(try used("searchMonth") > 0, "monthly reservation not persisted before HUB request") }
             if cancelGET { throw CancellationError() }
-            if delayGET { try await Task.sleep(nanoseconds: 120_000_000) }
+            if delayGET && getCount == 1 { await withCheckedContinuation { getRelease = $0 } }
         }
         let address = mismatchedAddress ? "대전 중구 유천로 350" : "대전광역시 중구 유천로 35"
         let json: [String: Any]
@@ -180,8 +181,14 @@ struct NaverAPINativeTests {
         await test("simultaneous taps share one native gate") {
             let f = try Fixture(), s = f.store(); f.delayGET = true
             let first = Task { try await s.search("가상 거래처") }
-            try await Task.sleep(nanoseconds: 20_000_000)
+            defer { f.getRelease?.resume(); f.getRelease = nil }
+            let started = ProcessInfo.processInfo.systemUptime
+            while f.getRelease == nil {
+                try require(ProcessInfo.processInfo.systemUptime - started < 5, "first GET did not reach the test barrier")
+                await Task.yield()
+            }
             try await rejects { _ = try await s.search("가상 거래처") }
+            f.getRelease?.resume(); f.getRelease = nil
             _ = try await first.value
             try require(f.getCount == 1, "parallel GETs escaped gate")
         }
