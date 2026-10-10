@@ -1,0 +1,24 @@
+name: Inspect public provider documentation
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/inspect_public_data_docs.py'
+      - '.github/workflows/public-data-docs.yml'
+permissions:
+  contents: read
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: python3 scripts/inspect_public_data_docs.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Public-provider-documents
+          path: build/public-data-docs/*
+          retention-days: 7
