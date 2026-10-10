@@ -107,23 +107,23 @@ private func sharedPoint(_ longitude: Double, url: String) throws -> NaverPlaceC
         }
         try check("reimporting the same point updates its existing identity") {
             let customerID = pinCustomers.records[0].id, siteID = pinSites.records[0].id
-            let addedCustomer = try pinCustomers.save(pinA), addedSite = try pinSites.save(pinA)
+            let addedCustomer = try pinCustomers.save(pinB), addedSite = try pinSites.save(pinB)
             try require(!addedCustomer && !addedSite && pinCustomers.records[0].id == customerID && pinSites.records[0].id == siteID, "same point duplicated")
         }
         try check("new short URL for the same point does not create a duplicate") {
-            let repeated = try sharedPoint(127.4, url: "https://naver.me/pointAgain")
+            let repeated = try sharedPoint(127.4000002, url: "https://naver.me/pointAgain")
             let added = try pinCustomers.save(repeated)
             try require(!added && pinCustomers.records.count == 1 && pinCustomers.records[0].capture?.sharedLinkURL == repeated.sharedLinkURL, "regenerated URL split the same point")
         }
         try check("shared-point coordinates and identities survive file recreation") {
             let restoredCustomers = NaverCustomerStore(directory: pinFolder), restoredSites = SiteTargetStore(directory: pinFolder)
             try require(restoredCustomers.errorMessage == nil && restoredSites.errorMessage == nil && restoredCustomers.records.count == 1 && restoredSites.records.count == 1, "shared point archive corrupt")
-            try require(restoredCustomers.records[0].capture?.coordinate?.longitude == 127.4 && restoredSites.records[0].capture.coordinate?.longitude == 127.4000002, "selected coordinate lost")
+            try require(restoredCustomers.records[0].capture?.coordinate?.longitude == 127.4000002 && restoredSites.records[0].capture.coordinate?.longitude == 127.4000002, "selected coordinate lost")
         }
         try check("remembering selected deliveries keeps the updated address record and original identity") {
             var plan = DeliveryPlan(); plan.visits = pinCustomers.records.map(\.template)
             try pinCustomers.remember(plan)
-            try require(pinCustomers.records.count == 1 && pinCustomers.records[0].capture?.coordinate?.longitude == 127.4, "plan migration changed the updated record")
+            try require(pinCustomers.records.count == 1 && pinCustomers.records[0].capture?.coordinate?.longitude == 127.4000002, "plan migration changed the updated record")
         }
         try check("shared address without selected coordinates cannot enter either list") {
             var missing = pinA; missing.coordinate = nil; missing.point = nil; missing.method = "rendered_selected_address_panel"
