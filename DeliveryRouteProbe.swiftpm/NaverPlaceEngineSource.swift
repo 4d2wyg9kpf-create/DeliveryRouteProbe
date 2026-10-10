@@ -88,11 +88,9 @@ enum NaverPlaceEngineSource {
       }
       function customerMatches(input){
         const a=input.first,b=input.second;
-        if(!a||!b||!sameName(a.name,b.name))return false;
-        if((a.kind==='address'&&a.sharedLinkURL)||(b.kind==='address'&&b.sharedLinkURL)){
-          if(!coordinate(a.coordinate)||!coordinate(b.coordinate))return false;
-          if(a.coordinate.longitude.toFixed(7)!==b.coordinate.longitude.toFixed(7)||a.coordinate.latitude.toFixed(7)!==b.coordinate.latitude.toFixed(7))return false;
-        }
+        if(!a||!b)return false;
+        // Address equality decides duplicate saves. Pin coordinates still come
+        // unchanged from the selected link and replace the stored capture.
         return [a.roadAddress,a.address,a.jibunAddress].some(x=>[b.roadAddress,b.address,b.jibunAddress].some(y=>addressMatches(x,y)));
       }
       function selectionMatches(input){
