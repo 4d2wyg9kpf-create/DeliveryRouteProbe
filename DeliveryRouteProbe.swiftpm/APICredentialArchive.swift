@@ -128,7 +128,7 @@ final class APICredentialArchive {
 }
 
 struct APIProtectedStateFile {
-    enum Kind: String { case tmap, naverAPI = "naver-api" }
+    enum Kind: String { case tmap, naverAPI = "naver-api", publicData = "public-data" }
     let url: URL
     init(_ kind: Kind, directory: URL? = nil) throws {
         let parent = try directory ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)

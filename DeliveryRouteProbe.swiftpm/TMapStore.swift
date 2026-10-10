@@ -225,6 +225,8 @@ final class TMapStore: ObservableObject {
         guard hasAppKey && freePlanConfirmed else { errorMessage = "Free 상품의 앱키를 등록해 주세요."; return }
         do {
             // Validate all local inputs before reserving a free request.
+            let times = try TMapBridge.timeInputs(plan)
+            guard times.stops.allSatisfy({ $0.windowCount <= 1 }) else { throw PlannerFailure.message("배송 시간에 여러 구간·회피 시간이 남아 있습니다. 배송 시간 수정에서 하나의 가능 시간 구간으로 설정해 주세요.") }
             let request = try TMapBridge.call("request", ["plan": try TMapBridge.object(plan), "options": try TMapBridge.object(options)], as: TMapRequest.self)
             let planFingerprint = try TMapBridge.fingerprintData(plan)
             route = nil; requestedPlan = nil
@@ -264,7 +266,7 @@ final class TMapStore: ObservableObject {
                     let result = try TMapBridge.call("parse", ["response": object, "request": try TMapBridge.object(request), "plan": TMapBridge.timingPlan(plan), "now": fetched], as: TMapRoute.self)
                     route = result
                     requestedPlan = planFingerprint
-                    message = result.warnings.isEmpty ? "티맵 순서를 받았습니다. 기존 배송·적재 조건으로 검증해 계획에 반영할 수 있습니다." : "티맵 순서를 받았습니다. 응답 일정의 확인 사항 \(result.warnings.count)개를 표시했습니다. 배송계획에서 다시 검증하세요."
+                    message = result.warnings.isEmpty ? "티맵 방문 순서와 경로를 받았습니다." : "티맵 방문 순서와 경로를 받았습니다. 일정 확인 사항 \(result.warnings.count)개를 표시했습니다."
                 } catch {
                     if Task.isCancelled { message = "요청을 중단했습니다. 이미 기록한 사용량은 되돌리지 않습니다." }
                     else { errorMessage = error.localizedDescription.replacingOccurrences(of: state.appKey, with: "[앱키]") }

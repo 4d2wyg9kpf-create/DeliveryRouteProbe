@@ -121,7 +121,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         webView.load(URLRequest(url: url))
     }
 
-    func openSharedLink(_ text: String, customers: NaverCustomerStore) throws {
+    func openSharedLink(_ text: String, customers: NaverCustomerStore, sites: SiteTargetStore? = nil, destination: NaverImportDestination = .customers) throws {
         let target = try NaverSharedLink.parse(text)
         open(target.url.absoluteString)
         let requestID = UUID(); sharedLinkID = requestID; isOpeningSharedLink = true
@@ -160,7 +160,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                         "const f=document.querySelector('#myPlaceBookmarkListIframe'); return JSON.stringify({ok:true,ready:!!f && /https:\\/\\/pages\\.map\\.naver\\.com\\/save-pages\\/pc\\/detail-list\\//.test(f.getAttribute('src')||'')});")
                     guard ready?["ready"] as? Bool == true, self.sharedLinkID == requestID else { return }
                     timer.invalidate(); self.sharedLinkID = nil; self.isOpeningSharedLink = false
-                    self.importSavedList(customers)
+                    self.importSavedList(customers, sites: sites, destination: destination)
                 }
             }
         }
@@ -186,13 +186,13 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }
     }
 
-    func openSavedLists(_ customers: NaverCustomerStore) {
+    func openSavedLists(_ customers: NaverCustomerStore, sites: SiteTargetStore? = nil, destination: NaverImportDestination = .customers) {
         guard !isImportingSavedList, !isReadingPlace, !isReading, !isReadingBike else { return }
         savedFolderTimer?.invalidate(); savedFolderTimer = nil
         savedListReport = nil; errorMessage = nil
         if webView.url?.host == "map.naver.com", webView.url?.path.contains("/favorite/") == true,
            webView.url?.path.contains("/folder/") == true {
-            importSavedList(customers); return
+            importSavedList(customers, sites: sites, destination: destination); return
         }
         open("https://map.naver.com/p/favorite")
         waitingForSavedFolder = true
@@ -206,19 +206,26 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 defer { self.savedFolderCheckRunning = false }
                 let ready = try? await NaverWebReader.evaluate(self.webView,
                     "const f=document.querySelector('#myPlaceBookmarkListIframe'); return JSON.stringify({ok:true,ready:!!f && /https:\\/\\/pages\\.map\\.naver\\.com\\/save-pages\\/pc\\/detail-list\\//.test(f.getAttribute('src')||'')});")
-                if ready?["ready"] as? Bool == true { self.importSavedList(customers) }
+                if ready?["ready"] as? Bool == true { self.importSavedList(customers, sites: sites, destination: destination) }
             }
         }
+    }
+
+    func cancelLinkImport() {
+        sharedLinkID = nil; sharedLinkTimer?.invalidate(); sharedLinkTimer = nil
+        isOpeningSharedLink = false; placeReadID = nil; isReadingPlace = false
+        cancelSavedListImport()
+        status = "가져오기를 중단했습니다. 이미 저장한 장소는 보존합니다."
     }
 
     func cancelSavedListImport() {
         waitingForSavedFolder = false
         savedFolderTimer?.invalidate(); savedFolderTimer = nil
         savedListTask?.cancel()
-        if isImportingSavedList { savedListProgress = "가져오기 중단 중… 이미 저장한 거래처는 보존합니다." }
+        if isImportingSavedList { savedListProgress = "가져오기 중단 중… 이미 저장한 장소는 보존합니다." }
     }
 
-    func importSavedList(_ customers: NaverCustomerStore) {
+    func importSavedList(_ customers: NaverCustomerStore, sites: SiteTargetStore? = nil, destination: NaverImportDestination = .customers) {
         guard !isImportingSavedList, !isReadingPlace, !isReading, !isReadingBike else { return }
         waitingForSavedFolder = false; savedFolderTimer?.invalidate(); savedFolderTimer = nil
         isImportingSavedList = true; savedListProgress = "저장 목록을 끝까지 불러오고 있습니다."; errorMessage = nil
@@ -254,7 +261,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                         guard root != nil else { throw PlannerFailure.message("저장 장소의 상세 화면을 확인하지 못했습니다.") }
                         let value = try await NaverWebReader.selected(webView)
                         guard try NaverPlaceBridge.call("matchesSavedRow", ["capture": try TMapBridge.object(value), "row": ["name": row.name, "address": row.address]], as: Bool.self) else { throw PlannerFailure.message("저장 목록의 장소와 읽은 주소가 다릅니다. 다시 가져와 주세요.") }
-                        let added = try customers.save(value, name: row.name, folder: snapshot.title)
+                        let added = try NaverImportSink.save(value, name: row.name, folder: snapshot.title, destination: destination, customers: customers, sites: sites)
                         if added { savedListReport?.added += 1 } else { savedListReport?.updated += 1 }
                     } catch is CancellationError { throw CancellationError() }
                     catch { savedListReport?.failures.append("\(row.name): \(error.localizedDescription)") }
@@ -262,7 +269,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                 savedListReport?.completed = true
                 let count = savedListReport?.saved ?? 0
                 savedListProgress = "전체 \(snapshot.total)곳 중 \(count)곳 저장 · 실패 \(savedListReport?.failures.count ?? 0)곳"
-                status = "가져온 거래처 목록에 좌표·주소를 저장했습니다. 배송할 거래처를 선택해 계획에 연결하세요."
+                status = "\(destination.title)에 이름·좌표·주소를 저장했습니다."
             } catch is CancellationError { savedListProgress = "가져오기를 중단했습니다. 저장한 \(savedListReport?.saved ?? 0)곳은 보존했습니다." }
             catch { errorMessage = error.localizedDescription; savedListProgress = "저장 목록을 가져오지 못했습니다." }
         }
@@ -278,7 +285,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             self.isReadingPlace = false; self.placeReadID = nil
             do {
                 let value = try result.get(); self.placeCapture = value
-                self.status = value.coordinate != nil ? "선택 장소의 좌표·주소를 읽었습니다. 거래처와 연결해 주세요." : "선택 장소의 주소를 읽었습니다. 좌표 확인 사항을 표시했습니다."
+                self.status = value.coordinate != nil ? "선택 장소의 이름·좌표·주소를 읽었습니다. 저장할 목록을 선택해 주세요." : "선택 장소의 주소를 읽었습니다. 좌표 확인 사항을 표시했습니다."
             } catch { self.errorMessage = error.localizedDescription; self.status = "장소를 연결하지 않았습니다." }
         }
     }

@@ -17,6 +17,8 @@ struct TMapScreen: View {
     let openNaver: (String) -> Void
     let openPlanResult: () -> Void
     @State private var showSettings = false
+    @State private var visitDraft: DeliveryVisit?
+    @State private var displayPlan: DeliveryPlan?
     @State private var locationDraft: TMapLocationDraft?
     @State private var usageDraft: Int?
     @State private var showUsage = false
@@ -33,7 +35,7 @@ struct TMapScreen: View {
                     if let error = store.errorMessage {
                         Section("확인이 필요합니다") { Text(error).foregroundColor(.red) }.id("tmap-error")
                     }
-                    if let route = store.route, store.routeIsValid {
+                    if let route = store.route {
                         routeSection(route).id("tmap-result")
                     }
                     requestSection.id("tmap-request")
@@ -55,7 +57,7 @@ struct TMapScreen: View {
                     else if store.routeIsValid { scroll.scrollTo("tmap-result", anchor: .top) }
                 }
             }
-            .navigationTitle("티맵 배송경로 \(DeliveryAppInfo.version)")
+            .navigationTitle("티맵최적화 \(DeliveryAppInfo.version)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -63,6 +65,7 @@ struct TMapScreen: View {
                         .disabled(store.isOptimizing || store.isRefreshing)
                 }
             }
+            .sheet(item: $visitDraft) { visit in SimpleDeliveryTimeEditor(visit: visit) { planner.saveVisit($0) } }
             .sheet(isPresented: $showSettings) { TMapSettingsView(store: store) }
             .sheet(item: $locationDraft) { draft in
                 TMapLocationEditor(name: draft.name, coordinate: draft.coordinate, isDepot: draft.id == "depot") { coordinate in
@@ -81,7 +84,7 @@ struct TMapScreen: View {
                 Button("취소", role: .cancel) { deleteLocation = nil }
             } message: {
                 if let target = deleteLocation {
-                    Text(target.id == "depot" ? "출발지 '\(target.name)'의 좌표·주소를 지웁니다." : target.id == "destination" ? "최종 도착지 '\(target.name)'를 지우고 출발지 복귀로 바꿉니다." : "'\(target.name)' 거래처와 연결된 경로·주문 수량을 배송계획에서 지웁니다.")
+                    Text(target.id == "depot" ? "출발지 '\(target.name)'의 좌표·주소를 지웁니다." : target.id == "destination" ? "최종 도착지 '\(target.name)'를 지우고 출발지 복귀로 바꿉니다." : "'\(target.name)' 거래처와 연결된 경로·연결된 정보를 이번 배송에서 지웁니다.")
                 }
             }
             .task {
@@ -93,7 +96,7 @@ struct TMapScreen: View {
     private var requestSection: some View {
         Section("경로 최적화") {
             Text("\(planner.plan.originName) → 배송 \(planner.plan.visits.count)곳 → \(planner.plan.finishName)").font(.headline)
-            Text("운행 \(planner.plan.planDate) · \(PlannerClock.text(planner.plan.startMinute)) 출발").font(.caption)
+            Text("배송일 \(planner.plan.planDate) · \(PlannerClock.text(planner.plan.startMinute)) 출발").font(.caption)
             if let quota = store.quota(for: planner.plan.visits.count) {
                 Text("선택 API: \(quota.label) · 무료 \(quota.remaining)/\(quota.limit)회 남음")
                 if quota.blocked { Text("무료 한도 소진 · \(resetTime(quota.resetAtMillis)) 이후 재개").foregroundColor(.orange) }
@@ -102,7 +105,7 @@ struct TMapScreen: View {
                 HStack { ProgressView(); Button("요청 중단", action: store.cancel) }
             } else {
                 Button("티맵으로 배송 순서 최적화 · 1회 사용") {
-                    inputs.finishEditing(); store.optimize(plan: planner.plan)
+                    inputs.finishEditing(); displayPlan = planner.plan; store.optimize(plan: planner.plan)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!planner.plan.returnToOrigin || !store.canRequest || store.quota(for: planner.plan.visits.count) == nil || store.quota(for: planner.plan.visits.count)?.blocked == true || planner.isComputing)
@@ -111,15 +114,19 @@ struct TMapScreen: View {
             Button("출발지·도착지 · 이번 배송 선택") { inputs.finishEditing(); showCustomers = true }
             Text(store.message).font(.caption).foregroundColor(.secondary)
             if !store.hasAppKey || !store.freePlanConfirmed { Button("Free 앱키 설정") { showSettings = true } }
-            if planner.plan.tmapBinding != nil {
-                Button("계획에 연결한 티맵 순서 해제") { inputs.finishEditing(); planner.releaseTMapOrder() }
-                    .disabled(planner.isComputing || store.isOptimizing)
+            Text("선택한 배송지만 방문합니다. 출발지와 최종 도착지는 별도로 선택할 수 있습니다.").font(.caption).foregroundStyle(.secondary)
+            NativeTextField("배송 날짜 YYYY-MM-DD", text: $planner.plan.planDate, keyboard: .numbersAndPunctuation).frame(minHeight: 44)
+            Picker("출발 시", selection: Binding(get: { planner.plan.startMinute / 60 }, set: { planner.plan.startMinute = $0 * 60 + planner.plan.startMinute % 60 })) {
+                ForEach(0..<24) { Text("\($0)시").tag($0) }
             }
-            Text("시간·점심 회피·적재 조건은 결과 반영 시 다시 검증합니다. 하역 방향과 실제 통행 가능 여부는 등록한 도로 조건으로 확인합니다.").font(.caption)
+            Picker("출발 분", selection: Binding(get: { planner.plan.startMinute % 60 }, set: { planner.plan.startMinute = planner.plan.startMinute / 60 * 60 + $0 })) {
+                ForEach(0..<60) { Text("\($0)분").tag($0) }
+            }
+
         }
     }
     private var timingSection: some View {
-        Section("티맵에 전달할 시간") {
+        Section("배송지 · 시간 조건") {
             switch timingPreview {
             case .success(let timing):
                 Text("출발 예정 \(requestTime(timing.startTime))")
@@ -128,7 +135,8 @@ struct TMapScreen: View {
                         Text(stop.name).bold()
                         Text(stop.windowCount == 0 ? "도착 시간대 제한 없음" : "희망 도착 \(requestTime(stop.wishStartTime)) ~ \(requestTime(stop.wishEndTime))")
                             .font(.caption)
-                        Text("배송·매입 작업 \(stop.viaTime / 60)분").font(.caption)
+                        Text("배송 작업 \(stop.viaTime / 60)분").font(.caption)
+                        if let visit = planner.plan.visits.first(where: { $0.id == stop.id }) { Button("배송 시간 수정") { inputs.finishEditing(); visitDraft = visit }.font(.caption) }
                     }
                 }
                 ForEach(Array(timing.notes.enumerated()), id: \.offset) { _, note in
@@ -137,7 +145,7 @@ struct TMapScreen: View {
             case .failure(let error):
                 Text(error.localizedDescription).font(.caption).foregroundColor(.red)
             }
-            Text("출발시각과 거래처 시간 조건은 배송계획에서 입력·수정합니다. 위 시간은 티맵에 도착 희망 시간대로 전달하며, 실제 작업시작·점심 회피·대기·휴식은 결과 반영 후 다시 검증합니다.").font(.caption).foregroundColor(.secondary)
+            Text("시간은 티맵에 희망 도착 시간과 배송 작업시간으로 전달합니다. 적재 배치와 별도의 운행 일정 계산은 사용하지 않습니다.").font(.caption).foregroundColor(.secondary)
         }
     }
     private var timingPreview: Result<TMapTimeInputs, Error> {
@@ -178,18 +186,13 @@ struct TMapScreen: View {
     private func routeSection(_ route: TMapRoute) -> some View {
         Section("티맵 제안 경로") {
             routeSummary(route)
-            Text("티맵의 예상 일정입니다. 작업 시작은 응답의 도착·대기 또는 완료·작업시간으로 계산합니다. 앱의 휴식·재배치·최종 배송 조건 검증 후 일정이 달라질 수 있습니다.").font(.caption)
+            Text("티맵이 계산한 방문 순서와 예상 일정입니다. 작업 시작은 응답의 도착·대기 또는 완료·작업시간으로 계산합니다.").font(.caption)
             ForEach(Array(route.warnings.enumerated()), id: \.offset) { _, warning in
                 Text(warning).font(.caption).foregroundColor(.orange)
             }
-            TMapRouteMap(route: route, plan: planner.plan).frame(height: 280)
+            TMapRouteMap(route: route, plan: displayPlan ?? planner.plan).frame(height: 280)
             Text("받은 시각 \(resetTime(route.fetchedAtMillis)) · 유효기간 \(resetTime(route.expiresAtMillis))까지").font(.caption2)
-            Button("티맵 순서를 배송계획에 반영하고 검증") {
-                inputs.finishEditing()
-                if store.apply(to: planner) { openPlanResult() }
-            }.buttonStyle(.borderedProminent)
-                .disabled(!store.canApply(to: planner.plan) || planner.isComputing || store.isOptimizing)
-            if !store.canApply(to: planner.plan) { Text("이미 반영했거나 입력이 달라졌습니다. 현재 계획의 새 순서가 필요하면 다시 요청하세요.").font(.caption) }
+            if !store.canApply(to: planner.plan) { Text("배송지나 시간 조건이 변경되었거나 결과가 만료되었습니다. 이 결과는 이전 요청 기준입니다. 현재 설정으로 다시 최적화하세요.").font(.caption).foregroundStyle(.orange) }
             ForEach(route.rows) { row in routeRow(row) }
         }
     }
@@ -220,7 +223,7 @@ struct TMapScreen: View {
     @ViewBuilder
     private func routeRow(_ row: TMapRow) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text((row.visitID == "depot" || row.visitID == "destination") ? "최종 도착: \(planner.plan.name(row.visitID))" : "\(row.position). \(planner.plan.name(row.visitID))").bold()
+            Text((row.visitID == "depot" || row.visitID == "destination") ? "최종 도착: \((displayPlan ?? planner.plan).name(row.visitID))" : "\(row.position). \((displayPlan ?? planner.plan).name(row.visitID))").bold()
             Text("이동 \(duration(row.travelSeconds)) · \(row.distanceMeters / 1000, specifier: "%.1f")km · 통행료 \(toll(row.tollWon))").font(.caption)
             Text("티맵 도착 \(arrivalTime(row.arriveTime))").font(.caption)
             if planner.plan.visits.contains(where: { $0.id == row.visitID }) {
@@ -244,12 +247,12 @@ struct TMapScreen: View {
         return String(format: "%.0f원", value)
     }
     private var locationsSection: some View {
-        Section("하역 위치 좌표") {
+        Section("배송 위치 좌표") {
             Button("네이버 검색에서 장소·주소 가져오기") { inputs.finishEditing(); openNaver("https://map.naver.com/p/") }
                 .disabled(store.isOptimizing)
             Button("네이버 저장 목록 전체 가져오기") { inputs.finishEditing(); openNaver("https://map.naver.com/p/favorite") }
                 .disabled(store.isOptimizing)
-            Button("가져온 거래처 \(customers.records.count)곳 · 배송계획에 연결") { inputs.finishEditing(); showCustomers = true }
+            Button("거래처 목록 \(customers.records.count)곳 · 이번 배송 선택") { inputs.finishEditing(); showCustomers = true }
                 .disabled(store.isOptimizing)
             Text("네이버 API 검색 결과를 선택해 거래처로 저장하세요. 좌표 조회에는 지도 표시가 필요하지 않습니다. 저장한 목록에서 이번에 나갈 곳과 출발지·도착지를 선택합니다.").font(.caption)
             ForEach(planner.plan.nodes, id: \.id) { node in
@@ -404,7 +407,7 @@ private struct TMapSettingsView: View {
     }
 }
 
-private struct TMapLocationEditor: View {
+struct TMapLocationEditor: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var inputs: NativeInputSession
     let name: String

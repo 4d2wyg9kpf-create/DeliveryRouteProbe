@@ -7,90 +7,161 @@ struct NaverSearchScreen: View {
     @ObservedObject private var api = NaverAPIStore.shared
     @EnvironmentObject private var inputs: NativeInputSession
     @EnvironmentObject private var customers: NaverCustomerStore
+    @EnvironmentObject private var sites: SiteTargetStore
     @State private var mode = 0
+    @State private var destination = NaverImportDestination.customers
     @State private var query = ""
     @State private var name = ""
     @State private var address = ""
+    @State private var sharedLink = ""
     @State private var results: [NaverAPIResult] = []
     @State private var selection: NaverPlaceCapture?
     @State private var showSettings = false
     @State private var showCustomers = false
     @State private var message = ""
     @State private var error: String?
+    private var importing: Bool { browser.isOpeningSharedLink || browser.isImportingSavedList || browser.waitingForSavedFolder || browser.isReadingPlace }
     var body: some View {
         NavigationStack {
             Form {
-                Section {
+                Section("가져온 장소를 저장할 곳") {
+                    Picker("저장 목록", selection: $destination) {
+                        ForEach(NaverImportDestination.allCases) { Text($0.title).tag($0) }
+                    }.disabled(importing || api.isBusy)
+                    Text("거래처 \(customers.records.count)곳 · 평가대상지 \(sites.records.count)곳").font(.caption).foregroundStyle(.secondary)
+                }
+                Section("장소 이름 · 주소 · 좌표 가져오기") {
                     Picker("찾는 방법", selection: $mode) {
-                        Text("업체 검색").tag(0)
-                        Text("주소 → 좌표").tag(1)
-                    }.pickerStyle(.segmented)
+                        Text("검색어").tag(0)
+                        Text("주소").tag(1)
+                        Text("공유 링크").tag(2)
+                    }.pickerStyle(.segmented).disabled(importing || api.isBusy)
                     if mode == 0 {
-                        NativeTextField("업체명 · 지역을 함께 입력하면 더 정확합니다", text: $query).frame(minHeight: 44)
-                    } else {
-                        NativeTextField("거래처 이름 · 선택 사항", text: $name).frame(minHeight: 44)
+                        NativeTextField("업체명 · 지역을 함께 입력하세요", text: $query).frame(minHeight: 44)
+                    } else if mode == 1 {
+                        NativeTextField("장소 이름 · 선택 사항", text: $name).frame(minHeight: 44)
                         NativeTextField("전체 주소 · 예: 대전 중구 유천로 35", text: $address).frame(minHeight: 44)
+                    } else {
+                        NativeTextField("네이버지도 장소·목록 공유 링크", text: $sharedLink, keyboard: .URL).frame(minHeight: 44)
+                        PasteButton(payloadType: String.self) { values in sharedLink = values.first ?? "" }
+                        Text("네이버지도에서 공유한 링크를 붙여넣으세요. 장소 링크는 확인 후 저장하고, 목록 링크는 목록 안의 장소를 모두 가져옵니다.").font(.caption).foregroundStyle(.secondary)
                     }
-                    Button(api.isBusy ? "처리 중…" : mode == 0 ? "네이버 API로 검색" : "네이버 API로 좌표 변환") { search() }
+                    Button(api.isBusy || importing ? "처리 중…" : mode == 0 ? "네이버 검색" : mode == 1 ? "주소 → 좌표 변환" : "공유 링크 가져오기") { search() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(api.isBusy || (mode == 0 ? query : address).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if !api.hasSearchKeys || !api.hasMapsKeys {
-                        Button("네이버 API 키 설정") { inputs.finishEditing(); showSettings = true }
+                        .disabled(api.isBusy || importing || enteredText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if mode != 2 {
+                        Text(mode == 0 ? "검색은 최대 5곳을 반환합니다. 원하는 지점이 없으면 업체명에 지역을 더하거나 주소로 변환하세요." : "Maps Geocoding으로 주소에 맞는 좌표를 가져옵니다. 지도 화면을 띄울 필요가 없습니다.").font(.caption).foregroundStyle(.secondary)
                     }
-                    Text(mode == 0 ? "검색은 최대 5곳을 반환합니다. 원하는 지점이 없으면 업체명에 시·구·동을 더하거나 주소로 변환하세요." : "주소 변환은 Maps의 Geocoding 키를 사용합니다. 지도 화면을 띄울 필요가 없습니다.").font(.caption).foregroundColor(.secondary)
-                } header: { Text("지도 없이 장소·좌표 찾기") }
+                    if !api.hasSearchKeys || !api.hasMapsKeys { Button("네이버 API 키 설정") { inputs.finishEditing(); showSettings = true } }
+                }
                 if !message.isEmpty { Text(message).font(.caption) }
-                if let error { Text(error).font(.caption).foregroundColor(.red) }
-                if let error = api.errorMessage { Text(error).font(.caption).foregroundColor(.red) }
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                if let error = api.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
+                if let error = browser.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
+                if importing || !browser.savedListProgress.isEmpty {
+                    Section("링크 · 목록 가져오기") {
+                        if importing { ProgressView() }
+                        Text(browser.savedListProgress.isEmpty ? browser.status : browser.savedListProgress).font(.caption)
+                        if importing { Button("중단") { browser.cancelLinkImport() } }
+                        if let report = browser.savedListReport, !report.failures.isEmpty {
+                            DisclosureGroup("가져오지 못한 \(report.failures.count)곳") {
+                                ForEach(Array(report.failures.enumerated()), id: \.offset) { _, value in Text(value).font(.caption).foregroundStyle(.orange) }
+                            }
+                        }
+                        Button("네이버 로그인 · 링크 접근 확인") { inputs.finishEditing(); showWeb = true }
+                    }
+                }
                 if !results.isEmpty {
-                    Section("검색 결과 · 장소를 눌러 저장") {
+                    Section("검색 결과 · 눌러서 저장") {
                         ForEach(results) { result in
                             Button { inputs.finishEditing(); selection = result.capture } label: {
                                 VStack(alignment: .leading, spacing: 5) {
-                                    Text(result.capture.name).bold().foregroundColor(.primary)
-                                    Text(result.capture.preferredAddress).font(.subheadline).foregroundColor(.primary)
-                                    if !result.category.isEmpty { Text(result.category).font(.caption).foregroundColor(.secondary) }
+                                    Text(result.capture.name).bold().foregroundStyle(.primary)
+                                    Text(result.capture.preferredAddress).font(.subheadline).foregroundStyle(.primary)
+                                    if !result.category.isEmpty { Text(result.category).font(.caption).foregroundStyle(.secondary) }
                                     NaverCoordinateLabel(capture: result.capture)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
+                        if results.count > 1 { Button("검색 결과 \(results.count)곳을 \(destination.title)에 저장") { saveAll() } }
                     }
                 }
-                Section("거래처와 이번 배송") {
-                    Button("거래처 목록 · 이번 배송 선택") { inputs.finishEditing(); showCustomers = true }
-                    Button("네이버 개인 저장목록 가져오기") { inputs.finishEditing(); browser.openSavedLists(customers); showWeb = true }
-                    Text("API 검색으로 저장한 거래처 중 이번에 나갈 곳을 목록에서 체크합니다. 개인 저장목록은 네이버 웹 화면에서 폴더를 선택해 가져오며 좌표 변환에는 API를 사용합니다.").font(.caption).foregroundColor(.secondary)
+                Section("목록 관리") {
+                    Button("티맵 거래처 목록 · 이번 배송 선택") { inputs.finishEditing(); showCustomers = true }
+                    Button("네이버에 저장한 장소 목록 열기") {
+                        inputs.finishEditing()
+                        browser.openSavedLists(customers, sites: sites, destination: destination); showWeb = true
+                    }.disabled(importing || api.isBusy)
+                    Text("개인 목록은 네이버 로그인이 필요할 수 있습니다. 공유·검색 좌표가 없으면 읽은 주소를 API로 변환하고, 확인된 장소만 저장합니다.").font(.caption).foregroundStyle(.secondary)
                 }
                 NaverQuotaSection(api: api)
-                Section {
-                    Button("기존 웹 지도 · 공유 링크 · 경로 읽기") { inputs.finishEditing(); browser.openHome(); showWeb = true }
-                }
             }
-            .navigationTitle("네이버 검색")
+            .background {
+                // A wide, invisible document viewport lets shared links resolve
+                // without making the user fit a desktop map onto an iPhone.
+                if !showWeb && importing { MapWebView(webView: browser.webView).frame(width: 900, height: 700).opacity(0).allowsHitTesting(false).accessibilityHidden(true) }
+            }.clipped()
+            .navigationTitle("네이버검색")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { inputs.finishEditing(); showSettings = true } label: { Image(systemName: "gearshape") }.accessibilityLabel("네이버 API 설정") } }
-            .navigationDestination(isPresented: $showWeb) { ProbeView(model: browser, planner: planner).navigationTitle("네이버 저장목록 · 웹 지도").navigationBarTitleDisplayMode(.inline) }
+            .navigationDestination(isPresented: $showWeb) { NaverLinkWebView(browser: browser) }
             .sheet(isPresented: $showSettings) { NaverAPISettingsView(api: api) }
             .sheet(isPresented: $showCustomers) { NaverCustomerCatalogView(planner: planner, browser: browser) }
-            .sheet(item: $selection) { capture in NaverAPISelectionView(capture: capture) { message = $0 } }
+            .sheet(item: $selection) { capture in NaverAPISelectionView(capture: capture, destination: destination) { message = $0 } }
             .task { await api.refreshQuotas() }
+            .onChange(of: browser.placeCapture?.capturedAt) { _, _ in
+                if let capture = browser.placeCapture { selection = capture }
+            }
             .onChange(of: mode) { _, _ in results = []; error = nil; message = "" }
         }
     }
+    private var enteredText: String { mode == 0 ? query : mode == 1 ? address : sharedLink }
     private func search() {
         inputs.finishEditing(); error = nil; message = ""; results = []
+        if mode == 2 {
+            do { try browser.openSharedLink(sharedLink, customers: customers, sites: sites, destination: destination) }
+            catch { self.error = error.localizedDescription }
+            return
+        }
         let chosenMode = mode, searchQuery = query, enteredAddress = address, enteredName = name
         Task {
             do {
                 if chosenMode == 0 {
                     let found = try await api.search(searchQuery)
-                    if mode == chosenMode { results = found; message = found.isEmpty ? "검색 결과가 없습니다. 업체명에 지역을 더하거나 주소로 검색해 주세요." : "\(found.count)곳을 찾았습니다." }
+                    if mode == chosenMode { results = found; message = found.isEmpty ? "검색 결과가 없습니다. 지역을 더하거나 주소로 검색해 주세요." : "\(found.count)곳을 찾았습니다." }
                 } else {
                     let found = try await api.address(enteredAddress, name: enteredName)
                     if mode == chosenMode { selection = found; message = "주소와 일치하는 좌표를 찾았습니다." }
                 }
             } catch { self.error = error.localizedDescription }
         }
+    }
+    private func saveAll() {
+        inputs.finishEditing(); error = nil
+        var added = 0, updated = 0
+        do {
+            for result in results {
+                if try NaverImportSink.save(result.capture, destination: destination, customers: customers, sites: sites) { added += 1 } else { updated += 1 }
+            }
+            message = "\(destination.title): 새로 저장 \(added)곳 · 기존 장소 갱신 \(updated)곳"
+        } catch { message = "\(added + updated)곳 저장됨"; self.error = error.localizedDescription }
+    }
+}
+
+struct NaverLinkWebView: View {
+    @ObservedObject var browser: BrowserModel
+    var body: some View {
+        VStack(spacing: 8) {
+            if browser.isLoading { ProgressView(value: browser.progress) }
+            Text(browser.savedListProgress.isEmpty ? browser.status : browser.savedListProgress).font(.caption).padding(.horizontal)
+            if let error = browser.errorMessage { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal) }
+            HStack {
+                Button { _ = browser.webView.goBack() } label: { Image(systemName: "chevron.left") }.disabled(!browser.canGoBack)
+                Button("새로고침") { browser.webView.reload() }
+                Button("선택 장소 읽기", action: browser.readSelectedPlace).disabled(browser.isLoading || browser.isReadingPlace || browser.isImportingSavedList || browser.isOpeningSharedLink)
+            }.buttonStyle(.bordered)
+            MapWebView(webView: browser.webView)
+        }.navigationTitle("네이버 목록 · 로그인 확인").navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -106,13 +177,18 @@ struct NaverCoordinateLabel: View {
 private struct NaverAPISelectionView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var customers: NaverCustomerStore
+    @EnvironmentObject private var sites: SiteTargetStore
     @EnvironmentObject private var inputs: NativeInputSession
-    let capture: NaverPlaceCapture
+    @ObservedObject private var api = NaverAPIStore.shared
     let saved: (String) -> Void
+    @State private var capture: NaverPlaceCapture
+    @State private var destination: NaverImportDestination
     @State private var name: String
     @State private var error: String?
-    init(capture: NaverPlaceCapture, saved: @escaping (String) -> Void) {
-        self.capture = capture; self.saved = saved; _name = State(initialValue: capture.name)
+    @State private var resolving = false
+    init(capture: NaverPlaceCapture, destination: NaverImportDestination, saved: @escaping (String) -> Void) {
+        self.saved = saved; _capture = State(initialValue: capture); _name = State(initialValue: capture.name)
+        _destination = State(initialValue: destination)
     }
     var body: some View {
         NavigationStack {
@@ -122,17 +198,29 @@ private struct NaverAPISelectionView: View {
                     Text(capture.preferredAddress)
                     if !capture.jibunAddress.isEmpty { Text("지번: \(capture.jibunAddress)").font(.caption) }
                     NaverCoordinateLabel(capture: capture)
-                    Text("좌표 제공: \(capture.geocodeProvider ?? "NAVER")").font(.caption)
+                    if capture.coordinate == nil {
+                        Text(capture.coordinateIssue ?? "주소에서 좌표를 변환해 주세요.").font(.caption).foregroundStyle(.orange)
+                        Button(resolving ? "좌표 변환 중…" : "읽은 주소로 좌표 변환") {
+                            inputs.finishEditing(); resolving = true; error = nil
+                            Task {
+                                defer { resolving = false }
+                                do { capture = try await api.resolve(capture) } catch { self.error = error.localizedDescription }
+                            }
+                        }.disabled(resolving || api.isBusy || capture.preferredAddress.isEmpty)
+                    } else { Text("좌표 제공: \(capture.geocodeProvider ?? "NAVER")").font(.caption) }
                 }
-                Section("거래처 목록에 저장") {
-                    NativeTextField("거래처 이름", text: $name).frame(minHeight: 44)
-                    Text("검색·주소 변환 좌표는 업체 또는 건물 위치입니다. 배송계획에서 실제 차량 정차 위치인지 확인해 주세요.").font(.caption).foregroundColor(.secondary)
-                    if let error { Text(error).font(.caption).foregroundColor(.red) }
-                    Button("거래처 목록에 저장") {
+                Section("목록에 저장") {
+                    Picker("저장할 곳", selection: $destination) { ForEach(NaverImportDestination.allCases) { Text($0.title).tag($0) } }
+                    NativeTextField("장소 이름", text: $name).frame(minHeight: 44)
+                    Text("장소 좌표는 건물 위치일 수 있습니다. 배송 시에는 실제 차량 정차 위치인지 확인하세요.").font(.caption).foregroundStyle(.secondary)
+                    if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                    Button("\(destination.title)에 저장") {
                         inputs.finishEditing()
-                        do { let added = try customers.save(capture, name: name); saved(added ? "거래처를 저장했습니다. ‘이번 배송 선택’에서 방문할 곳을 체크하세요." : "기존 거래처의 주소·좌표를 갱신했습니다."); dismiss() }
-                        catch { self.error = error.localizedDescription }
-                    }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        do {
+                            let added = try NaverImportSink.save(capture, name: name, destination: destination, customers: customers, sites: sites)
+                            saved("\(destination.title)에 \(added ? "저장했습니다." : "기존 장소를 갱신했습니다.")"); dismiss()
+                        } catch { self.error = error.localizedDescription }
+                    }.buttonStyle(.borderedProminent).disabled(resolving || capture.coordinate == nil || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }.navigationTitle("장소 확인").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { inputs.finishEditing(); dismiss() } } }

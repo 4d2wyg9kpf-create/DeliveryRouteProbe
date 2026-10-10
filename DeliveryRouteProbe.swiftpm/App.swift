@@ -23,54 +23,39 @@ struct DeliveryRootView: View {
     @StateObject private var planner = PlannerStore()
     @StateObject private var customers = NaverCustomerStore()
     @StateObject private var tmap = TMapStore.shared
-    @StateObject private var trip = TripStore.shared
+    @StateObject private var sites = SiteTargetStore()
+    @StateObject private var publicData = PublicDataStore.shared
     @StateObject private var inputs = NativeInputSession()
-    @State private var selectedTab = 3
+    @State private var selectedTab = 0
     @State private var showNaverWeb = false
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         TabView(selection: $selectedTab) {
+            NaverSearchScreen(planner: planner, browser: model, showWeb: $showNaverWeb)
+                .tabItem { Label("네이버검색", systemImage: "magnifyingglass") }.tag(0)
             TMapScreen(store: tmap, planner: planner, browser: model,
-                       openNaver: openNaver, openPlanResult: { selectedTab = 1 })
-                .tabItem { Label("티맵 최적화", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }.tag(3)
-            Group {
-                // Do not construct/attach a web view behind the planner.
-                if selectedTab == 0 { NaverSearchScreen(planner: planner, browser: model, showWeb: $showNaverWeb) }
-                else { Color.clear }
-            }
-            .disabled(selectedTab != 0)
-            .tabItem { Label("네이버 검색", systemImage: "magnifyingglass") }.tag(0)
-            PlannerScreen(store: planner, browser: model, tmap: tmap, openRoute: openNaver,
-                          optimizeTMap: startTMapOptimization, openTMapResult: { selectedTab = 3 })
-            .disabled(selectedTab != 1)
-            .tabItem { Label("배송계획", systemImage: "list.number") }.tag(1)
-            TripScreen(store: trip, planner: planner, browser: model) { url in
-                openNaver(url)
-            }
-            .disabled(selectedTab != 2)
-            .tabItem { Label("운행 안내", systemImage: "truck.box") }.tag(2)
+                       openNaver: openNaver, openPlanResult: {})
+                .tabItem { Label("티맵최적화", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }.tag(1)
+            LocationAnalysisScreen(store: publicData, openNaver: { selectedTab = 0 })
+                .tabItem { Label("입지분석", systemImage: "mappin.and.ellipse") }.tag(2)
         }
         .environmentObject(inputs)
         .environmentObject(customers)
+        .environmentObject(sites)
         .onAppear {
             do { try customers.remember(planner.plan) }
             catch { customers.errorMessage = error.localizedDescription }
+            InputDiagnostics.shared.start()
         }
-        .onAppear { InputDiagnostics.shared.start() }
         .onChange(of: selectedTab) { _, _ in inputs.finishEditing() }
-        .onChange(of: scenePhase) { phase in
+        .onChange(of: scenePhase) { _, phase in
             if phase != .active { planner.saveNow() }
             else { Task { await tmap.refreshClock() } }
         }
     }
-    private func startTMapOptimization() {
-        inputs.finishEditing()
-        selectedTab = 3
-        tmap.optimize(plan: planner.plan)
-    }
     private func openNaver(_ url: String) {
         inputs.finishEditing()
-        if url.contains("/favorite") { model.openSavedLists(customers); showNaverWeb = true }
+        if url.contains("/favorite") { model.openSavedLists(customers, sites: sites); showNaverWeb = true }
         else if ["https://map.naver.com/", "https://map.naver.com/p/"].contains(url) { showNaverWeb = false }
         else { model.openRecordedRoute(url); showNaverWeb = true }
         selectedTab = 0

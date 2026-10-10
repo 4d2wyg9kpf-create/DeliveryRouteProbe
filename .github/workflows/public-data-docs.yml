@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   docs:
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     timeout-minutes: 6
     steps:
       - uses: actions/checkout@v7

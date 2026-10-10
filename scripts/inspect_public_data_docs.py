@@ -8,15 +8,11 @@ from pathlib import Path
 OUT = Path('build/public-data-docs')
 OUT.mkdir(parents=True, exist_ok=True)
 URLS = {
-    'restaurants': 'https://www.data.go.kr/data/15154916/openapi.do',
-    'cafes': 'https://www.data.go.kr/data/15154921/openapi.do',
-    'catering': 'https://www.data.go.kr/data/15155159/openapi.do',
-    'canteens': 'https://www.data.go.kr/data/15155168/openapi.do',
     'bakery': 'https://www.data.go.kr/data/15155252/openapi.do',
-    'stores': 'https://www.data.go.kr/data/15012005/openapi.do',
-    'bakery-index': 'https://data.edmgr.kr/dataView.do?id=www-data-go-kr-data-filedata-15044973',
-    'manual': 'https://www.localdata.go.kr/images/egovframework/portal/manual_260106.pdf',
+    'download-helper': 'https://www.data.go.kr/js/biz/datset/script_fileDetail.js',
+    'bakery-alt': 'https://data.go.kr/data/15155252/openapi.do',
 }
+
 for name, url in URLS.items():
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})

@@ -25,7 +25,6 @@ struct NaverCustomerCatalogView: View {
                     Picker("도착 방식", selection: $endMode) {
                         Text("출발지로 복귀").tag("return")
                         Text("목록에서 도착지 선택").tag("custom")
-                        Text("마지막 배송지에서 종료").tag("last")
                     }
                     if endMode == "custom" {
                         Picker("최종 도착지", selection: $destinationID) {
@@ -89,7 +88,7 @@ struct NaverCustomerCatalogView: View {
                         Text("건물 중앙에 찍힌 표식이면 실제 하역 위치를 지정해 주세요.").font(.caption).foregroundColor(.secondary)
                     }
                     if let error { Text(error).foregroundColor(.red).font(.caption) }
-                    Button("선택한 \(selectedIDs.count)곳으로 이번 배송계획 저장") {
+                    Button("선택한 \(selectedIDs.count)곳으로 이번 배송 설정 저장") {
                         do { try customers.applySelection(selectedIDs, planner: planner, curbConfirmed: curbConfirmed, originID: originID, endMode: endMode, destinationID: destinationID); dismiss() }
                         catch { self.error = error.localizedDescription }
                     }.buttonStyle(.borderedProminent)
@@ -104,7 +103,7 @@ struct NaverCustomerCatalogView: View {
                 selectedIDs = Set(customers.records.filter { record in
                     planner.plan.visits.contains { $0.id == record.template.id || (record.capture != nil && $0.naverPlace?.selectionKey == record.capture?.selectionKey) }
                 }.map(\.id))
-                endMode = planner.plan.returnToOrigin ? (planner.plan.destination == nil ? "return" : "custom") : "last"
+                endMode = planner.plan.destination == nil ? "return" : "custom"
                 destinationID = planner.plan.destination?.customerID ?? ""
             }
             .confirmationDialog("거래처 목록에서 삭제", isPresented: $confirmDelete, titleVisibility: .visible) {
@@ -121,7 +120,7 @@ struct NaverCustomerCatalogView: View {
                         } catch { self.error = error.localizedDescription }
                     }
                 }
-            } message: { Text("앱의 거래처 목록과 이번 배송계획에서 지웁니다. 네이버에 저장된 원본 목록은 유지합니다.") }
+            } message: { Text("앱의 거래처 목록과 이번 배송 설정에서 지웁니다. 네이버에 저장된 원본 목록은 유지합니다.") }
         }
     }
     private var needsCoordinateConfirmation: Bool {
