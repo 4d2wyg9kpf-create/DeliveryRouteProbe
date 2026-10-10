@@ -28,9 +28,14 @@ private final class Fixture {
     var cancelGET = false
     var delayGET = false
     var mismatchedAddress = false
+    var nestedError = false
+    var serverErrorDetails = ""
+    var decimalSearchCoordinate = false
     var requests: [URLRequest] = []
-    init(free: Bool = true, search: Bool = true, maps: Bool = true) throws {
-        data = try JSONSerialization.data(withJSONObject: ["version": 1, "searchID": search ? "fixture-client" : "", "searchSecret": search ? "fixture-secret" : "", "mapsID": maps ? "fixture-maps" : "", "mapsSecret": maps ? "fixture-map-secret" : "", "mapsFreeConfirmed": free, "ledger": ["version": 1, "accounts": [:]]])
+    init(free: Bool = true, search: Bool = true, maps: Bool = true, provider: NaverSearchProvider? = .hub, hubFree: Bool = true) throws {
+        var json: [String: Any] = ["version": 1, "searchID": search ? "fixture-client" : "", "searchSecret": search ? "fixture-secret" : "", "searchFreeConfirmed": hubFree, "mapsID": maps ? "fixture-maps" : "", "mapsSecret": maps ? "fixture-map-secret" : "", "mapsFreeConfirmed": free, "ledger": ["version": 1, "accounts": [:]]]
+        if let provider { json["searchProvider"] = provider.rawValue }
+        data = try JSONSerialization.data(withJSONObject: json)
     }
     func store() -> NaverAPIStore {
         NaverAPIStore(read: { self.corruptRead ? Data("broken".utf8) : self.data }, write: {
@@ -40,24 +45,29 @@ private final class Fixture {
     func used(_ provider: String) throws -> Int {
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         let ledger = json["ledger"] as! [String: Any], accounts = ledger["accounts"] as! [String: [String: Any]]
-        return accounts.first(where: { $0.key.hasPrefix(provider == "search" ? "search:" : "maps-") })?.value["used"] as? Int ?? 0
+        let prefix = provider == "maps" ? "maps-" : provider == "searchMonth" ? "hub-month:" : (json["searchProvider"] as? String == "hub" ? "hub:" : "search:")
+        return accounts.first(where: { $0.key.hasPrefix(prefix) })?.value["used"] as? Int ?? 0
     }
     func respond(_ request: URLRequest) async throws -> (Data, URLResponse) {
         requests.append(request)
         let head = request.httpMethod == "HEAD"
         if head { headCount += 1 } else {
             getCount += 1
-            let provider = request.url!.host == "openapi.naver.com" ? "search" : "maps"
+            let provider = request.url!.host == "maps.apigw.ntruss.com" ? "maps" : "search"
             try require(try used(provider) > 0, "request dispatched before persisted reservation")
+            if request.url!.host == "naverapihub.apigw.ntruss.com" { try require(try used("searchMonth") > 0, "monthly reservation not persisted before HUB request") }
             if cancelGET { throw CancellationError() }
             if delayGET { try await Task.sleep(nanoseconds: 120_000_000) }
         }
         let address = mismatchedAddress ? "대전 중구 유천로 350" : "대전광역시 중구 유천로 35"
         let json: [String: Any]
         if head { json = [:] }
-        else if status != 200 { json = ["errorCode": serverErrorCode ?? (status == 429 ? "012" : "024"), "errorMessage": serverErrorMessage] }
-        else if request.url!.host == "openapi.naver.com" {
-            json = ["items": [["title": "<b>가상</b> 거래처", "roadAddress": address, "address": "대전 중구 유천동 100", "category": "배송", "mapx": "1273980000", "mapy": "363160000"]]]
+        else if status != 200 {
+            let code = serverErrorCode ?? (status == 429 ? "429" : "SE01")
+            json = nestedError ? ["error": ["errorCode": code, "message": serverErrorMessage, "details": serverErrorDetails]] : ["errorCode": code, "errorMessage": serverErrorMessage]
+        }
+        else if request.url!.host != "maps.apigw.ntruss.com" {
+            json = ["items": [["title": "<b>가상</b> 거래처", "roadAddress": address, "address": "대전 중구 유천동 100", "category": "배송", "mapx": decimalSearchCoordinate ? "127.398" : "1273980000", "mapy": decimalSearchCoordinate ? "36.316" : "363160000"]]]
         } else {
             json = ["status": "OK", "addresses": [["roadAddress": address, "jibunAddress": "대전 중구 유천동 100", "x": "127.398", "y": "36.316"]]]
         }
@@ -76,13 +86,17 @@ struct NaverAPINativeTests {
         func rejects(_ body: () async throws -> Void) async throws {
             do { try await body() } catch { return }; throw PlannerFailure.message("expected rejection")
         }
-        await test("official local endpoint, headers and persist-before-dispatch") {
+        await test("HUB local endpoint, Cloud headers and atomic daily/monthly persist-before-dispatch") {
             let f = try Fixture(), s = f.store(), r = try await s.search("가상 거래처 대전")
             try require(r.count == 1 && r[0].capture.coordinate?.longitude == 127.398, "bad coordinate")
             let q = f.requests.last!
-            try require(q.url?.host == "openapi.naver.com" && q.url?.path == "/v1/search/local.json", "wrong local endpoint")
-            try require(q.value(forHTTPHeaderField: "X-Naver-Client-Id") == "fixture-client" && q.value(forHTTPHeaderField: "X-Naver-Client-Secret") == "fixture-secret", "wrong headers")
-            try require(try f.used("search") == 1 && f.getCount == 1, "wrong reservation")
+            try require(q.url?.host == "naverapihub.apigw.ntruss.com" && q.url?.path == "/search/v1/local", "wrong HUB endpoint")
+            let query = URLComponents(url: q.url!, resolvingAgainstBaseURL: false)!.queryItems!
+            try require(query.contains(where: { $0.name == "format" && $0.value == "json" }) && query.contains(where: { $0.name == "display" && $0.value == "5" }), "wrong HUB query")
+            try require(q.value(forHTTPHeaderField: "X-NCP-APIGW-API-KEY-ID") == "fixture-client" && q.value(forHTTPHeaderField: "X-NCP-APIGW-API-KEY") == "fixture-secret", "wrong Cloud headers")
+            try require(q.value(forHTTPHeaderField: "X-Naver-Client-Id") == nil && q.value(forHTTPHeaderField: "Content-Type") == nil, "legacy/POST header leaked to HUB GET")
+            try require(r[0].capture.geocodeProvider == "NAVER API HUB", "HUB proof not recorded")
+            try require(try f.used("search") == 1 && f.getCount == 1 && (try f.used("searchMonth")) == 1, "wrong reservation")
         }
         await test("25,000th search allowed, 25,001st never dispatched") {
             let f = try Fixture(), s = f.store(); await s.raiseUsage(provider: "search", used: 24999)
@@ -178,6 +192,84 @@ struct NaverAPINativeTests {
             while s.isBusy { try await Task.sleep(nanoseconds: 10_000_000) }
             let reloaded = f.store(); _ = try await reloaded.address("대전 중구 유천로 35", name: "가상 거래처")
             try require(try f.used("maps") == 3000000, "key rotation reset Maps usage")
+        }
+        await test("HUB 775,000th monthly search allowed, next blocked despite daily balance") {
+            let f = try Fixture(), s = f.store(); await s.raiseUsage(provider: "searchMonth", used: 774999)
+            _ = try await s.search("가상 거래처")
+            try await rejects { _ = try await s.search("다른 거래처") }
+            try require(f.getCount == 1 && s.quotas["searchMonth"]?.remaining == 0 && (try f.used("search")) == 1, "monthly cap escaped or daily partial reservation persisted")
+        }
+        await test("HUB exhausted month does not persist a partial daily reservation") {
+            let f = try Fixture(), s = f.store(); await s.raiseUsage(provider: "searchMonth", used: 775000)
+            try await rejects { _ = try await s.search("가상 거래처") }
+            try require(f.getCount == 0 && (try f.used("search")) == 0 && (try f.used("searchMonth")) == 775000, "monthly rejection partially charged the day")
+        }
+        await test("HUB temporary-free confirmation required before any billable request") {
+            let f = try Fixture(hubFree: false), s = f.store()
+            try await rejects { _ = try await s.search("가상 거래처") }
+            try require(f.getCount == 0 && (try f.used("search")) == 0 && (try f.used("searchMonth")) == 0, "unconfirmed HUB dispatched")
+        }
+        await test("HUB daily external usage raises monthly usage conservatively") {
+            let f = try Fixture(), s = f.store(); await s.raiseUsage(provider: "search", used: 100)
+            try require(try f.used("search") == 100 && (try f.used("searchMonth")) == 100, "daily correction lost from month")
+            let reloaded = f.store(); _ = try await reloaded.search("가상 거래처")
+            try require(try f.used("search") == 101 && (try f.used("searchMonth")) == 101, "restart reset a HUB counter")
+        }
+        await test("0.14.0 archive migrates to legacy host with its original quota intact") {
+            let f = try Fixture(provider: nil)
+            var json = try JSONSerialization.jsonObject(with: f.data) as! [String: Any]; json.removeValue(forKey: "searchFreeConfirmed")
+            f.data = try JSONSerialization.data(withJSONObject: json)
+            let s = f.store(); try require(s.searchProvider == .legacy, "old keys silently became HUB keys")
+            await s.raiseUsage(provider: "search", used: 24999)
+            let reloaded = f.store(), r = try await reloaded.search("가상 거래처")
+            let q = f.requests.last!
+            try require(q.url?.host == "openapi.naver.com" && q.url?.path == "/v1/search/local.json" && q.value(forHTTPHeaderField: "X-Naver-Client-Id") == "fixture-client", "legacy key sent to Cloud")
+            try require(q.value(forHTTPHeaderField: "X-NCP-APIGW-API-KEY-ID") == nil && r[0].capture.geocodeProvider == "NAVER Search", "legacy header/proof changed")
+            try require(try f.used("search") == 25000, "old daily count reset")
+        }
+        await test("switching providers requires a complete fresh credential pair") {
+            let f = try Fixture(provider: .legacy), s = f.store()
+            try require(!s.saveSettings(searchID: "", searchSecret: "", mapsID: "", mapsSecret: "", freeConfirmed: true, searchProvider: .hub, searchFreeConfirmed: true), "legacy keys reused at new host")
+            try require(s.searchProvider == .legacy && f.getCount == 0 && f.headCount == 0, "failed switch changed provider")
+        }
+        await test("HUB and legacy credentials keep separate quota records when switching") {
+            let f = try Fixture(provider: .legacy), s = f.store(); await s.raiseUsage(provider: "search", used: 123)
+            try require(s.saveSettings(searchID: "hub-fixture", searchSecret: "hub-fixture-secret", mapsID: "", mapsSecret: "", freeConfirmed: true, searchProvider: .hub, searchFreeConfirmed: true), "provider switch failed")
+            await Task.yield(); while s.isBusy { try await Task.sleep(nanoseconds: 10_000_000) }
+            let reloaded = f.store(); _ = try await reloaded.search("가상 거래처")
+            let json = try JSONSerialization.jsonObject(with: f.data) as! [String: Any]
+            let accounts = (json["ledger"] as! [String: Any])["accounts"] as! [String: [String: Any]]
+            try require(accounts.first(where: { $0.key.hasPrefix("search:") })?.value["used"] as? Int == 123 && (try f.used("search")) == 1, "switch erased or mixed counters")
+            try require(f.requests.last!.value(forHTTPHeaderField: "X-NCP-APIGW-API-KEY-ID") == "hub-fixture", "new key was not bound to HUB")
+        }
+        await test("HUB Gateway authentication errors consume one request without retry") {
+            let f = try Fixture(), s = f.store(); f.status = 401; f.nestedError = true; f.serverErrorCode = "200"; f.serverErrorMessage = "Authentication Failed"
+            try await rejects { _ = try await s.search("가상 거래처") }
+            try require(f.getCount == 1 && (try f.used("searchMonth")) == 1 && s.quotas["search"]?.blocked == false, "Gateway auth error retried/refunded/exhausted")
+        }
+        await test("HUB flat Search validation errors preserve the remaining period") {
+            let f = try Fixture(), s = f.store(); f.status = 400; f.serverErrorCode = "SE02"; f.serverErrorMessage = "Invalid display value"
+            try await rejects { _ = try await s.search("가상 거래처") }; f.status = 200
+            _ = try await s.search("가상 거래처")
+            try require(f.getCount == 2 && (try f.used("searchMonth")) == 2, "Search validation wrongly blocked period")
+        }
+        await test("HUB monthly Gateway limit blocks month, not only the day") {
+            let f = try Fixture(), s = f.store(); f.status = 429; f.nestedError = true; f.serverErrorCode = "400"; f.serverErrorMessage = "Quota Exceeded"; f.serverErrorDetails = "Monthly quota exceeded"
+            try await rejects { _ = try await s.search("가상 거래처") }; f.status = 200
+            try await rejects { _ = try await s.search("다른 거래처") }
+            try require(f.getCount == 1 && s.quotas["searchMonth"]?.remaining == 0 && (try f.used("search")) == 1, "monthly Gateway limit ignored")
+        }
+        await test("HUB throttle errors in Gateway details use a short cooldown") {
+            let f = try Fixture(), s = f.store(); f.status = 429; f.nestedError = true; f.serverErrorCode = "420"; f.serverErrorDetails = "Rate Limited"
+            try await rejects { _ = try await s.search("가상 거래처") }
+            try await rejects { _ = try await s.search("가상 거래처") }
+            try require(f.getCount == 1 && s.quotas["searchMonth"]?.blocked == false && s.quotas["search"]?.blocked == false, "throttle consumed a day/month or bypassed cooldown")
+        }
+        await test("HUB decimal WGS84 and address fallback retain HUB proof without a map") {
+            let f = try Fixture(maps: false), s = f.store(); f.decimalSearchCoordinate = true
+            let result = try await s.address("대전 중구 유천로 35", name: "가상 거래처")
+            try require(result.coordinate?.longitude == 127.398 && result.geocodeProvider == "NAVER API HUB" && result.method == "naver_hub_local_search", "fallback lost HUB coordinate proof")
+            try require(f.getCount == 1 && (try f.used("searchMonth")) == 1, "fallback made extra requests")
         }
         let passed = checks.filter { $0["passed"] as? Bool == true }.count
         let report: [String: Any] = ["passed": passed, "total": checks.count, "checks": checks, "live_api": false, "browser_or_map_required": false]

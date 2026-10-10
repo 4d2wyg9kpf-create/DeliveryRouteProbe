@@ -147,15 +147,16 @@ struct NaverQuotaSection: View {
     var body: some View {
         Section("네이버 무료 잔여량 · 이 기기 기준") {
             quotaRow("search", title: "지역 검색 · 하루 25,000회")
+            if api.searchProvider == .hub { quotaRow("searchMonth", title: "HUB 지역 검색 · 월 최대 775,000회") }
             quotaRow("maps", title: "Maps 주소 변환 · 월 3,000,000건")
             Button("잔여량·기준 시간 새로 확인") { Task { await api.refreshQuotas() } }.disabled(api.isBusy)
             Text("요청 전에 기록하며 실패·중단도 포함합니다. 다른 기기·앱의 사용량은 자동 조회하지 못합니다. 같은 검색 Client ID의 다른 검색 API, 같은 Maps 대표 계정의 다른 앱에서 사용한 총 횟수도 반영해 주세요.").font(.caption).foregroundColor(.secondary)
-            Text("초기화는 한국시간 일·월 경계와 5분 대기를 적용한 앱 기준입니다. 공식 초기화 시각을 확인한 값은 아니며, 서버가 계속 제한하면 다시 차단합니다.").font(.caption).foregroundColor(.secondary)
+            Text("클라우드 한도는 한국시간 매일 0시·매월 1일 0시에 초기화합니다. 앱은 경계에서 5분을 더 기다리며 서버가 계속 제한하면 다시 차단합니다. HUB 일·월 한도 중 하나라도 소진되면 검색할 수 없습니다.").font(.caption).foregroundColor(.secondary)
         }
         .sheet(isPresented: Binding(get: { usageProvider != nil }, set: { if !$0 { usageProvider = nil } })) {
             NavigationStack {
                 Form {
-                    Text("현재 기간에 같은 키·계정으로 사용한 총 횟수를 입력하세요. 현재 기록보다 늘리는 보정만 가능합니다.").font(.caption)
+                    Text("현재 기간에 같은 키·계정으로 사용한 총 횟수를 입력하세요. 현재 기록보다 늘리는 보정만 가능합니다. HUB 일 사용량을 늘린 만큼 월 사용량에도 합산합니다. 일 사용량을 먼저 반영한 뒤 월 총량을 확인하세요.").font(.caption)
                     NativeTextField("총 사용 횟수", text: $usageText, keyboard: .numberPad, digitsOnly: true).frame(minHeight: 44)
                     if let error = api.errorMessage { Text(error).font(.caption).foregroundColor(.red) }
                     Button("사용량 반영") {
@@ -178,6 +179,7 @@ struct NaverQuotaSection: View {
                 Button("다른 곳에서 사용한 횟수 반영") { usageText = String(quota.used); usageProvider = provider; api.errorMessage = nil }.font(.caption).disabled(api.isBusy)
             } else { Text("키 설정 후 기준 시간을 확인하세요.").font(.caption).foregroundColor(.secondary) }
             if provider == "maps" && !api.mapsFreeConfirmed { Text("새 Maps 무료 대표 계정 확인 필요").font(.caption).foregroundColor(.orange) }
+            if provider == "search" && api.searchProvider == .hub && !api.searchFreeConfirmed { Text("HUB 현재 무료 제공 확인 필요").font(.caption).foregroundColor(.orange) }
         }
     }
     private func resetTime(_ value: Double) -> String {
@@ -191,21 +193,39 @@ struct NaverAPISettingsView: View {
     @ObservedObject var api: NaverAPIStore
     @State private var searchID = ""
     @State private var searchSecret = ""
+    @State private var searchProvider = NaverSearchProvider.hub
+    @State private var searchFreeConfirmed = false
     @State private var mapsID = ""
     @State private var mapsSecret = ""
     @State private var freeConfirmed = false
     var body: some View {
         NavigationStack {
             Form {
-                Section("네이버 Developers · 검색 API") {
-                    Link("검색 API 발급 안내", destination: URL(string: "https://developers.naver.com/docs/serviceapi/search/local/local.md")!)
-                    Text("애플리케이션에 ‘검색’을 추가해 발급받은 키를 입력합니다. 지역 검색은 하루 25,000회이며 같은 Client ID의 다른 검색 API와 한도를 공유합니다.").font(.caption)
+                Section("네이버 검색 · 키 발급 서비스") {
+                    Picker("검색 키 발급처", selection: $searchProvider) {
+                        Text("NAVER API HUB · 신규 신청").tag(NaverSearchProvider.hub)
+                        Text("Developers · 기존 발급 키").tag(NaverSearchProvider.legacy)
+                    }
+                    if searchProvider == .hub {
+                        Link("HUB 등록 안내", destination: URL(string: "https://guide.ncloud-docs.com/docs/apihub-application")!)
+                        Text("콘솔에서 Application Services → NAVER API HUB → Application 등록 → NAVER 검색의 ‘지역’을 선택하세요. CLOVA가 표시되는 AI·NAVER API 메뉴에서는 등록하지 않습니다.").font(.caption)
+                        LabeledContent("Application 이름") { Text("DeliveryRoute-Search").textSelection(.enabled) }
+                        Text("검색 등록에는 Web URL·Android 패키지·iOS Bundle ID를 입력하지 않습니다. 인증 정보의 Client ID와 Client Secret을 아래에 입력하세요.").font(.caption)
+                        Toggle("현재 클라우드 콘솔에서 HUB 무료 제공 중임을 확인", isOn: $searchFreeConfirmed)
+                        Text("HUB는 한시적으로 무료입니다. 현재 일 25,000회·월 최대 775,000회를 안내하며, 무료 확인 전 또는 한도 소진 뒤에는 검색을 차단합니다. 유료 전환 공지 시 이 확인을 끄세요.").font(.caption)
+                    } else {
+                        Link("검색 API 이관 공지", destination: URL(string: "https://developers.naver.com/notice/article/32530")!)
+                        Text("2026년 7월 31일 이전에 Developers에서 등록한 기존 검색 키만 사용합니다. 신규 등록은 HUB에서 진행하세요. 기존 키는 2027년 6월 30일까지 지원하며 HUB 키와 호환되지 않습니다. 기존 일 사용량을 유지합니다.").font(.caption)
+                    }
                     SecureField(api.hasSearchKeys ? "Client ID · 변경 시 입력" : "검색 Client ID", text: $searchID)
                     SecureField(api.hasSearchKeys ? "Client Secret · 변경 시 입력" : "검색 Client Secret", text: $searchSecret)
                 }
                 Section("네이버 클라우드 · 새 Maps Geocoding") {
                     Link("Maps 안내·신청", destination: URL(string: "https://www.ncloud.com/product/applicationService/maps")!)
-                    Text("클라우드 콘솔의 새 ‘Maps’에서 애플리케이션을 만들고 Geocoding을 사용하도록 설정하세요. Developers의 검색 키와는 다른 키입니다. 이전 ‘AI·NAVER API’ 키는 사용하지 않습니다.").font(.caption)
+                    Text("콘솔에서 Application Services → Maps → Application 등록으로 들어가 Geocoding만 선택하세요. HUB 검색 키와는 다른 키입니다.").font(.caption)
+                    LabeledContent("Application 이름") { Text("DeliveryRoute-Maps").textSelection(.enabled) }
+                    Text("Geocoding만 사용하면 Web URL·Android 패키지·iOS Bundle ID 등록은 필요하지 않습니다. 지도 SDK를 추가해 iOS ID 입력이 필요하다면 아래 값을 사용하세요.").font(.caption)
+                    Text("kr.deliverytools.routeprobe").font(.caption.monospaced()).textSelection(.enabled)
                     SecureField(api.hasMapsKeys ? "Client ID · 변경 시 입력" : "Maps Client ID", text: $mapsID)
                     SecureField(api.hasMapsKeys ? "Client Secret · 변경 시 입력" : "Maps Client Secret", text: $mapsSecret)
                     Toggle("이 계정이 Maps 무료 이용 대표 계정임을 확인", isOn: $freeConfirmed)
@@ -215,12 +235,12 @@ struct NaverAPISettingsView: View {
                     Text("빈 칸은 기존 키를 유지합니다. 키와 사용량은 기기 보관함에 저장하며 키를 바꿔도 이전 사용량 기록은 남습니다. Maps 무료 한도 기록은 앱별 키 사이에서도 공유합니다.").font(.caption).foregroundColor(.secondary)
                     if let error = api.errorMessage { Text(error).font(.caption).foregroundColor(.red) }
                     Button("설정 저장") {
-                        if api.saveSettings(searchID: searchID, searchSecret: searchSecret, mapsID: mapsID, mapsSecret: mapsSecret, freeConfirmed: freeConfirmed) { searchID = ""; searchSecret = ""; mapsID = ""; mapsSecret = ""; dismiss() }
+                        if api.saveSettings(searchID: searchID, searchSecret: searchSecret, mapsID: mapsID, mapsSecret: mapsSecret, freeConfirmed: freeConfirmed, searchProvider: searchProvider, searchFreeConfirmed: searchFreeConfirmed) { searchID = ""; searchSecret = ""; mapsID = ""; mapsSecret = ""; dismiss() }
                     }.buttonStyle(.borderedProminent).disabled(api.isBusy)
                 }
             }.navigationTitle("네이버 API 설정").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { dismiss() }.disabled(api.isBusy) } }
-                .onAppear { freeConfirmed = api.mapsFreeConfirmed }
+                .onAppear { freeConfirmed = api.mapsFreeConfirmed; searchProvider = api.searchProvider; searchFreeConfirmed = api.searchFreeConfirmed }
         }
     }
 }

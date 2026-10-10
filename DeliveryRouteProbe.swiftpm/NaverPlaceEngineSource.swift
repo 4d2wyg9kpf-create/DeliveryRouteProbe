@@ -9,7 +9,7 @@ enum NaverPlaceEngineSource {
       const coordinate=c=>c&&typeof c.longitude==='number'&&typeof c.latitude==='number'&&Number.isFinite(c.longitude)&&Number.isFinite(c.latitude)&&c.longitude>=124&&c.longitude<=132&&c.latitude>=32&&c.latitude<=40;
       function text(value,max,label){if(typeof value!=='string'||value.length>max||/[\x00-\x1f\x7f]/.test(value))fail(label+' 형식을 확인해 주세요.');return tidy(value);}
       function validate(c){
-        if(!c||c.version!==1||!['place','address'].includes(c.kind)||!['rendered_selected_marker_and_tiles','rendered_selected_place_detail','rendered_selected_address_panel','apple_address_geocoding','naver_local_search','naver_maps_geocoding'].includes(c.method)||!tidy(c.name)||!Number.isFinite(Date.parse(c.capturedAt)))fail('네이버 장소 판독을 다시 실행해 주세요.');
+        if(!c||c.version!==1||!['place','address'].includes(c.kind)||!['rendered_selected_marker_and_tiles','rendered_selected_place_detail','rendered_selected_address_panel','apple_address_geocoding','naver_local_search','naver_hub_local_search','naver_maps_geocoding'].includes(c.method)||!tidy(c.name)||!Number.isFinite(Date.parse(c.capturedAt)))fail('네이버 장소 판독을 다시 실행해 주세요.');
         text(c.name,500,'장소 이름');for(const key of ['address','roadAddress','jibunAddress'])text(c[key],1000,'주소');
         if(c.kind==='place'){
           if(!/^\d{1,30}$/.test(c.placeID)||c.selectionKey!=='place:'+c.placeID||c.sourceURL!=='https://map.naver.com/p/entry/place/'+c.placeID)fail('네이버 장소 식별자가 일치하지 않습니다.');
@@ -20,11 +20,12 @@ enum NaverPlaceEngineSource {
             if(!Number.isFinite(c.screenResolutionMeters)||c.screenResolutionMeters<=0||c.screenResolutionMeters>5||!Number.isSafeInteger(c.tileZoom)||c.tileZoom<0||c.tileZoom>23)fail('네이버 표식 좌표를 다시 읽어 주세요.');
           }else if(c.method==='apple_address_geocoding'){
             if(c.geocodeProvider!=='Apple'||!addressMatches(c.roadAddress||c.address,c.geocodedAddress))fail('변환한 좌표의 주소가 선택한 장소 주소와 다릅니다.');
-          }else if(['naver_local_search','naver_maps_geocoding'].includes(c.method)){
-            const e=c.apiEvidence,local=c.method==='naver_local_search';
-            if(!e||e.provider!==(local?'NAVER Search':'NAVER Maps')||c.geocodeProvider!==e.provider||!addressMatches(c.roadAddress||c.address,c.geocodedAddress)||![e.roadAddress,e.jibunAddress].some(a=>addressMatches(c.roadAddress||c.address,a)))fail('네이버 API 좌표의 주소가 선택한 장소와 다릅니다.');
-            if(local&&(!sameName(e.name,c.name)||!/^\d{9,10}$/.test(e.x)||!/^\d{9,10}$/.test(e.y)))fail('네이버 지역 검색 결과를 확인해 주세요.');
-            const x=Number(e.x)/(local?1e7:1),y=Number(e.y)/(local?1e7:1);
+          }else if(['naver_local_search','naver_hub_local_search','naver_maps_geocoding'].includes(c.method)){
+            const e=c.apiEvidence,local=c.method!=='naver_maps_geocoding',hub=c.method==='naver_hub_local_search';
+            if(!e||e.provider!==(hub?'NAVER API HUB':local?'NAVER Search':'NAVER Maps')||c.geocodeProvider!==e.provider||!addressMatches(c.roadAddress||c.address,c.geocodedAddress)||![e.roadAddress,e.jibunAddress].some(a=>addressMatches(c.roadAddress||c.address,a)))fail('네이버 API 좌표의 주소가 선택한 장소와 다릅니다.');
+            const scaled=local&&/^\d{9,10}$/.test(e.x)&&/^\d{9,10}$/.test(e.y);
+            if(local&&(!sameName(e.name,c.name)||(!scaled&&(!hub||!/^\d{2,3}\.\d{1,15}$/.test(e.x)||!/^\d{2}\.\d{1,15}$/.test(e.y)))))fail('네이버 지역 검색 결과를 확인해 주세요.');
+            const x=Number(e.x)/(scaled?1e7:1),y=Number(e.y)/(scaled?1e7:1);
             if(!coordinate({longitude:x,latitude:y})||Math.abs(x-c.coordinate.longitude)>1e-8||Math.abs(y-c.coordinate.latitude)>1e-8)fail('네이버 API 좌표 형식을 확인해 주세요.');
           }else fail('좌표 판독 근거를 다시 확인해 주세요.');
           const p=c.point.token?.split(',');
@@ -86,11 +87,12 @@ enum NaverPlaceEngineSource {
         return [a.roadAddress,a.address,a.jibunAddress].some(x=>[b.roadAddress,b.address,b.jibunAddress].some(y=>addressMatches(x,y)));
       }
       function apiCoordinate(input){
-        const c=copy(validate(input.capture)),e=copy(input.evidence),local=e?.provider==='NAVER Search';
-        if(!e||!['NAVER Search','NAVER Maps'].includes(e.provider))fail('네이버 API 결과를 확인해 주세요.');
-        const lon=Number(e.x)/(local?1e7:1),lat=Number(e.y)/(local?1e7:1);
+        const c=copy(validate(input.capture)),e=copy(input.evidence),hub=e?.provider==='NAVER API HUB',local=hub||e?.provider==='NAVER Search';
+        if(!e||!['NAVER Search','NAVER API HUB','NAVER Maps'].includes(e.provider))fail('네이버 API 결과를 확인해 주세요.');
+        const scaled=local&&/^\d{9,10}$/.test(e.x)&&/^\d{9,10}$/.test(e.y);
+        const lon=Number(e.x)/(scaled?1e7:1),lat=Number(e.y)/(scaled?1e7:1);
         c.coordinate={longitude:lon,latitude:lat};c.point={name:c.name,token:[(lon/180*20037508.342789244).toFixed(3),(6378137*Math.log(Math.tan(Math.PI/4+lat*Math.PI/360))).toFixed(3),encodeURIComponent(c.name),'','SIMPLE_POI'].join(',')};
-        c.method=local?'naver_local_search':'naver_maps_geocoding';c.geocodeProvider=e.provider;c.apiEvidence=e;
+        c.method=hub?'naver_hub_local_search':local?'naver_local_search':'naver_maps_geocoding';c.geocodeProvider=e.provider;c.apiEvidence=e;
         c.geocodedAddress=[e.roadAddress,e.jibunAddress].find(a=>addressMatches(c.roadAddress||c.address,a))||'';
         c.coordinateIssue='';c.tileZoom=null;c.screenResolutionMeters=null;return validate(c);
       }

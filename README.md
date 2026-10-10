@@ -1,6 +1,6 @@
-# 배송경로 0.14.0 · iPhone / iPad
+# 배송경로 0.14.1 · iPhone / iPad
 
-현재 버전은 **0.14.0 / 빌드 25**이며 iOS 18 이상을 지원합니다. 앱 식별자는 `kr.deliverytools.routeprobe`, 표시 이름은 `DeliveryRoute`입니다. 기존 거래처·배송계획·티맵 설정은 같은 앱에 보관합니다.
+현재 버전은 **0.14.1 / 빌드 26**이며 iOS 18 이상을 지원합니다. 앱 식별자는 `kr.deliverytools.routeprobe`, 표시 이름은 `DeliveryRoute`입니다. 기존 거래처·배송계획·티맵 설정은 같은 앱에 보관합니다.
 
 ## 지도 없이 네이버 API로 장소·좌표 찾기
 
@@ -13,22 +13,35 @@
 
 ## 최초 API 설정과 무료 한도
 
-앱의 **네이버 검색 → 오른쪽 위 설정**에 발급받은 키를 입력합니다. 검색과 Maps는 서로 다른 서비스이므로 **Client ID / Client Secret 두 쌍**을 각각 등록합니다. 키는 기기의 보관함에 저장하며 GitHub나 웹 지도에 전달하지 않습니다. 빈 칸은 기존 키를 유지합니다.
+2026년 7월 31일부터 **검색 API 신규 신청은 NAVER API HUB**에서 진행합니다. 이전 0.14.0의 Developers 신규 등록 안내를 정정했습니다. 0.14.1은 HUB 인증 방식과 일·월 한도를 지원합니다. Developers에서 기존에 발급한 키는 발급처를 선택해 2027년 6월 30일까지 사용할 수 있으며, 저장한 키를 자동으로 다른 서비스에 보내지 않습니다.
 
-| 기능 | 키 발급 | 무료 이용량 |
+사진에 CLOVA만 보이는 **AI·NAVER API 등록 화면은 사용하지 않습니다.**
+
+| 입력 항목 | 업체명 지역 검색 | 전체 주소 → 좌표 |
 | --- | --- | --- |
-| 업체명 지역 검색 | NAVER Developers 애플리케이션에 검색 API 추가 | 같은 Client ID의 검색 API 합계 하루 25,000회 |
-| 전체 주소 → 좌표 | NAVER Cloud의 새 Maps 애플리케이션에서 Geocoding 선택 | 무료 대표 계정 하나에 월 3,000,000건 |
+| 콘솔 메뉴 | Application Services → NAVER API HUB | Application Services → Maps |
+| 처음 이용할 때 | Subscription → 서비스 이용 신청 | 서비스 이용 신청 및 무료 대표 계정 확인 |
+| Application의 API 선택 | NAVER 검색 → **지역** | **Geocoding** |
+| Application 이름 | `DeliveryRoute-Search` (영문·숫자·하이픈, 최대 20자) | `DeliveryRoute-Maps` |
+| Web 서비스 URL | 입력 단계 없음 | Geocoding만 사용하면 비워 둠 |
+| Android 패키지 | 입력 단계 없음 | 비워 둠 |
+| iOS Bundle ID | 입력 단계 없음 | Geocoding만 사용하면 필요 없음. 지도 SDK 등록 시 `kr.deliverytools.routeprobe` |
+| 발급 후 앱에서 입력 | HUB 검색 Client ID / Client Secret | Maps Client ID / Client Secret |
+| 현재 한도 | 하루 25,000회·월 최대 775,000회, 현재 한시적 무료 | 무료 대표 계정 하나에 월 3,000,000건 |
 
-Maps 설정에서는 무료 이용 대표 계정 여부를 확인해야 호출합니다. 이전 **AI·NAVER API** 상품의 유료 엔드포인트를 사용하지 않습니다. 콘솔에서 **Geocoding이 사용하도록 선택되어 있는지** 확인하세요. 선택하지 않은 API도 서버에서 Quota Exceed 오류를 반환할 수 있습니다.
+앱의 **네이버 검색 → 오른쪽 위 설정**에 각 서비스의 **인증 정보**에서 복사한 키를 입력합니다. 검색과 Maps 키는 서로 다릅니다. 키는 기기의 보관함에 저장하며 공개 저장소·웹 지도에 전달하지 않습니다. 빈 칸은 같은 발급처의 기존 키를 유지합니다. 발급처를 바꿀 때는 그 서비스에서 발급한 두 값을 모두 입력합니다.
 
-무료 잔여량은 **이 기기에서 기록한 추정치**입니다. 서버의 실제 잔여량이나 다른 기기·앱에서 사용한 횟수는 자동 조회하지 않습니다. 같은 검색 Client ID, 같은 Maps 대표 계정의 다른 앱에서 사용한 총 횟수는 **다른 곳에서 사용한 횟수 반영**에 입력하세요.
+HUB 설정에서는 **현재 콘솔에서 무료 제공 중임을 확인**해야 검색합니다. 공식 안내의 한시적 무료 제공은 영구 무료 약속이 아닙니다. 유료 전환 공지가 나오면 해당 확인을 끄세요. Maps는 **무료 대표 계정 확인** 전 호출하지 않습니다.
 
-네트워크 요청 전에 사용량을 보관하며 보관 실패 시 호출하지 않습니다. 실패·취소된 요청도 포함하고 기록을 감소시키지 않습니다. 검색은 Client ID별 일 한도, Maps는 앱 키 사이에 공유되는 월 한도로 차단합니다. 같은 업체·주소의 조회 결과는 한 시간 동안 메모리에서 재사용합니다. 서버가 한도를 제한하면 다음 초기화까지 차단하고, 초당 호출 속도 제한은 짧은 대기 후 재개합니다.
+콘솔의 **한도 및 알림**에도 HUB 일 25,000회·월 775,000회, Maps 월 3,000,000건 이하의 한도를 설정하고 **한도 초과 사용 허용을 끄세요**. 같은 키·대표 계정을 다른 앱에서도 사용하면 전체 이용량을 확인하여 맞춰야 합니다.
 
-앱은 한국시간 일·월 경계와 5분 대기를 초기화 기준으로 적용합니다. 이는 공식 초기화 시각을 확인한 값이 아닌 앱의 보수적인 기준이며 서버 제한이 우선합니다. API 설정 변경이나 비밀키 회전으로 사용량 기록을 초기화하지 않습니다.
+무료 잔여량은 **이 기기에서 기록한 추정치**입니다. 서버의 실제 잔여량이나 다른 기기·앱 사용량을 자동 조회하지 않습니다. 다른 곳에서 사용한 총 횟수는 **다른 곳에서 사용한 횟수 반영**에 입력합니다. HUB 일 사용량 보정은 월 사용량에도 증가분을 합산하므로 일 사용량을 먼저 반영한 뒤 월 총량을 확인하세요.
 
-공식 안내: [NAVER 지역 검색](https://developers.naver.com/docs/serviceapi/search/local/local.md), [새 Maps 신청·요금](https://www.ncloud.com/product/applicationService/maps), [Maps Geocoding](https://api.ncloud-docs.com/docs/application-maps-geocoding).
+HUB 검색은 **일·월 두 한도를 함께 검사하고 한 번에 기록한 뒤** 요청합니다. 한도가 하나라도 소진되거나 기록을 저장하지 못하면 API를 호출하지 않습니다. 실패·취소 요청도 계산하며 자동 재시도하지 않습니다. 기존 Developers 일 기록과 HUB 일·월 기록은 보존합니다. Maps 월 기록은 앱별 키 사이에 공유합니다. 같은 업체·주소의 조회 결과는 한 시간 동안 재사용합니다.
+
+네이버 클라우드 콘솔의 이용량은 한국시간 기준이며 한도는 매일 0시·매월 1일 0시에 초기화합니다. 앱은 경계에서 5분을 더 기다립니다. 서버가 한도를 제한하면 해당 기간을 차단하며, 초당 호출 속도 제한은 짧게 기다린 뒤 재개합니다.
+
+공식 안내: [검색 이관 공지](https://developers.naver.com/notice/article/32530), [HUB 등록](https://guide.ncloud-docs.com/docs/apihub-application), [HUB 현재 요금](https://guide.ncloud-docs.com/docs/apihub-spec), [HUB 지역 검색](https://api.ncloud-docs.com/docs/naver-api-hub-search-local), [Maps 등록](https://guide.ncloud-docs.com/docs/application-maps-app-vpc), [Maps Geocoding](https://api.ncloud-docs.com/docs/application-maps-geocoding).
 
 ## 개인 저장목록·공유 링크와 이번 배송
 
@@ -42,22 +55,13 @@ Maps 설정에서는 무료 이용 대표 계정 여부를 확인해야 호출�
 
 main의 앱 소스 변경 또는 GitHub Actions의 Run workflow로 **Build unsigned iOS IPA**를 실행합니다. 표준 macos-15 서버에서 네이버 웹 프레임·합성 API 응답·실제 Swift 요청 차단 검사를 먼저 통과한 뒤 iOS arm64 기기 앱을 컴파일합니다. 설치 파일과 검증 보고서는 **DeliveryRouteProbe-unsigned-ipa** 자료에 포함되며 7일 보관합니다.
 
-설치 파일 `DeliveryRouteProbe_0.14.0-25-unsigned.ipa`는 기존처럼 Sideloadly에서 본인 계정으로 서명하여 설치합니다. Apple 계정·인증서·API 키를 공개 저장소에 입력하지 않습니다. 개인 서명 도구의 appIdName 오류를 막기 위해 앱 이름은 영문 DeliveryRoute를 사용합니다.
+설치 파일 `DeliveryRouteProbe_0.14.1-26-unsigned.ipa`는 기존처럼 Sideloadly에서 본인 계정으로 서명하여 설치합니다. Apple 계정·인증서·API 키를 공개 저장소에 입력하지 않습니다. 개인 서명 도구의 appIdName 오류를 막기 위해 앱 이름은 영문 DeliveryRoute를 사용합니다.
 
 ## 검증
 
-2026-10-09 [GitHub 빌드](https://github.com/4d2wyg9kpf-create/DeliveryRouteProbe/actions/runs/37950317305)가 성공했습니다.
+2026-10-10 엔진·좌표·배송계획 검사 **414/414**와 앱 내장 JavaScript 일치 확인을 통과했습니다. 새 HUB의 실제 Swift 모의 API 요청·무료 한도·키 이관 검사와 iOS arm64 IPA 빌드는 진행 중입니다.
 
-- Xcode 16.4 / iPhoneOS SDK 18.5로 arm64 기기 앱 컴파일 성공
-- 엔진·좌표·배송계획 검사 **402/402**와 앱의 내장 JavaScript 일치 확인
-- 실제 Swift API 처리·요청 차단 검사 **16/16**: 공식 엔드포인트·인증 헤더, 저장 후 호출, 마지막 무료 요청, 저장/인증/취소 실패, 손상 기록, 서버 한도 차단, 일시 속도 제한, 동시 탭, 비밀키 회전과 캐시 포함. 모의 네트워크를 사용했으며 실제 NAVER API를 호출하지 않음
-- 실제 WKWebView의 iPhone 폭 교차 출처 프레임·공유 링크 검사 **17/17**
-- 다운로드한 아카이브 SHA256, IPA ZIP 무결성, 영문 앱 이름·버전·번들 ID, 실행 권한, arm64 iOS 기기 대상과 iPhone/iPad 아이콘 검증
-- IPA: `DeliveryRouteProbe_0.14.0-25-unsigned.ipa` (4,318,781 bytes)
-- SHA256: `76ca75cbf8cc8e38ae587a68a22632c1f4fbf96906f2503e350bc3e409a99b3c`
-- 빌드 소스: `26b23c8470aae0367e9fff40bb71210e77e433e1`
-
-실제 API 키가 제공되지 않아 NAVER 실조회와 실제 iPhone/iPad 설치 후 실행은 별도로 확인해야 합니다. 합성 응답과 모의 네트워크 검사에서는 실제 API 무료 횟수를 사용하지 않습니다.
+실제 API 키가 제공되지 않아 NAVER 실조회와 실제 iPhone/iPad 설치 후 실행은 별도로 확인해야 합니다. 합성 응답과 모의 네트워크 검사에서는 API 무료 횟수를 사용하지 않습니다.
 
 ## 공개 범위
 

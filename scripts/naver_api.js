@@ -1,10 +1,10 @@
-/* Official NAVER Search / new Maps responses and conservative free-only gates. */
+/* Official NAVER API HUB, legacy Search and new Maps; conservative free-only gates. */
 var DeliveryNaverAPI=(function(){
   'use strict';
   const places=typeof DeliveryNaverPlaces!=='undefined'?DeliveryNaverPlaces:require('./naver_places.js');
   const copy=x=>JSON.parse(JSON.stringify(x)),fail=m=>{throw Error(m);};
   const tidy=x=>String(x||'').replace(/\s+/g,' ').trim();
-  const limits={search:25000,maps:3000000},grace=300000;
+  const limits={search:25000,hub:25000,hubMonth:775000,maps:3000000},grace=300000;
   function text(x,max,label){if(typeof x!=='string'||x.length>max||/[\x00-\x1f\x7f]/.test(x))fail(label+' 형식을 확인해 주세요.');return tidy(x);}
   function title(x){
     return text(x,2000,'검색 이름').replace(/<[^>]*>/g,'').replace(/&(?:amp|lt|gt|quot|apos|nbsp|#\d+|#x[0-9a-f]+);/gi,s=>{
@@ -26,7 +26,7 @@ var DeliveryNaverAPI=(function(){
       try{
         const name=title(row.title),road=text(row.roadAddress||'',1000,'도로명주소'),jibun=text(row.address||'',1000,'지번주소');
         const capture=seed({name,address:road||jibun,now:input.now});capture.roadAddress=road;capture.jibunAddress=jibun;
-        const evidence={provider:'NAVER Search',name,roadAddress:road,jibunAddress:jibun,x:String(row.mapx),y:String(row.mapy)};
+        const evidence={provider:input.provider==='hub'?'NAVER API HUB':'NAVER Search',name,roadAddress:road,jibunAddress:jibun,x:String(row.mapx),y:String(row.mapy)};
         results.push({capture:places.apiCoordinate({capture,evidence}),category:text(row.category||'',500,'분류')});
       }catch(e){/* Invalid/obsolete coordinates never become selectable locations. */}
     }
@@ -56,13 +56,14 @@ var DeliveryNaverAPI=(function(){
   }
   function period(provider,now){
     const d=new Date(now+9*3600000),year=d.getUTCFullYear(),month=d.getUTCMonth(),day=d.getUTCDate();
-    const monthly=provider==='maps',key=year+'-'+String(month+1).padStart(2,'0')+(monthly?'':'-'+String(day).padStart(2,'0'));
+    const monthly=provider==='maps'||provider==='hubMonth',key=year+'-'+String(month+1).padStart(2,'0')+(monthly?'':'-'+String(day).padStart(2,'0'));
     const start=Date.UTC(year,month,monthly?1:day)-9*3600000;
     const reset=Date.UTC(year,monthly?month+1:month,monthly?1:day+1)-9*3600000+grace;
     return {key,reset,inGrace:now<start+grace};
   }
   function gate(input,operation){
-    if(!['search','maps'].includes(input.provider)||!Number.isFinite(input.now)||input.now<1577836800000||input.now>4102444800000||!/^search:[a-f0-9]{64}$|^maps-free$/.test(input.key)||!input.key.startsWith(input.provider==='search'?'search:':'maps-'))fail('API 사용량 기준 정보를 확인해 주세요.');
+    const prefix={search:'search:',hub:'hub:',hubMonth:'hub-month:',maps:'maps-'}[input.provider];
+    if(!prefix||!Number.isFinite(input.now)||input.now<1577836800000||input.now>4102444800000||!/^(?:search|hub|hub-month):[a-f0-9]{64}$|^maps-free$/.test(input.key)||!input.key.startsWith(prefix))fail('API 사용량 기준 정보를 확인해 주세요.');
     const l=copy(input.ledger);
     if(!l||l.version!==1||!l.accounts||typeof l.accounts!=='object'||Array.isArray(l.accounts))fail('사용량 기록을 읽지 못해 호출을 차단했습니다.');
     const p=period(input.provider,input.now),limit=limits[input.provider];let a=l.accounts[input.key];
@@ -75,6 +76,7 @@ var DeliveryNaverAPI=(function(){
     a.lastTrustedMs=Math.max(a.lastTrustedMs,input.now);
     if(operation==='reserve'){
       if(input.provider==='maps'&&input.freeConfirmed!==true)fail('새 Maps의 무료 대표 계정 여부를 설정에서 확인해 주세요.');
+      if(['hub','hubMonth'].includes(input.provider)&&input.freeConfirmed!==true)fail('설정에서 NAVER API HUB가 현재 무료로 제공되는지 확인해 주세요.');
       if(p.inGrace)fail('한도 초기화 확인 시간입니다. 한국시간 00:05 이후 다시 사용해 주세요.');
       if(a.blocked||a.used>=limit)fail('무료 한도가 소진되어 다음 초기화까지 요청을 차단했습니다.');
       a.used++;

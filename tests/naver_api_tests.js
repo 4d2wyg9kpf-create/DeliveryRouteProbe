@@ -50,4 +50,17 @@ test('과거 시간으로 한도 재설정 시도 차단',()=>{const g=gate(),r=
 test('손상된 사용량 기록에서 호출 차단',()=>{const g=gate(),r=api.reserve(g);r.ledger.accounts[g.key].used=-1;assert.throws(()=>api.reserve({...g,ledger:r.ledger}));});
 test('잘못된 제공자 또는 계정 키 거부',()=>{assert.throws(()=>api.reserve(gate('search',{key:'maps-free'})));assert.throws(()=>api.reserve(gate('wrong')));});
 test('JSCore용 JSON 호출은 실패 사유를 반환',()=>{const r=JSON.parse(api.reserveJSON(JSON.stringify(gate('maps',{freeConfirmed:false}))));assert.equal(r.ok,false);assert.match(r.message,/대표 계정/);});
+function hubGate(monthly=false,extra={}) {return gate('search',{provider:monthly?'hubMonth':'hub',key:(monthly?'hub-month:':'hub:')+'a'.repeat(64),...extra});}
+test('HUB 지역 응답의 WGS84 정수 좌표와 제공처 보존',()=>{const c=api.local({response:response(),now,provider:'hub'})[0].capture;assert.equal(c.coordinate.longitude,127.398);assert.equal(c.geocodeProvider,'NAVER API HUB');assert.equal(c.method,'naver_hub_local_search');places.validate(c);});
+test('HUB의 명시적인 소수 WGS84도 같은 위치로 검증',()=>{const r=response();r.items[0].mapx='127.398';r.items[0].mapy='36.316';const c=api.local({response:r,now,provider:'hub'})[0].capture;assert.equal(c.coordinate.longitude,127.398);assert.equal(c.coordinate.latitude,36.316);places.validate(c);});
+test('HUB에서 정수·소수 형식을 섞은 좌표 거부',()=>{const r=response();r.items[0].mapx='127.398';assert.throws(()=>api.local({response:r,now,provider:'hub'}));});
+test('HUB에서도 KATECH 좌표를 추측하지 않음',()=>{const r=response();r.items[0].mapx='311277';r.items[0].mapy='552097';assert.throws(()=>api.local({response:r,now,provider:'hub'}));});
+test('HUB 좌표 증거 제공처 변조 거부',()=>{const c=api.local({response:response(),now,provider:'hub'})[0].capture;c.apiEvidence.provider='NAVER Search';assert.throws(()=>places.validate(c));});
+test('HUB가 현재 무료라는 확인 전 일·월 예약 차단',()=>{for(const monthly of [false,true])assert.throws(()=>api.reserve(hubGate(monthly,{freeConfirmed:false})),/무료/);});
+test('HUB 일 25,000회 이후 일 예약 차단',()=>{const g=hubGate(),r=api.raise({...g,used:25000});assert.throws(()=>api.reserve({...g,ledger:r.ledger}));});
+test('HUB 월 775,000번째 호출 뒤 월 예약 차단',()=>{const g=hubGate(true);let r=api.raise({...g,used:774999});r=api.reserve({...g,ledger:r.ledger});assert.equal(r.quota.used,775000);assert.equal(r.quota.remaining,0);assert.throws(()=>api.reserve({...g,ledger:r.ledger}));});
+test('HUB 월 차단은 다음 날에도 유지',()=>{const g=hubGate(true),r=api.block(g);assert.throws(()=>api.reserve({...g,ledger:r.ledger,now:Date.parse('2026-10-10T00:00:00Z')}));});
+test('HUB 월 한도는 다음 달 첫날 00:05에 재개',()=>{const g=hubGate(true),r=api.block(g);assert.throws(()=>api.reserve({...g,ledger:r.ledger,now:Date.parse('2026-10-31T15:04:59Z')}));assert.equal(api.reserve({...g,ledger:r.ledger,now:Date.parse('2026-10-31T15:05:00Z')}).quota.used,1);});
+test('기존 Developers 카운터와 HUB 일·월 카운터는 분리 보존',()=>{const old=gate();let r=api.raise({...old,used:100});r=api.reserve({...hubGate(),ledger:r.ledger});r=api.reserve({...hubGate(true),ledger:r.ledger});assert.equal(r.ledger.accounts[old.key].used,100);assert.equal(Object.keys(r.ledger.accounts).length,3);});
+test('HUB 일·월 계정 키를 혼용하면 차단',()=>{assert.throws(()=>api.reserve(hubGate(false,{key:'hub-month:'+'a'.repeat(64)})));assert.throws(()=>api.reserve(hubGate(true,{key:'search:'+'a'.repeat(64)})));});
 const report={passed:checks.filter(x=>x.passed).length,total:checks.length,checks};console.log(JSON.stringify(report));if(report.passed!==report.total)process.exitCode=1;
