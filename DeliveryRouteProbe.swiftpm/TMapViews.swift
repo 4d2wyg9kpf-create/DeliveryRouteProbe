@@ -28,17 +28,32 @@ struct TMapScreen: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                if let route = store.route, store.routeIsValid {
-                    routeSection(route)
+            ScrollViewReader { scroll in
+                Form {
+                    if let error = store.errorMessage {
+                        Section("확인이 필요합니다") { Text(error).foregroundColor(.red) }.id("tmap-error")
+                    }
+                    if let route = store.route, store.routeIsValid {
+                        routeSection(route).id("tmap-result")
+                    }
+                    requestSection.id("tmap-request")
+                    timingSection
+                    quotaSection
+                    locationsSection
                 }
-                requestSection
-                timingSection
-                quotaSection
-                if let error = store.errorMessage {
-                    Section { Text(error).foregroundColor(.red).font(.caption) }
+                .onChange(of: store.route?.fetchedAtMillis) { _, value in
+                    if value != nil { withAnimation { scroll.scrollTo("tmap-result", anchor: .top) } }
                 }
-                locationsSection
+                .onChange(of: store.errorMessage) { _, value in
+                    if value != nil { withAnimation { scroll.scrollTo("tmap-error", anchor: .top) } }
+                }
+                .onChange(of: store.isOptimizing) { _, value in
+                    if value { scroll.scrollTo("tmap-request", anchor: .top) }
+                }
+                .onAppear {
+                    if store.errorMessage != nil { scroll.scrollTo("tmap-error", anchor: .top) }
+                    else if store.routeIsValid { scroll.scrollTo("tmap-result", anchor: .top) }
+                }
             }
             .navigationTitle("티맵 배송경로 \(DeliveryAppInfo.version)")
             .navigationBarTitleDisplayMode(.inline)
@@ -69,7 +84,9 @@ struct TMapScreen: View {
                     Text(target.id == "depot" ? "출발지 '\(target.name)'의 좌표·주소를 지웁니다." : target.id == "destination" ? "최종 도착지 '\(target.name)'를 지우고 출발지 복귀로 바꿉니다." : "'\(target.name)' 거래처와 연결된 경로·주문 수량을 배송계획에서 지웁니다.")
                 }
             }
-            .task { await store.refreshClock() }
+            .task {
+                if store.nowMillis == nil && store.errorMessage == nil { await store.refreshClock() }
+            }
             .onReceive(timer) { _ in store.tick() }
         }
     }
