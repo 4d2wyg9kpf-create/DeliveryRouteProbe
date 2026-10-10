@@ -15,7 +15,7 @@
 
 2026년 7월 31일부터 **검색 API 신규 신청은 NAVER API HUB**에서 진행합니다. 이전 0.14.0의 Developers 신규 등록 안내를 정정했습니다. 0.14.1은 HUB 인증 방식과 일·월 한도를 지원합니다. Developers에서 기존에 발급한 키는 발급처를 선택해 2027년 6월 30일까지 사용할 수 있으며, 저장한 키를 자동으로 다른 서비스에 보내지 않습니다.
 
-사진에 CLOVA만 보이는 **AI·NAVER API 등록 화면은 사용하지 않습니다.**
+CLOVA만 보이는 **AI·NAVER API 등록 화면은 사용하지 않습니다.**
 
 | 입력 항목 | 업체명 지역 검색 | 전체 주소 → 좌표 |
 | --- | --- | --- |
@@ -59,7 +59,16 @@ main의 앱 소스 변경 또는 GitHub Actions의 Run workflow로 **Build unsig
 
 ## 검증
 
-2026-10-10 엔진·좌표·배송계획 검사 **414/414**와 앱 내장 JavaScript 일치 확인을 통과했습니다. 새 HUB의 실제 Swift 모의 API 요청·무료 한도·키 이관 검사와 iOS arm64 IPA 빌드는 진행 중입니다.
+2026-10-10 [GitHub 빌드](https://github.com/4d2wyg9kpf-create/DeliveryRouteProbe/actions/runs/38018233855)가 성공했습니다.
+
+- 엔진·좌표·배송계획 검사 **414/414**와 앱 내장 JavaScript 일치 확인
+- 실제 Swift API·저장·한도 검사 **28/28**: HUB 엔드포인트와 인증, 일·월 원자적 예약, 마지막 무료 요청, 저장/인증/취소 실패, 속도 제한, 기존 키 이관, 키 전환과 주소 좌표 보완 포함
+- 실제 WKWebView의 iPhone 폭 교차 출처 프레임·공유 링크 검사 **17/17**
+- Xcode 16.4 / iPhoneOS SDK 18.5로 **iPhone·iPad용 arm64 기기 앱 컴파일 성공**
+- 다운로드한 아카이브 SHA256와 IPA ZIP 무결성, 영문 앱 이름·버전·번들 ID, 실행 권한, iOS 기기 대상과 iPhone/iPad 아이콘 검증
+- IPA: `DeliveryRouteProbe_0.14.1-26-unsigned.ipa` (4,336,455 bytes)
+- SHA256: `fd3f060b71bd68d7b3abc90257995432c7c0a9b0498cde3cc145d05954e5b34b`
+- 빌드 소스: `26141a4f775a12e014c37216330c74ded1add915`
 
 실제 API 키가 제공되지 않아 NAVER 실조회와 실제 iPhone/iPad 설치 후 실행은 별도로 확인해야 합니다. 합성 응답과 모의 네트워크 검사에서는 API 무료 횟수를 사용하지 않습니다.
 
