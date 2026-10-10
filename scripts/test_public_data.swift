@@ -12,7 +12,8 @@ private func business(_ id: String, longitude: String = "127.4", latitude: Strin
      "indsSclsNm": "가상 음식점", "indsLclsCd": "I2", "stdrYm": "202609"]
 }
 private func license(_ id: String = "fixture-permit", date: String = "20261010", authority: String = "3640000", state: String = "01", detail: String = "영업") -> [String: Any] {
-    ["MNG_NO": id, "BPLC_NM": "가상 신규 업체", "LCPMT_YMD": date, "OPN_ATMY_GRP_CD": authority, "ROAD_NM_ADDR": "", "LOTNO_ADDR": "대전광역시 동구 가상동 1",
+    ["MNG_NO": id, "BPLC_NM": "가상 신규 업체", "LCPMT_YMD": date, "OPN_ATMY_GRP_CD": authority, "ROAD_NM_ADDR": "대전광역시 동구 가상로 1", "LOTNO_ADDR": "대전광역시 동구 가상동 1",
+     "BZSTAT_SE_NM": "한식", "SNTTN_BZSTAT_NM": "한식",
      "SALS_STTS_CD": state, "SALS_STTS_NM": state == "01" ? "영업/정상" : "폐업", "DTL_SALS_STTS_NM": detail, "CLSBIZ_YMD": "", "DAT_UPDT_PNT": "20261010010000",
      "CRD_INFO_X": "236000", "CRD_INFO_Y": "316000", "TELNO": ""]
 }
@@ -102,14 +103,129 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
                 try require(PublicDataParser.license(value, service: .cafes, from: "2026-10-01", through: "2026-10-10") == nil, "status filter")
             }
         }
-        try check("Daejeon authority and address checked, empty road uses lot address") {
-            try require(PublicDataParser.license(license(), service: .canteens, from: "2026-10-01", through: "2026-10-10")?.address == "대전광역시 동구 가상동 1", "lot fallback")
+        try check("Daejeon authority and road address checked without a lot address fallback") {
+            try require(PublicDataParser.license(license(), service: .canteens, from: "2026-10-01", through: "2026-10-10")?.address == "대전광역시 동구 가상로 1", "road address")
             try require(PublicDataParser.license(license(authority: "4111000"), service: .canteens, from: "2026-10-01", through: "2026-10-10") == nil, "other authority")
             var contradictory = license(); contradictory["ROAD_NM_ADDR"] = "경기도 수원시 대전로 1"
             try require(PublicDataParser.license(contradictory, service: .canteens, from: "2026-10-01", through: "2026-10-10") == nil, "name substring")
         }
         try check("invalid calendar dates rejected") {
             try require(PublicDataParser.date("20260230") == nil && PublicDataParser.date("2026-02-28") == "2026-02-28", "date validation")
+        }
+        try check("food trucks, department stores and convenience stores are excluded by official business type fields across all five services") {
+            for service in PublicDataService.licenses {
+                for type in ["푸드트럭", "백화점", "편의점", " 푸드 트럭 "] {
+                    var row = license(); row["BZSTAT_SE_NM"] = type
+                    try require(PublicDataParser.license(row, service: service, from: "2026-10-01", through: "2026-10-10") == nil, "business type excluded")
+                }
+                var sanitationOnly = license(); sanitationOnly["BZSTAT_SE_NM"] = ""; sanitationOnly["SNTTN_BZSTAT_NM"] = "편의점"
+                try require(PublicDataParser.license(sanitationOnly, service: service, from: "2026-10-01", through: "2026-10-10") == nil, "sanitation fallback excluded")
+            }
+        }
+        try check("missing or blank road addresses are excluded even when lot address exists") {
+            let blankValues: [Any] = ["", "  \n\t", NSNull()]
+            for service in PublicDataService.licenses {
+                for value in blankValues {
+                    var row = license(); row["ROAD_NM_ADDR"] = value
+                    try require(PublicDataParser.license(row, service: service, from: "2026-10-01", through: "2026-10-10") == nil, "missing road excluded")
+                }
+                var absent = license(); absent.removeValue(forKey: "ROAD_NM_ADDR")
+                try require(PublicDataParser.license(absent, service: service, from: "2026-10-01", through: "2026-10-10") == nil, "absent road excluded")
+            }
+        }
+        try check("business names do not substitute for business types and ordinary types stay visible") {
+            var row = license(); row["BPLC_NM"] = "백화점 앞 가상식당"
+            let parsed = PublicDataParser.license(row, service: .restaurants, from: "2026-10-01", through: "2026-10-10")
+            try require(parsed?.businessType == "한식" && parsed?.name == "백화점 앞 가상식당", "filter only official type")
+            row["BZSTAT_SE_NM"] = ""; row["SNTTN_BZSTAT_NM"] = "제과점영업"
+            try require(PublicDataParser.license(row, service: .bakery, from: "2026-10-01", through: "2026-10-10")?.businessType == "제과점영업", "sanitation type displayed")
+        }
+        try check("Naver license search uses the road building number without name, floor, unit or neighborhood") {
+            let address = "대전광역시 서구 둔산로 123, 백화점 6층 601호 (둔산동, 가상건물)"
+            let base = "대전광역시 서구 둔산로 123"
+            try require(PublicRoadAddress.buildingAddress(address) == base, "building address")
+            let url = PublicRoadAddress.naverSearchURL(address)!
+            try require(url.host == "map.naver.com" && url.scheme == "https" && url.lastPathComponent == base && url.query == nil, "address-only search")
+        }
+        try check("roads with numbered side streets, subnumbers and no-comma detail keep the correct building") {
+            for (address, base) in [
+                ("대전광역시 중구 계백로1615번길 8-3 101호 (유천동)", "대전광역시 중구 계백로1615번길 8-3"),
+                ("대전 서구 대덕대로175번길 31(둔산동)", "대전광역시 서구 대덕대로175번길 31"),
+                ("대전광역시 대덕구 신탄진로756번안길 45, 1층", "대전광역시 대덕구 신탄진로756번안길 45")
+            ] { try require(PublicRoadAddress.buildingAddress(address) == base, "side street retained") }
+        }
+        try check("underground building flags are retained and cannot match ground-level buildings") {
+            let underground = "대전광역시 중구 중앙로 지하 145, A1호"
+            try require(PublicRoadAddress.buildingAddress(underground) == "대전광역시 중구 중앙로 지하145", "underground address")
+            try require(PublicRoadAddress.buildingKey(underground) != PublicRoadAddress.buildingKey("대전광역시 중구 중앙로 145"), "underground flag remains distinct")
+        }
+        try check("incomplete roads, lot addresses and malformed building numbers cannot become exclusions or searches") {
+            for address in ["대전광역시 중구 유천동 123", "대전광역시 서구 둔산로", "대전광역시 서구 둔산로 123-", "대전광역시 서구 둔산로 123A", ""] {
+                try require(PublicRoadAddress.buildingKey(address) == nil && PublicRoadAddress.naverSearchURL(address) == nil, "incomplete address rejected")
+            }
+            try require(PublicRoadAddress.buildingKey("서구 둔산로 123") == nil && PublicRoadAddress.buildingKey("서울특별시 중구 세종대로 1") == nil, "full Daejeon region required")
+        }
+        try check("same building floors normalize but number prefixes, subnumbers, roads and districts stay distinct") {
+            let base = PublicRoadAddress.buildingKey("대전광역시 서구 둔산로 1")
+            try require(base == PublicRoadAddress.buildingKey("  대전  서구  둔산로  001, 7층 (둔산동) "), "spacing and alias normalized")
+            for different in ["대전광역시 서구 둔산로 10", "대전광역시 서구 둔산로 1-1", "대전광역시 중구 둔산로 1", "대전광역시 서구 둔산북로 1"] {
+                try require(base != PublicRoadAddress.buildingKey(different), "precise building equality")
+            }
+        }
+        try check("saved building exclusions apply to exactly the three requested license categories and all floors") {
+            let store = LicenseExclusionStore(read: { nil }, write: { _ in })
+            try store.add("대전광역시 동구 가상로 1, 7층 (가상동)")
+            for service in PublicDataService.licenses {
+                var row = license(); row["ROAD_NM_ADDR"] = "대전 동구 가상로 1 2층 201호"
+                let value = PublicDataParser.license(row, service: service, from: "2026-10-01", through: "2026-10-10")!
+                try require(store.excludes(value) == [PublicDataService.restaurants, .cafes, .bakery].contains(service), "three category scope")
+                row["ROAD_NM_ADDR"] = "대전광역시 동구 가상로 10"
+                let nextBuilding = PublicDataParser.license(row, service: service, from: "2026-10-01", through: "2026-10-10")!
+                try require(!store.excludes(nextBuilding), "number prefix not excluded")
+            }
+        }
+        try check("duplicate building exclusions are rejected without rewriting saved data") {
+            var saved: Data?, writes = 0
+            let store = LicenseExclusionStore(read: { nil }, write: { saved = $0; writes += 1 })
+            try store.add("대전광역시 서구 둔산로 123, 1층")
+            let original = saved
+            do { try store.add("대전 서구 둔산로 123 7층"); throw CheckFailure.failed("duplicate accepted") } catch is PublicDataFailure {}
+            try require(store.records.count == 1 && writes == 1 && saved == original, "duplicate never persisted")
+        }
+        try check("building exclusions and deletion survive a real atomic file reload") {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("license-exclusions-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let original = LicenseExclusionStore(directory: folder)
+            try original.add("대전광역시 유성구 가상로 7, 축제행사장 1층")
+            let restored = LicenseExclusionStore(directory: folder)
+            try require(restored.records.count == 1 && restored.records[0].address == "대전광역시 유성구 가상로 7", "update/reopen retained")
+            try restored.remove(restored.records[0].id)
+            try require(LicenseExclusionStore(directory: folder).records.isEmpty, "deleted exclusion not restored")
+        }
+        try check("address additions and removals immediately change filtering without another API request") {
+            let store = LicenseExclusionStore(read: { nil }, write: { _ in })
+            let value = PublicDataParser.license(license(), service: .restaurants, from: "2026-10-01", through: "2026-10-10")!
+            try require(!store.excludes(value), "initially visible")
+            try store.add(value.address)
+            try require(store.excludes(value), "immediately hidden")
+            try store.remove(store.records[0].id)
+            try require(!store.excludes(value), "immediately restored")
+        }
+        try check("failed exclusion persistence keeps the last saved rules") {
+            var fail = false
+            let store = LicenseExclusionStore(read: { nil }, write: { _ in if fail { throw CheckFailure.failed("synthetic disk failure") } })
+            try store.add("대전광역시 서구 둔산로 1")
+            let original = store.records[0]; fail = true
+            do { try store.add("대전광역시 서구 둔산로 2"); throw CheckFailure.failed("failed addition accepted") } catch {}
+            do { try store.remove(original.id); throw CheckFailure.failed("failed removal accepted") } catch {}
+            try require(store.records.count == 1 && store.records[0].id == original.id, "saved rules unchanged")
+        }
+        try check("corrupt exclusion data is preserved and cannot be silently overwritten") {
+            let data = Data("broken".utf8); var writes = 0
+            let store = LicenseExclusionStore(read: { data }, write: { _ in writes += 1 })
+            try require(store.errorMessage != nil, "corruption surfaced")
+            do { try store.add("대전광역시 서구 둔산로 1"); throw CheckFailure.failed("corrupt record overwritten") } catch is PublicDataFailure {}
+            try require(writes == 0, "old data preserved")
         }
         try await asyncCheck("encoded key normalized once and sent to HTTPS allowlist") {
             let f = Fixture(), store = f.store()

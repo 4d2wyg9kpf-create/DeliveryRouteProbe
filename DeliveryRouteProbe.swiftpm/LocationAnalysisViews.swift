@@ -119,6 +119,7 @@ struct NearbyBusinessesView: View {
 
 struct DaejeonNewLicensesView: View {
     @ObservedObject var store: PublicDataStore
+    @ObservedObject private var exclusions = LicenseExclusionStore.shared
     @State private var fromDate = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
     @State private var throughDate = Date()
     @State private var selected = Set(PublicDataService.licenses)
@@ -128,7 +129,8 @@ struct DaejeonNewLicensesView: View {
     @State private var loading = false
     @State private var showSettings = false
     @State private var queryTask: Task<Void, Never>?
-    private var records: [PublicLicense] { (result?.records ?? []).filter { keyword.isEmpty || ($0.name + $0.address + $0.service.title).localizedCaseInsensitiveContains(keyword) } }
+    private var eligible: [PublicLicense] { (result?.records ?? []).filter { !exclusions.excludes($0) } }
+    private var records: [PublicLicense] { eligible.filter { keyword.isEmpty || ($0.name + $0.address + $0.service.title + $0.businessType).localizedCaseInsensitiveContains(keyword) } }
     private var days: [String] { Set(records.map(\.permissionDate)).sorted(by: >) }
     var body: some View {
         List {
@@ -141,29 +143,28 @@ struct DaejeonNewLicensesView: View {
                 Button(loading ? "인허가 조회 중…" : "일자별 신규 업소 조회") { load() }.buttonStyle(.borderedProminent).disabled(store.isBusy || selected.isEmpty || fromDate > throughDate)
                 if loading { ProgressView(); Text(store.progress).font(.caption); Button("조회 중단") { queryTask?.cancel() } }
                 Button("인허가 API 5개 활용신청·키 설정") { showSettings = true }.disabled(loading)
+                NavigationLink { LicenseExclusionsView(store: exclusions) } label: {
+                    Label("제외 주소 관리 · \(exclusions.records.count)개", systemImage: "line.3.horizontal.decrease.circle")
+                }
+                Text("푸드트럭·백화점·편의점 업태와 도로명주소가 없는 업소는 제외합니다. 등록한 제외 건물 주소는 제과점영업·일반음식점·휴게음식점에 적용합니다.").font(.caption).foregroundStyle(.secondary)
                 Text("대전광역시와 5개 구의 선택한 업종을 조회하고, 현재 영업/정상 상태인 자료를 표시합니다. 날짜는 인허가일이며 실제 개업일·사업자등록일과 다를 수 있습니다.").font(.caption).foregroundStyle(.secondary)
+                if let exclusionError = exclusions.errorMessage { Text(exclusionError).font(.caption).foregroundStyle(.red) }
                 if let error { Text(error).font(.caption).foregroundStyle(.red) }
             }
             if let result {
                 Section(result.complete ? "조회 현황" : "일부 조회 · 업종·지역 누락 있음") {
-                    Text("\(result.from) ~ \(result.through) · \(result.records.count)곳").bold()
+                    Text("\(result.from) ~ \(result.through)").bold()
+                    Text("기본 조건 충족 \(result.records.count)곳 · 주소 제외 \(result.records.count - eligible.count)곳 · 표시 \(records.count)곳").font(.caption)
                     Text("조회 \(publicTimestamp(result.fetchedAt)) · \(result.services.map(\.title).joined(separator: " · "))").font(.caption)
                     Text("인허가 정보는 매일 갱신되며 2일 전 기준으로 현행화됩니다. 신고·갱신이 늦으면 최신 업소가 누락될 수 있습니다.").font(.caption).foregroundStyle(.secondary)
                     ForEach(Array(result.issues.enumerated()), id: \.offset) { _, issue in Text(issue).font(.caption).foregroundStyle(.orange) }
-                    NativeTextField("업소명 · 주소 · 업종에서 찾기", text: $keyword).frame(minHeight: 44)
+                    NativeTextField("업소명 · 주소 · 업종 · 업태에서 찾기", text: $keyword).frame(minHeight: 44)
                     if records.isEmpty { Text(result.complete ? "해당 기간·조건으로 확인된 업소가 없습니다." : "조회가 완료되지 않았습니다. 승인·오류 상태를 확인하세요.").font(.caption).foregroundStyle(.secondary) }
                 }
                 ForEach(days, id: \.self) { day in
                     Section("\(day) · \(records.filter { $0.permissionDate == day }.count)곳") {
                         ForEach(records.filter { $0.permissionDate == day }) { business in
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(business.name).bold().textSelection(.enabled)
-                                Text("\(business.service.title) · \(business.status)").font(.caption).foregroundStyle(.secondary)
-                                Text(business.address.isEmpty ? "주소 미제공" : business.address).font(.caption).textSelection(.enabled)
-                                if !business.phone.isEmpty { Text("전화 \(business.phone)").font(.caption).textSelection(.enabled) }
-                                if !business.updatedAt.isEmpty { Text("자료 갱신 \(business.updatedAt)").font(.caption2).foregroundStyle(.secondary) }
-                                if let url = naverAddressURL(business.name, business.address) { Link("네이버에서 확인", destination: url).font(.caption) }
-                            }
+                            NewLicenseBusinessRow(business: business, exclusions: exclusions)
                         }
                     }
                 }
@@ -183,6 +184,64 @@ struct DaejeonNewLicensesView: View {
             catch is CancellationError { error = "조회를 중단했습니다. 요청한 횟수는 사용량에 포함합니다." }
             catch { self.error = error.localizedDescription }
         }
+    }
+}
+
+private struct NewLicenseBusinessRow: View {
+    let business: PublicLicense
+    @ObservedObject var exclusions: LicenseExclusionStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(business.name).bold().textSelection(.enabled)
+            Text("\(business.service.title) · \(business.status)").font(.caption).foregroundStyle(.secondary)
+            if !business.businessType.isEmpty { Text("업태 \(business.businessType)").font(.caption).foregroundStyle(.secondary) }
+            Text(business.address).font(.caption).textSelection(.enabled)
+            if !business.phone.isEmpty { Text("전화 \(business.phone)").font(.caption).textSelection(.enabled) }
+            if !business.updatedAt.isEmpty { Text("자료 갱신 \(business.updatedAt)").font(.caption2).foregroundStyle(.secondary) }
+            if let url = PublicRoadAddress.naverSearchURL(business.address) {
+                Link("도로명주소로 네이버 확인", destination: url).font(.caption)
+            } else { Text("도로명 건물번호를 확인할 수 없습니다.").font(.caption).foregroundStyle(.orange) }
+            if LicenseExclusionStore.services.contains(business.service), PublicRoadAddress.buildingKey(business.address) != nil {
+                Button("이 건물 주소 제외", role: .destructive) {
+                    do { try exclusions.add(business.address) } catch { exclusions.errorMessage = error.localizedDescription }
+                }.buttonStyle(.borderless).font(.caption)
+            }
+        }
+    }
+}
+
+struct LicenseExclusionsView: View {
+    @EnvironmentObject private var inputs: NativeInputSession
+    @ObservedObject var store: LicenseExclusionStore
+    @State private var address = ""
+    @State private var error: String?
+    var body: some View {
+        Form {
+            Section("제외할 건물 주소 추가") {
+                NativeTextField("도로명주소 · 건물번호 포함", text: $address).frame(minHeight: 44)
+                Button("제외 주소 추가") {
+                    inputs.finishEditing()
+                    do { try store.add(address); address = ""; error = nil }
+                    catch { self.error = error.localizedDescription }
+                }.disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Text("대전의 구·도로명·건물번호까지 입력하세요. 층·호수·괄호 안의 건물명은 자동으로 제거합니다. 예: 대전광역시 서구 둔산로 123").font(.caption).foregroundStyle(.secondary)
+                Text("등록한 건물에 있는 제과점영업·일반음식점·휴게음식점 업소를 모두 제외합니다. 백화점·축제행사장 등의 주소를 등록할 수 있습니다. 변경은 현재 조회 결과에 바로 적용되며, 다시 조회하거나 업데이트한 뒤에도 유지됩니다.").font(.caption).foregroundStyle(.secondary)
+                if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                if let storeError = store.errorMessage { Text(storeError).font(.caption).foregroundStyle(.red) }
+            }
+            Section("저장된 제외 주소 · \(store.records.count)개") {
+                if store.records.isEmpty { Text("등록한 제외 주소가 없습니다.").foregroundStyle(.secondary) }
+                ForEach(store.records) { record in
+                    HStack {
+                        Text(record.address).textSelection(.enabled)
+                        Spacer()
+                        Button(role: .destructive) {
+                            do { try store.remove(record.id); error = nil } catch { self.error = error.localizedDescription }
+                        } label: { Image(systemName: "trash") }.buttonStyle(.borderless).accessibilityLabel("\(record.address) 제외 해제")
+                    }
+                }
+            }
+        }.navigationTitle("제외 주소 관리").navigationBarTitleDisplayMode(.inline)
     }
 }
 

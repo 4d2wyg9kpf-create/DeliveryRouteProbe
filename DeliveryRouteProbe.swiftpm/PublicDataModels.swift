@@ -74,6 +74,7 @@ struct PublicLicense: Codable, Identifiable {
     var service: PublicDataService
     var address: String
     var phone: String
+    var businessType: String
     var permissionDate: String
     var status: String
     var updatedAt: String
@@ -167,14 +168,15 @@ enum PublicDataParser {
               let date = date(string(item, "LCPMT_YMD")), date >= from, date <= through else { return nil }
         let id = string(item, "MNG_NO"), name = string(item, "BPLC_NM")
         guard !id.isEmpty, !name.isEmpty else { return nil }
-        let road = string(item, "ROAD_NM_ADDR"), lot = string(item, "LOTNO_ADDR")
-        // Query by authority, so a missing road address does not lose a permit.
-        // Reject contradictory non-Daejeon addresses instead of matching any
-        // occurrence of the word '대전' inside a road/business name.
-        let address = road.isEmpty ? lot : road
-        if !address.isEmpty, !address.hasPrefix("대전광역시 "), !address.hasPrefix("대전 ") { return nil }
-        return PublicLicense(id: service.rawValue + ":" + authority + ":" + id, name: name, service: service, address: address,
-            phone: string(item, "TELNO"), permissionDate: date, status: status.isEmpty ? "영업/정상" : status,
+        let road = string(item, "ROAD_NM_ADDR")
+        guard !road.isEmpty, road.hasPrefix("대전광역시 ") || road.hasPrefix("대전 ") else { return nil }
+        // MOIS's current fields are BZSTAT_SE_NM (업태구분명) and
+        // SNTTN_BZSTAT_NM (위생업태명). Do not infer them from a business name.
+        let type = string(item, "BZSTAT_SE_NM"), sanitationType = string(item, "SNTTN_BZSTAT_NM")
+        let excluded = Set(["푸드트럭", "백화점", "편의점"])
+        guard ![type, sanitationType].contains(where: { excluded.contains($0.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)) }) else { return nil }
+        return PublicLicense(id: service.rawValue + ":" + authority + ":" + id, name: name, service: service, address: road,
+            phone: string(item, "TELNO"), businessType: type.isEmpty ? sanitationType : type, permissionDate: date, status: status.isEmpty ? "영업/정상" : status,
             updatedAt: string(item, "DAT_UPDT_PNT"), authorityCode: authority)
     }
 }
