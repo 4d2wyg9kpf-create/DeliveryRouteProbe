@@ -275,6 +275,7 @@ final class PublicDataStore: ObservableObject {
     }
     func nearby(center: TMapCoordinate, radius: Int) async throws -> PublicNearbyResult {
         guard !isBusy else { throw PublicDataFailure.message("다른 공공데이터 조회가 진행 중입니다.") }
+        guard !blockedRecovery else { throw PublicDataFailure.message(errorMessage ?? "공공데이터 보관함 오류로 조회를 차단했습니다.") }
         guard radius >= 1, radius <= 2_000, center.latitude.isFinite, center.longitude.isFinite,
               (32...40).contains(center.latitude), (124...132).contains(center.longitude) else { throw PublicDataFailure.message("평가대상지 좌표와 반경 1~2,000m를 확인하세요.") }
         isBusy = true; errorMessage = nil; defer { isBusy = false }
@@ -290,6 +291,7 @@ final class PublicDataStore: ObservableObject {
     }
     func newDaejeonLicenses(from: String, through: String, services: [PublicDataService]) async throws -> PublicSalesResult {
         guard !isBusy else { throw PublicDataFailure.message("다른 공공데이터 조회가 진행 중입니다.") }
+        guard !blockedRecovery else { throw PublicDataFailure.message(errorMessage ?? "공공데이터 보관함 오류로 조회를 차단했습니다.") }
         guard PublicDataParser.date(from) == from, PublicDataParser.date(through) == through, from <= through,
               !services.isEmpty, services.allSatisfy({ $0 != .stores }), Set(services).count == services.count else { throw PublicDataFailure.message("인허가일자 범위와 업종을 확인하세요.") }
         isBusy = true; errorMessage = nil; defer { isBusy = false }

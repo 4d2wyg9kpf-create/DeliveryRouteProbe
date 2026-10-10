@@ -70,6 +70,11 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
         try check("malformed success is not an empty result") {
             do { _ = try PublicDataParser.page(bytes(["resultCode": "00"]), expectedPage: 1, expectedSize: 100); throw CheckFailure.failed("accepted missing body") } catch is PublicDataFailure {}
         }
+        try check("short page or extra rows cannot be presented as a complete list") {
+            for fixture in [try page(rows: [business("one")], total: 200), try page(rows: [business("one"), business("two")], total: 1)] {
+                do { _ = try PublicDataParser.page(fixture, expectedPage: 1, expectedSize: 100); throw CheckFailure.failed("accepted inconsistent count") } catch is PublicDataFailure {}
+            }
+        }
         try check("XML gateway quota error decoded without raw response") {
             do { _ = try PublicDataParser.page(Data("<OpenAPI_ServiceResponse><returnReasonCode>22</returnReasonCode></OpenAPI_ServiceResponse>".utf8), expectedPage: 1, expectedSize: 100); throw CheckFailure.failed("accepted error") }
             catch PublicDataFailure.provider(let code) { try require(code == "22", "code") }
@@ -129,6 +134,51 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
             let f = Fixture(), store = f.store(); try f.ready(store); f.badClock = true
             do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("clock bypass") } catch is PublicDataFailure {}
             try require(f.gets == 0, "no charge")
+        }
+        try await asyncCheck("server clock rollback cannot reset the exhausted daily quota") {
+            let f = Fixture(), initial = f.store(); try f.ready(initial, limit: 1)
+            _ = try await initial.nearby(center: center, radius: 500)
+            f.millis -= 86_400
+            let restored = f.store()
+            do { _ = try await restored.nearby(center: center, radius: 500); throw CheckFailure.failed("rollback reset") } catch is PublicDataFailure {}
+            try require(f.gets == 1 && restored.quotas.first { $0.id == .stores }?.used == 1, "preserved exhausted count")
+        }
+        try await asyncCheck("KST midnight waits five minutes and then resumes on the new day") {
+            let f = Fixture(), store = f.store(); try f.ready(store, limit: 1)
+            f.millis = ISO8601DateFormatter().date(from: "2026-10-10T14:59:00Z")!.timeIntervalSince1970
+            _ = try await store.nearby(center: center, radius: 500)
+            f.millis = ISO8601DateFormatter().date(from: "2026-10-10T15:02:00Z")!.timeIntervalSince1970
+            await store.refreshClock()
+            do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("midnight grace bypass") } catch is PublicDataFailure {}
+            try require(f.gets == 1, "grace gate")
+            f.millis = ISO8601DateFormatter().date(from: "2026-10-10T15:05:00Z")!.timeIntervalSince1970
+            await store.refreshClock()
+            _ = try await store.nearby(center: center, radius: 500)
+            try require(f.gets == 2 && store.quotas.first { $0.id == .stores }?.used == 1, "new day resumed with one counted request")
+        }
+        try await asyncCheck("failed network request remains counted after recreation") {
+            let f = Fixture(), initial = f.store(); try f.ready(initial, limit: 1)
+            f.responder = { _ in throw CheckFailure.failed("synthetic network failure") }
+            do { _ = try await initial.nearby(center: center, radius: 500); throw CheckFailure.failed("accepted failure") } catch {}
+            let restored = f.store(); f.responder = nil
+            do { _ = try await restored.nearby(center: center, radius: 500); throw CheckFailure.failed("failure count reset") } catch is PublicDataFailure {}
+            try require(f.gets == 1 && restored.quotas.first { $0.id == .stores }?.used == 1, "failed request persisted")
+        }
+        try await asyncCheck("redirected clock does not cause an API request") {
+            let f = Fixture(), store = f.store(); try f.ready(store); f.redirect = true
+            do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("redirect accepted") } catch is PublicDataFailure {}
+            try require(f.gets == 0, "no charged redirect")
+        }
+        try await asyncCheck("one exhausted service does not consume another service allowance") {
+            let f = Fixture(), store = f.store(); try f.ready(store, limit: 6)
+            for _ in 0..<6 { _ = try await store.nearby(center: center, radius: 500) }
+            f.responder = { request in
+                let params = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+                let authority = params.first { $0.name == "cond[OPN_ATMY_GRP_CD::EQ]" }!.value!
+                return try page(rows: [license(authority, authority: authority)], total: 1)
+            }
+            let result = try await store.newDaejeonLicenses(from: "2026-10-01", through: "2026-10-10", services: [.restaurants])
+            try require(result.complete && result.records.count == 6 && f.gets == 12, "service independent usage")
         }
         try await asyncCheck("key and quota survive store recreation and blank setting") {
             let f = Fixture(), initial = f.store(); try f.ready(initial, limit: 1); _ = try await initial.nearby(center: center, radius: 500)

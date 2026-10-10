@@ -130,7 +130,8 @@ enum PublicDataParser {
         else if let item = raw as? [String: Any], !item.isEmpty { rows = [item] }
         else if total == 0, raw == nil || raw is NSNull || (raw as? String) == "" || (raw as? [String: Any])?.isEmpty == true { rows = [] }
         else { throw PublicDataFailure.message("공공데이터 업체 목록 형식이 다릅니다.") }
-        guard rows.count <= size, total == 0 ? rows.isEmpty : !rows.isEmpty else { throw PublicDataFailure.message("공공데이터 페이지가 비어 있거나 건수가 다릅니다.") }
+        let expectedRows = min(size, max(0, total - (page - 1) * size))
+        guard rows.count == expectedRows, total == 0 ? rows.isEmpty : !rows.isEmpty else { throw PublicDataFailure.message("공공데이터 페이지가 비어 있거나 건수가 다릅니다.") }
         return PublicDataPage(rows: rows, total: total, page: page, pageSize: size, referenceMonth: string(body, "stdrYm"))
     }
     static func distance(longitude: Double, latitude: Double, center: TMapCoordinate) -> Double {
