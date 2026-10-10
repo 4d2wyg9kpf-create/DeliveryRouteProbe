@@ -67,6 +67,21 @@ final class FrameChecks: NSObject, WKNavigationDelegate {
             var multipleRejected = false
             do { _ = try NaverSharedLink.parse("https://naver.me/abc123 https://naver.me/def456") } catch { multipleRejected = true }
             try check(multipleRejected, "multiple place links are rejected")
+            try check(try NaverSharedLink.parse("[네이버 지도]\n대전 중구 가상로446번길 61\nhttps://naver.me/address1").kind == .address("대전 중구 가상로446번길 61"), "address share title bypasses a missing POI ID")
+            try check(try NaverSharedLink.parse("[네이버지도] 대전 중구 가상로 7-6 https://naver.me/address2").kind == .address("대전 중구 가상로 7-6"), "inline compact label preserves building subnumber")
+            try check(try NaverSharedLink.parse("[네이버 지도]\n가상 거래처\n대전 중구 가상로 1\nhttps://naver.me/business1").kind == .short, "business share is not reinterpreted as an address title")
+            try check(try NaverSharedLink.parse("[네이버 지도]\n대전 중구 가상로 1\nhttps://map.naver.com/p/entry/place/101").kind == .place("101"), "explicit POI link takes precedence over address title")
+            try check(try NaverSharedLink.parse("[네이버 지도]\n대전 중구 가상로 1\nhttps://map.naver.com/p/favorite/myPlace/folder/fixture-folder").kind == .folder("fixture-folder"), "folder link takes precedence over address title")
+            let addressURL = URL(string: "https://map.naver.com/v5/search/대전 중구 가상로 7-6?c=127.4,36.3,14&lng=1&lat=2")!
+            let addressTarget = NaverSharedLink.target(addressURL)
+            try check(addressTarget?.kind == .address("대전 중구 가상로 7-6") && addressTarget?.url.query == nil && addressTarget?.url.path == "/p/search/대전 중구 가상로 7-6", "complete address URL discards unverified coordinate parameters")
+            try check(NaverSharedLink.target(URL(string: "https://map.naver.com/p/search/대전 음식점?lng=127.4&lat=36.3")!) == nil, "broad search and center coordinates cannot become an address")
+            try check(try NaverSharedLink.parse("[네이버 지도]\n가상로 7-6\nhttps://naver.me/partial1").kind == .short, "incomplete address share remains a link for selected-place verification")
+            try check(NaverSharedLink.roadAddress("대전광역시 중구 가상로 7-6, 2층 (가상동)") == "대전광역시 중구 가상로 7-6", "unit suffix is omitted from a complete shared road address")
+            try check(NaverSharedLink.roadAddress("세종특별자치시 가상로 12") == "세종특별자치시 가상로 12" && NaverSharedLink.roadAddress("경기도 가상시 가상구 가상로 12") != nil, "Sejong and province-city-district address forms")
+            var forgedRejected = false
+            do { _ = try NaverSharedLink.parse("[네이버 지도]\n대전 중구 가상로 1\nhttps://map.naver.com.evil.test/p/search/주소") } catch { forgedRejected = true }
+            try check(forgedRejected, "NAVER-looking address title cannot authorize an unrelated host")
             view.load(URLRequest(url: URL(string: parent + "/main")!))
             let deadline = Date().addingTimeInterval(12)
             var ready = false

@@ -340,7 +340,10 @@ final class NaverAPIStore: ObservableObject {
         let response = try await fetch("search", query: query)
         return try NaverAPIBridge.call("local", ["response": response, "provider": state.searchProvider.rawValue, "now": Date().timeIntervalSince1970 * 1000], as: [NaverAPIResult].self)
     }
-    func address(_ address: String, name: String) async throws -> NaverPlaceCapture {
+    func address(_ address: String, name: String, mapsOnly: Bool = false) async throws -> NaverPlaceCapture {
+        if mapsOnly && (!hasMapsKeys || !mapsFreeConfirmed) {
+            throw PlannerFailure.message("공유한 주소의 좌표를 가져오려면 네이버 API 설정에서 Maps Geocoding 키와 무료 대표 계정 여부를 확인해 주세요.")
+        }
         let capture = try NaverAPIBridge.call("seed", ["name": name, "address": address, "now": Date().timeIntervalSince1970 * 1000], as: NaverPlaceCapture.self)
         return try await resolve(capture)
     }

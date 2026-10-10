@@ -112,6 +112,37 @@ struct NaverAPINativeTests {
             try require(q.url?.host == "maps.apigw.ntruss.com" && q.url?.path == "/map-geocode/v2/geocode", "old/paid Maps endpoint")
             try require(q.value(forHTTPHeaderField: "x-ncp-apigw-api-key-id") == "fixture-maps" && q.value(forHTTPHeaderField: "x-ncp-apigw-api-key") == "fixture-map-secret", "Maps credentials mixed with Search")
         }
+        await test("address-only shared text uses verified Maps coordinates without a business lookup") {
+            let target = try NaverSharedLink.parse("[네이버지도] 대전 중구 유천로 35 https://naver.me/addressFixture")
+            guard case .address(let address) = target.kind else { throw PlannerFailure.message("address share lost") }
+            let f = try Fixture(), s = f.store(), result = try await s.address(address, name: "", mapsOnly: true)
+            let requests = f.requests.filter { $0.httpMethod != "HEAD" }
+            let query = URLComponents(url: requests[0].url!, resolvingAgainstBaseURL: false)!.queryItems!
+            try require(requests.count == 1 && requests[0].url?.host == "maps.apigw.ntruss.com" && query.first(where: { $0.name == "query" })?.value == address, "shared address used a business search")
+            try require(result.name == address && result.coordinate?.longitude == 127.398 && result.geocodeProvider == "NAVER Maps", "shared address coordinate proof missing")
+        }
+        await test("403 on a shared address remains an API error with no browser or search retry") {
+            let target = try NaverSharedLink.parse("[네이버 지도]\n대전 중구 유천로 35\nhttps://naver.me/addressFixture")
+            guard case .address(let address) = target.kind else { throw PlannerFailure.message("address share lost") }
+            let f = try Fixture(), s = f.store(); f.status = 403; f.serverErrorCode = "210"
+            do { _ = try await s.address(address, name: "", mapsOnly: true); throw PlannerFailure.message("403 accepted") }
+            catch { try require(error.localizedDescription.contains("HTTP 403"), "API error was replaced by login guidance") }
+            try require(f.getCount == 1 && (try f.used("maps")) == 1 && (try f.used("search")) == 0, "error triggered a second request or refunded quota")
+        }
+        await test("shared address cannot dispatch after monthly Maps quota is exhausted") {
+            let f = try Fixture(), s = f.store(); await s.raiseUsage(provider: "maps", used: 3000000)
+            let target = try NaverSharedLink.parse("[네이버 지도]\n대전 중구 유천로 35\nhttps://naver.me/addressFixture")
+            guard case .address(let address) = target.kind else { throw PlannerFailure.message("address share lost") }
+            try await rejects { _ = try await s.address(address, name: "", mapsOnly: true) }
+            try require(f.getCount == 0 && s.quotas["maps"]?.remaining == 0, "shared link bypassed the free quota gate")
+        }
+        await test("unconfigured or unconfirmed Maps address share never consumes HUB search quota") {
+            for fixture in [try Fixture(maps: false), try Fixture(free: false)] {
+                let s = fixture.store()
+                try await rejects { _ = try await s.address("대전 중구 유천로 35", name: "", mapsOnly: true) }
+                try require(fixture.getCount == 0 && fixture.headCount == 0 && (try fixture.used("search")) == 0, "address share fell back to a business lookup")
+            }
+        }
         await test("3,000,000th monthly geocode allowed, next blocked") {
             let f = try Fixture(), s = f.store(); await s.raiseUsage(provider: "maps", used: 2999999)
             _ = try await s.address("대전 중구 유천로 35", name: "가상 거래처")

@@ -21,6 +21,7 @@ struct NaverSearchScreen: View {
     @State private var message = ""
     @State private var error: String?
     private var importing: Bool { browser.isOpeningSharedLink || browser.isImportingSavedList || browser.waitingForSavedFolder || browser.isReadingPlace }
+    private var importingWeb: Bool { browser.isImportingSavedList || browser.waitingForSavedFolder || browser.isReadingPlace || (browser.isOpeningSharedLink && browser.sharedLinkUsesWeb) }
     var body: some View {
         NavigationStack {
             Form {
@@ -44,7 +45,7 @@ struct NaverSearchScreen: View {
                     } else {
                         NativeTextField("네이버지도 장소·목록 공유 링크", text: $sharedLink, keyboard: .URL).frame(minHeight: 44)
                         PasteButton(payloadType: String.self) { values in sharedLink = values.first ?? "" }
-                        Text("네이버지도에서 공유한 링크를 붙여넣으세요. 장소 링크는 확인 후 저장하고, 목록 링크는 목록 안의 장소를 모두 가져옵니다.").font(.caption).foregroundStyle(.secondary)
+                        Text("네이버지도의 공유문 전체를 붙여넣으세요. 주소 공유는 지도 화면 없이 좌표로 변환합니다. 장소는 확인 후 저장하고, 목록은 모든 장소를 가져옵니다.").font(.caption).foregroundStyle(.secondary)
                     }
                     Button(api.isBusy || importing ? "처리 중…" : mode == 0 ? "네이버 검색" : mode == 1 ? "주소 → 좌표 변환" : "공유 링크 가져오기") { search() }
                         .buttonStyle(.borderedProminent)
@@ -68,7 +69,9 @@ struct NaverSearchScreen: View {
                                 ForEach(Array(report.failures.enumerated()), id: \.offset) { _, value in Text(value).font(.caption).foregroundStyle(.orange) }
                             }
                         }
-                        Button("네이버 로그인 · 링크 접근 확인") { inputs.finishEditing(); showWeb = true }
+                        if browser.sharedLinkUsesWeb || browser.isImportingSavedList || browser.waitingForSavedFolder {
+                            Button("네이버 로그인 · 링크 접근 확인") { inputs.finishEditing(); showWeb = true }
+                        }
                     }
                 }
                 if !results.isEmpty {
@@ -99,7 +102,7 @@ struct NaverSearchScreen: View {
             .background {
                 // A wide, invisible document viewport lets shared links resolve
                 // without making the user fit a desktop map onto an iPhone.
-                if !showWeb && importing { MapWebView(webView: browser.webView).frame(width: 900, height: 700).opacity(0).allowsHitTesting(false).accessibilityHidden(true) }
+                if !showWeb && importingWeb { MapWebView(webView: browser.webView).frame(width: 900, height: 700).opacity(0).allowsHitTesting(false).accessibilityHidden(true) }
             }.clipped()
             .navigationTitle("네이버검색")
             .navigationBarTitleDisplayMode(.inline)
