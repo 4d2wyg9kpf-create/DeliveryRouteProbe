@@ -188,21 +188,49 @@ final class PublicDataStore: ObservableObject {
         catch is CancellationError { throw CancellationError() }
         catch { throw PublicDataFailure.message("공공데이터 서버에 연결하지 못했습니다. 네트워크를 확인하세요.") }
     }
-    private func trust(_ response: HTTPURLResponse) throws {
-        guard response.url?.scheme == "https", response.url?.host == "apis.data.go.kr",
-              let text = response.value(forHTTPHeaderField: "Date") else { throw PublicDataFailure.message("공공데이터 서버의 기준 시각을 확인하지 못했습니다.") }
+    private func clockDate(_ response: HTTPURLResponse, request: URLRequest, started: TimeInterval) throws -> Date {
+        // The data gateway root is not a clock endpoint: it can return no Date.
+        // These credential-free HTTPS requests never carry or consume a ServiceKey.
+        guard response.url == request.url, response.url?.scheme == "https",
+              ["www.naver.com", "www.data.go.kr"].contains(response.url?.host ?? ""),
+              (200..<500).contains(response.statusCode), !(300..<400).contains(response.statusCode),
+              uptime() - started >= 0, uptime() - started <= 10,
+              let age = Double(response.value(forHTTPHeaderField: "Age") ?? "0"), age.isFinite, (0...30).contains(age),
+              let text = response.value(forHTTPHeaderField: "Date") else { throw PublicDataFailure.message("인터넷 기준 시각 응답을 확인하지 못했습니다.") }
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
-        guard let date = f.date(from: text), date.timeIntervalSince1970 * 1_000 + 2_000 >= state.lastTrustedMillis else { throw PublicDataFailure.message("공공데이터 서버 시각이 이전 기록보다 과거입니다. 요청을 차단했습니다.") }
-        var next = state; next.lastTrustedMillis = max(next.lastTrustedMillis, date.timeIntervalSince1970 * 1_000)
-        try commit(next)
-        reference = (Date(timeIntervalSince1970: next.lastTrustedMillis / 1_000), uptime()); clockUptime = uptime(); publish()
+        guard let date = f.date(from: text), (1_577_836_800...4_102_444_800).contains(date.timeIntervalSince1970),
+              date.timeIntervalSince1970 * 1_000 + 2_000 >= state.lastTrustedMillis else { throw PublicDataFailure.message("기준 시각이 이전 기록보다 과거여서 요청을 차단했습니다.") }
+        return date
     }
     private func ensureClock(force: Bool = false) async throws {
         if !force, now != nil, let clockUptime, uptime() - clockUptime < 300 { return }
-        var request = URLRequest(url: URL(string: "https://apis.data.go.kr/")!); request.httpMethod = "HEAD"
-        let (_, response) = try await send(request)
-        guard let http = response as? HTTPURLResponse else { throw PublicDataFailure.message("공공데이터 기준 시각 응답을 확인하지 못했습니다.") }
-        try trust(http)
+        for host in ["www.naver.com", "www.data.go.kr"] {
+            var components = URLComponents(); components.scheme = "https"; components.host = host; components.path = "/"
+            components.queryItems = [URLQueryItem(name: "delivery_clock", value: UUID().uuidString)]
+            for method in ["HEAD", "GET"] {
+                var request = URLRequest(url: components.url!, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 8)
+                request.httpMethod = method
+                request.setValue("no-cache, no-store", forHTTPHeaderField: "Cache-Control")
+                request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+                if method == "GET" { request.setValue("bytes=0-0", forHTTPHeaderField: "Range") }
+                let started = uptime()
+                let date: Date
+                do {
+                    try Task.checkCancellation()
+                    let (_, response) = try await send(request)
+                    try Task.checkCancellation()
+                    guard let http = response as? HTTPURLResponse else { continue }
+                    date = try clockDate(http, request: request, started: started)
+                } catch is CancellationError { throw CancellationError() }
+                catch { continue }
+                var next = state; next.lastTrustedMillis = max(next.lastTrustedMillis, date.timeIntervalSince1970 * 1_000)
+                // A storage error must stop here; it is not a reason to retry a network request.
+                try commit(next)
+                reference = (Date(timeIntervalSince1970: next.lastTrustedMillis / 1_000), uptime())
+                clockUptime = uptime(); publish(); return
+            }
+        }
+        throw PublicDataFailure.message("인터넷 기준 시각을 확인하지 못해 조회를 보류했습니다. 네트워크를 확인하고 다시 조회해 주세요. 인증키와 사용량 기록은 유지됩니다.")
     }
     func refreshClock() async {
         guard !isBusy, !blockedRecovery else { return }
@@ -233,7 +261,8 @@ final class PublicDataStore: ObservableObject {
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse, http.url?.scheme == "https", http.url?.host == "apis.data.go.kr",
               !(300..<400).contains(http.statusCode) else { throw PublicDataFailure.message("공공데이터 응답 출처를 확인하지 못했습니다.") }
-        if http.value(forHTTPHeaderField: "Date") != nil { try trust(http) }
+        // Keep the independently verified clock. Missing or cached gateway Date
+        // headers must not discard an otherwise valid, already counted response.
         do {
             let result = try PublicDataParser.page(data, expectedPage: page, expectedSize: 100)
             guard (200..<300).contains(http.statusCode) else { throw PublicDataFailure.message("공공데이터 HTTP 오류 \(http.statusCode)") }
@@ -278,6 +307,7 @@ final class PublicDataStore: ObservableObject {
         guard !blockedRecovery else { throw PublicDataFailure.message(errorMessage ?? "공공데이터 보관함 오류로 조회를 차단했습니다.") }
         guard radius >= 1, radius <= 2_000, center.latitude.isFinite, center.longitude.isFinite,
               (32...40).contains(center.latitude), (124...132).contains(center.longitude) else { throw PublicDataFailure.message("평가대상지 좌표와 반경 1~2,000m를 확인하세요.") }
+        guard hasKey, approved.contains(PublicDataService.stores.rawValue) else { throw PublicDataFailure.message("인증키를 저장하고 '주변 업체' 활용승인을 확인하세요.") }
         isBusy = true; errorMessage = nil; defer { isBusy = false }
         try await ensureClock()
         let rows = try await allRows(.stores, parameters: ["radius": String(radius), "cx": String(center.longitude), "cy": String(center.latitude)])
@@ -294,10 +324,11 @@ final class PublicDataStore: ObservableObject {
         guard !blockedRecovery else { throw PublicDataFailure.message(errorMessage ?? "공공데이터 보관함 오류로 조회를 차단했습니다.") }
         guard PublicDataParser.date(from) == from, PublicDataParser.date(through) == through, from <= through,
               !services.isEmpty, services.allSatisfy({ $0 != .stores }), Set(services).count == services.count else { throw PublicDataFailure.message("인허가일자 범위와 업종을 확인하세요.") }
-        isBusy = true; errorMessage = nil; defer { isBusy = false }
-        try await ensureClock()
         let format = DateFormatter(); format.locale = Locale(identifier: "en_US_POSIX"); format.timeZone = TimeZone(identifier: "Asia/Seoul"); format.dateFormat = "yyyy-MM-dd"
         guard let end = format.date(from: through), let start = format.date(from: from), end.timeIntervalSince(start) <= 366 * 86_400 else { throw PublicDataFailure.message("한 번에 최대 1년의 인허가일자를 조회합니다.") }
+        guard hasKey, services.contains(where: { approved.contains($0.rawValue) }) else { throw PublicDataFailure.message("공공데이터 인증키를 저장하고 선택한 인허가 API의 활용승인을 확인하세요.") }
+        isBusy = true; errorMessage = nil; defer { isBusy = false }
+        try await ensureClock()
         var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "Asia/Seoul")!
         format.dateFormat = "yyyyMMdd"; let exclusive = format.string(from: cal.date(byAdding: .day, value: 1, to: end)!)
         var result: [String: PublicLicense] = [:], issues: [String] = [], complete = true

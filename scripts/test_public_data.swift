@@ -32,8 +32,12 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
     var millis: TimeInterval = 1_791_601_200 // overwritten by ISO date below
     var ticks: TimeInterval = 10
     var responder: ((URLRequest) throws -> Data)?
+    var clockResponder: ((URLRequest, [String: String]) throws -> HTTPURLResponse)?
+    var omitDataDate = false
+    var dataDateOffset: TimeInterval = 0
     var heads = 0
-    var gets: Int { requests.filter { $0.httpMethod != "HEAD" }.count }
+    var gets: Int { requests.filter { $0.url?.host == "apis.data.go.kr" && $0.httpMethod != "HEAD" }.count }
+    var clockRequests: [URLRequest] { requests.filter { $0.url?.host != "apis.data.go.kr" } }
     init() {
         millis = ISO8601DateFormatter().date(from: "2026-10-10T03:00:00Z")!.timeIntervalSince1970
     }
@@ -43,10 +47,12 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
                 self.requests.append(request)
                 let isHead = request.httpMethod == "HEAD"
                 if isHead { self.heads += 1 }
+                let isClock = request.url?.host != "apis.data.go.kr"
                 let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
-                let header = self.badClock ? [:] : ["Date": f.string(from: Date(timeIntervalSince1970: self.millis))]
+                let header = self.badClock || (!isClock && self.omitDataDate) ? [:] : ["Date": f.string(from: Date(timeIntervalSince1970: self.millis + (isClock ? 0 : self.dataDateOffset)))]
+                if isClock, let clockResponder = self.clockResponder { return (Data(), try clockResponder(request, header)) }
                 let response = HTTPURLResponse(url: self.redirect ? URL(string: "https://example.invalid/")! : request.url!, statusCode: self.redirect ? 302 : 200, httpVersion: "HTTP/1.1", headerFields: header)!
-                if isHead { return (Data(), response) }
+                if isClock { return (Data(), response) }
                 return (try self.responder?(request) ?? page(rows: [business("one")], total: 1, nested: false), response)
             }, uptime: { self.ticks })
     }
@@ -236,10 +242,97 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
             let result = try await store.newDaejeonLicenses(from: "2026-10-01", through: "2026-10-10", services: PublicDataService.licenses)
             try require(result.complete && result.records.count == 5 && f.gets == 30, "services and jurisdictions")
         }
-        try await asyncCheck("unapproved license category reports omission instead of complete zero") {
+        try await asyncCheck("no approved license category shows setup error before clock or data requests") {
             let f = Fixture(), store = f.store(); try f.ready(store, services: [])
-            let result = try await store.newDaejeonLicenses(from: "2026-10-01", through: "2026-10-10", services: [.restaurants])
-            try require(!result.complete && !result.issues.isEmpty && f.gets == 0, "explicit omission")
+            do { _ = try await store.newDaejeonLicenses(from: "2026-10-01", through: "2026-10-10", services: [.restaurants]); throw CheckFailure.failed("approval bypass") }
+            catch is PublicDataFailure {}
+            try require(f.requests.isEmpty, "validation before network")
+        }
+        try await asyncCheck("clock requests contain neither the API key nor authorization and use fresh HTTPS responses") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            _ = try await store.nearby(center: center, radius: 500)
+            try require(f.gets == 1 && !f.clockRequests.isEmpty, "independent clock and counted API")
+            for request in f.clockRequests {
+                let url = request.url!, query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
+                try require(url.scheme == "https" && ["www.naver.com", "www.data.go.kr"].contains(url.host!), "clock allowlist")
+                try require(query.count == 1 && query[0].name == "delivery_clock" && UUID(uuidString: query[0].value!) != nil, "uncached public clock URL")
+                try require(!url.absoluteString.contains("fixture-key") && request.value(forHTTPHeaderField: "Authorization") == nil && request.value(forHTTPHeaderField: "Cookie") == nil, "no credentials")
+                try require(request.value(forHTTPHeaderField: "Cache-Control") == "no-cache, no-store" && request.timeoutInterval <= 8, "bounded uncached request")
+            }
+        }
+        try await asyncCheck("HEAD without Date falls back to GET without consuming an API request") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            f.clockResponder = { request, header in HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: request.httpMethod == "HEAD" ? [:] : header)! }
+            let result = try await store.nearby(center: center, radius: 500)
+            try require(result.complete && result.records.count == 1 && f.gets == 1 && f.clockRequests.map(\.httpMethod) == ["HEAD", "GET"], "HEAD omission recovered")
+        }
+        try await asyncCheck("unavailable first clock host falls back to the independent portal") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            f.clockResponder = { request, header in HTTPURLResponse(url: request.url!, statusCode: request.url!.host == "www.naver.com" ? 502 : 200, httpVersion: nil, headerFields: header)! }
+            _ = try await store.nearby(center: center, radius: 500)
+            try require(f.gets == 1 && f.clockRequests.last?.url?.host == "www.data.go.kr", "alternate host recovered")
+        }
+        try await asyncCheck("missing Date on authenticated business response does not discard results") {
+            let f = Fixture(), store = f.store(); try f.ready(store); f.omitDataDate = true
+            let result = try await store.nearby(center: center, radius: 500)
+            try require(result.complete && result.records.count == 1 && f.gets == 1, "gateway header omission recovered")
+        }
+        try await asyncCheck("cached older Date on data response cannot overwrite the independently verified clock") {
+            let f = Fixture(), store = f.store(); try f.ready(store); f.dataDateOffset = -86_400
+            let result = try await store.nearby(center: center, radius: 500)
+            let saved = try JSONSerialization.jsonObject(with: f.data!) as! [String: Any]
+            try require(result.complete && saved["lastTrustedMillis"] as? Double == f.millis * 1_000, "independent time retained")
+        }
+        try await asyncCheck("stale or malformed cache ages on all sources cannot enable data dispatch") {
+            for age in ["31", "invalid", "-1", "nan"] {
+                let f = Fixture(), store = f.store(); try f.ready(store)
+                f.clockResponder = { request, header in var header = header; header["Age"] = age; return HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: header)! }
+                do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("stale cache accepted") } catch is PublicDataFailure {}
+                try require(f.gets == 0, "no charged request for bad cache age")
+            }
+        }
+        try await asyncCheck("redirect status on a known clock URL is rejected even with a valid Date") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            f.clockResponder = { request, header in HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: nil, headerFields: header)! }
+            do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("redirect accepted") } catch is PublicDataFailure {}
+            try require(f.gets == 0, "no data dispatch")
+        }
+        try await asyncCheck("delayed clock responses are rejected before a day boundary can reset quota") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            f.clockResponder = { request, header in f.ticks += 11; return HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: header)! }
+            do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("slow clock accepted") } catch is PublicDataFailure {}
+            try require(f.gets == 0, "stale in-transit response blocked")
+        }
+        try await asyncCheck("exhausted saved quota remains blocked when an alternate clock is used after upgrade") {
+            let f = Fixture(), initial = f.store(); try f.ready(initial, limit: 1)
+            _ = try await initial.nearby(center: center, radius: 500)
+            f.clockResponder = { request, header in HTTPURLResponse(url: request.url!, statusCode: request.url!.host == "www.naver.com" ? 502 : 200, httpVersion: nil, headerFields: header)! }
+            let restored = f.store()
+            do { _ = try await restored.nearby(center: center, radius: 500); throw CheckFailure.failed("alternate clock reset quota") } catch is PublicDataFailure {}
+            try require(restored.hasKey && f.gets == 1 && restored.quotas.first { $0.id == .stores }?.remaining == 0, "key and exhausted count preserved")
+        }
+        try await asyncCheck("clock persistence failure is not retried and cannot dispatch the API") {
+            let f = Fixture(), store = f.store(); try f.ready(store); f.writeFails = true
+            do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("storage bypass") } catch {}
+            try require(f.gets == 0 && f.clockRequests.count == 1, "storage fail stops at first verified clock")
+        }
+        try await asyncCheck("no API key shows setup error before any clock request") {
+            let f = Fixture(), store = f.store()
+            do { _ = try await store.newDaejeonLicenses(from: "2026-10-01", through: "2026-10-10", services: [.restaurants]); throw CheckFailure.failed("key bypass") } catch is PublicDataFailure {}
+            do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("key bypass") } catch is PublicDataFailure {}
+            try require(f.requests.isEmpty, "key validation before network")
+        }
+        try await asyncCheck("partly approved license selection preserves explicit omissions alongside successful results") {
+            let f = Fixture(), store = f.store(); try f.ready(store, services: ["restaurants"])
+            f.responder = { _ in try page(rows: [], total: 0) }
+            let result = try await store.newDaejeonLicenses(from: "2026-10-01", through: "2026-10-10", services: [.restaurants, .cafes])
+            try require(!result.complete && !result.issues.isEmpty && f.gets == 6, "only approved service requested")
+        }
+        try await asyncCheck("clock cancellation does not try another host or consume quota") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            f.clockResponder = { _, _ in throw CancellationError() }
+            do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("cancellation accepted") } catch is CancellationError {}
+            try require(f.gets == 0 && f.clockRequests.count == 1, "cancellation respected")
         }
         try await asyncCheck("corrupt persisted state gates requests") {
             let f = Fixture(); f.data = Data("broken".utf8); let store = f.store()

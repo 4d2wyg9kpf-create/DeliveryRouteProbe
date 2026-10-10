@@ -1,6 +1,8 @@
-# 배송경로 0.15.0 · iPhone / iPad
+# 배송경로 0.15.1 · iPhone / iPad
 
-**0.15.0 / 빌드 28**, iOS 18 이상. Bundle ID `kr.deliverytools.routeprobe`, 설치 이름 `DeliveryRoute`를 유지합니다.
+**0.15.1 / 빌드 29**, iOS 18 이상. Bundle ID `kr.deliverytools.routeprobe`, 설치 이름 `DeliveryRoute`를 유지합니다.
+
+공공데이터 조회 전의 시각 확인 오류를 수정했습니다. API 루트의 HEAD 응답에 Date가 없어서 조회 전체가 막히던 문제를 해결합니다. 키가 없는 HTTPS 시각 요청은 NAVER 홈페이지와 공공데이터포털을 사용하며 HEAD에서 시각을 읽지 못하면 GET과 다른 호스트를 순서대로 확인합니다. 오래된 캐시·리디렉션·시각 역행은 거부합니다. 업소 응답의 누락되거나 오래된 Date 헤더 때문에 정상 결과를 버리지 않습니다. 기존 인증키·사용량 보관 형식과 한도 차단은 유지합니다. 키·활용승인을 먼저 확인하여 미설정 상태에는 설정 안내를 표시합니다.
 
 ## 세 개의 탭
 
@@ -55,9 +57,9 @@
 
 GitHub Actions **Build unsigned iOS IPA**는 표준 macos-15 서버에서 실제 WKWebView 교차 출처 읽기·공유 링크, NAVER API, 키 유지, 공공데이터 요청 차단 검사를 통과한 뒤 iPhone·iPad용 arm64 기기 앱을 컴파일합니다. 앱 아이콘과 영문 앱 메타데이터를 유지합니다.
 
-`DeliveryRouteProbe_0.15.0-28-unsigned.ipa`는 기존처럼 Sideloadly에서 본인 계정으로 서명하여 설치합니다. Apple 계정·API 키·인증서는 공개 저장소에 입력하지 않습니다.
+`DeliveryRouteProbe_0.15.1-29-unsigned.ipa`는 기존처럼 Sideloadly에서 본인 계정으로 서명하여 설치합니다. Apple 계정·API 키·인증서는 공개 저장소에 입력하지 않습니다.
 
-실제 API 키가 제공되지 않아 인증된 공공데이터·NAVER·티맵 실조회와 실제 iPhone/iPad 설치·업데이트 실행은 별도 확인이 필요합니다. 합성 응답과 모의 네트워크 검사는 무료 호출량을 사용하지 않습니다.
+실제 API 키가 제공되지 않아 인증된 공공데이터·NAVER·티맵 실조회와 실제 iPhone/iPad 설치·업데이트 실행은 별도 확인이 필요합니다. 합성 응답과 모의 네트워크 검사는 무료 호출량을 사용하지 않습니다. 별도로 앱과 같은 URLSession을 사용하는 실제 HTTPS 시각 확인 검사를 실행하며, 이 검사는 API 인증키를 사용하거나 업소 조회를 하지 않습니다.
 
 ## 공개 범위
 

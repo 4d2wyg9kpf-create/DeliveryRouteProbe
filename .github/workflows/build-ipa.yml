@@ -14,6 +14,7 @@ on:
       - 'scripts/test_naver_api.*'
       - 'scripts/test_api_persistence.*'
       - 'scripts/test_public_data.*'
+      - 'scripts/test_public_data_live_clock.*'
       - 'scripts/test_place_destinations.*'
       - 'tests/naver_api_tests.js'
       - 'tests/delivery_flow_tests.js'
@@ -49,6 +50,8 @@ jobs:
         run: bash scripts/test_api_persistence.sh
       - name: Verify public business radius, license dates, pagination, persistence and request gates
         run: bash scripts/test_public_data.sh
+      - name: Verify shipped URLSession reads a live HTTPS clock without an API key or data quota use
+        run: bash scripts/test_public_data_live_clock.sh
       - name: Verify selected place destinations, bulk import, deduplication and deletion persist independently
         run: bash scripts/test_place_destinations.sh
       - name: Upload native check log
