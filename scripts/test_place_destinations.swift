@@ -37,6 +37,16 @@ private func capture(_ number: Int) throws -> NaverPlaceCapture {
     try require(parsed.ok && parsed.value?.count == 1, "fixture capture")
     return parsed.value![0].capture
 }
+private func sharedPoint(_ longitude: Double, url: String) throws -> NaverPlaceCapture {
+    var value = try capture(101)
+    value.method = "rendered_selected_marker_and_tiles"; value.geocodeProvider = nil; value.apiEvidence = nil
+    value.coordinate = TMapCoordinate(longitude: longitude, latitude: 36.3)
+    value.tileZoom = 18; value.screenResolutionMeters = 1
+    let x = longitude / 180 * 20037508.342789244, y = 6378137 * log(tan(Double.pi / 4 + 36.3 * Double.pi / 360))
+    let name = value.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
+    value.point = MapRoutePoint(token: "\(x),\(y),\(name),,SIMPLE_POI", name: value.name)
+    return try NaverPlaceBridge.call("shared", ["capture": try TMapBridge.object(value), "url": url], as: NaverPlaceCapture.self)
+}
 
 @main struct DestinationNativeChecks {
     @MainActor static func main() throws {
@@ -87,6 +97,40 @@ private func capture(_ number: Int) throws -> NaverPlaceCapture {
             do { _ = try broken.save(first); throw PlannerFailure.message("corrupt archive overwritten") } catch {}
             let preserved = try Data(contentsOf: url)
             try require(broken.errorMessage != nil && preserved == original, "preserve bad file")
+        }
+        let pinFolder = folder.appendingPathComponent("shared-pins", isDirectory: true)
+        let pinCustomers = NaverCustomerStore(directory: pinFolder), pinSites = SiteTargetStore(directory: pinFolder)
+        let pinA = try sharedPoint(127.4, url: "https://naver.me/pointA"), pinB = try sharedPoint(127.4000002, url: "https://naver.me/pointB")
+        try check("two shared points at the same address persist separately in both destinations") {
+            for pin in [pinA, pinB] { _ = try pinCustomers.save(pin); _ = try pinSites.save(pin) }
+            try require(pinCustomers.records.count == 2 && pinSites.records.count == 2 && Set(pinCustomers.records.map(\.id)).count == 2, "distinct shared points collapsed")
+        }
+        try check("reimporting the same point updates its existing identity") {
+            let customerID = pinCustomers.records[0].id, siteID = pinSites.records[0].id
+            let addedCustomer = try pinCustomers.save(pinA), addedSite = try pinSites.save(pinA)
+            try require(!addedCustomer && !addedSite && pinCustomers.records[0].id == customerID && pinSites.records[0].id == siteID, "same point duplicated")
+        }
+        try check("new short URL for the same point does not create a duplicate") {
+            let repeated = try sharedPoint(127.4, url: "https://naver.me/pointAgain")
+            let added = try pinCustomers.save(repeated)
+            try require(!added && pinCustomers.records.count == 2 && pinCustomers.records[0].capture?.sharedLinkURL == repeated.sharedLinkURL, "regenerated URL split the same point")
+        }
+        try check("shared-point coordinates and identities survive file recreation") {
+            let restoredCustomers = NaverCustomerStore(directory: pinFolder), restoredSites = SiteTargetStore(directory: pinFolder)
+            try require(restoredCustomers.errorMessage == nil && restoredSites.errorMessage == nil && restoredCustomers.records.count == 2 && restoredSites.records.count == 2, "shared point archive corrupt")
+            try require(restoredCustomers.records[1].capture?.coordinate?.longitude == 127.4000002, "selected coordinate lost")
+        }
+        try check("remembering selected deliveries cannot merge same-address shared points") {
+            var plan = DeliveryPlan(); plan.visits = pinCustomers.records.map(\.template)
+            try pinCustomers.remember(plan)
+            try require(pinCustomers.records.count == 2 && pinCustomers.records[1].capture?.coordinate?.longitude == 127.4000002, "plan migration collapsed distinct points")
+        }
+        try check("shared address without selected coordinates cannot enter either list") {
+            var missing = pinA; missing.coordinate = nil; missing.point = nil; missing.method = "rendered_selected_address_panel"
+            for destination in NaverImportDestination.allCases {
+                do { _ = try NaverImportSink.save(missing, destination: destination, customers: pinCustomers, sites: pinSites); throw PlannerFailure.message("missing point saved") }
+                catch { try require(pinCustomers.records.count == 2 && pinSites.records.count == 2, "missing point modified a list") }
+            }
         }
         print("Place destination native checks: \(passed)/\(passed) passed")
     }

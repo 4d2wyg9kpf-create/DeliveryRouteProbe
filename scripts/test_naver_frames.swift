@@ -35,6 +35,8 @@ final class FrameChecks: NSObject, WKNavigationDelegate {
             .replacingOccurrences(of: "'map.naver.com'", with: "'127.0.0.1'")
             .replacingOccurrences(of: "'pcmap.place.naver.com'", with: "'127.0.0.1'")
             .replacingOccurrences(of: "'pages.map.naver.com'", with: "'127.0.0.1'")
+            .replacingOccurrences(of: "'map.pstatic.net'", with: "'127.0.0.1'")
+            .replacingOccurrences(of: #"https:\/\/map\.pstatic\.net"#, with: #"http:\/\/127\.0\.0\.1:8349"#)
     }
     func evaluate(_ body: String, _ args: [String: Any] = [:]) async throws -> [String: Any] {
         let raw: Any = try await withCheckedThrowingContinuation { continuation in
@@ -63,19 +65,19 @@ final class FrameChecks: NSObject, WKNavigationDelegate {
             try check(NaverSharedLink.target(URL(string: "https://map.naver.com.evil.test/p/entry/place/101")!) == nil, "lookalike host is rejected")
             try check(NaverSharedLink.target(URL(string: "https://map.naver.com/p?c=127.4,36.3,14")!) == nil, "map center is not a place coordinate")
             let coordinateURL = try NaverSharedLink.parse("https://map.naver.com/p/entry/place/101?lng=1&lat=2")
-            try check(coordinateURL.url.absoluteString == "https://map.naver.com/p/entry/place/101", "unverified query coordinates are discarded")
+            try check(coordinateURL.url.absoluteString == "https://map.naver.com/p/entry/place/101?lng=1&lat=2", "original position parameters are retained without trusting them as coordinates")
             var multipleRejected = false
             do { _ = try NaverSharedLink.parse("https://naver.me/abc123 https://naver.me/def456") } catch { multipleRejected = true }
             try check(multipleRejected, "multiple place links are rejected")
-            try check(try NaverSharedLink.parse("[네이버 지도]\n대전 중구 가상로446번길 61\nhttps://naver.me/address1").kind == .address("대전 중구 가상로446번길 61"), "address share title bypasses a missing POI ID")
-            try check(try NaverSharedLink.parse("[네이버지도] 대전 중구 가상로 7-6 https://naver.me/address2").kind == .address("대전 중구 가상로 7-6"), "inline compact label preserves building subnumber")
+            try check(try NaverSharedLink.parse("[네이버 지도]\n대전 중구 가상로446번길 61\nhttps://naver.me/address1").kind == .short, "address-only share title does not choose a point or bypass its URL")
+            try check(try NaverSharedLink.parse("[네이버지도] 대전 중구 가상로 7-6 https://naver.me/address2").kind == .short, "inline address title also preserves short-link resolution")
             try check(try NaverSharedLink.parse("[네이버 지도]\n가상 거래처\n대전 중구 가상로 1\nhttps://naver.me/business1").kind == .short, "business share is not reinterpreted as an address title")
             try check(try NaverSharedLink.parse("[네이버 지도]\n대전 중구 가상로 1\nhttps://map.naver.com/p/entry/place/101").kind == .place("101"), "explicit POI link takes precedence over address title")
             try check(try NaverSharedLink.parse("[네이버 지도]\n대전 중구 가상로 1\nhttps://map.naver.com/p/favorite/myPlace/folder/fixture-folder").kind == .folder("fixture-folder"), "folder link takes precedence over address title")
             let addressURL = URL(string: "https://map.naver.com/v5/search/대전 중구 가상로 7-6?c=127.4,36.3,14&lng=1&lat=2")!
             let addressTarget = NaverSharedLink.target(addressURL)
-            try check(addressTarget?.kind == .address("대전 중구 가상로 7-6") && addressTarget?.url.query == nil && addressTarget?.url.path == "/p/search/대전 중구 가상로 7-6", "complete address URL discards unverified coordinate parameters")
-            try check(NaverSharedLink.target(URL(string: "https://map.naver.com/p/search/대전 음식점?lng=127.4&lat=36.3")!) == nil, "broad search and center coordinates cannot become an address")
+            try check(addressTarget?.kind == .mapSelection && addressTarget?.url == addressURL, "selected address URL keeps all position parameters for marker verification")
+            try check(NaverSharedLink.target(URL(string: "https://map.naver.com/p/search/대전 음식점?lng=127.4&lat=36.3")!)?.kind == .mapSelection, "search URLs are navigation only and still require a selected marker")
             try check(try NaverSharedLink.parse("[네이버 지도]\n가상로 7-6\nhttps://naver.me/partial1").kind == .short, "incomplete address share remains a link for selected-place verification")
             try check(NaverSharedLink.roadAddress("대전광역시 중구 가상로 7-6, 2층 (가상동)") == "대전광역시 중구 가상로 7-6", "unit suffix is omitted from a complete shared road address")
             try check(NaverSharedLink.roadAddress("세종특별자치시 가상로 12") == "세종특별자치시 가상로 12" && NaverSharedLink.roadAddress("경기도 가상시 가상구 가상로 12") != nil, "Sejong and province-city-district address forms")
@@ -116,6 +118,30 @@ final class FrameChecks: NSObject, WKNavigationDelegate {
             try check(panel["mapVisible"] as? Bool == true, "phone map button collapses full-width search panel")
             let opened = try await evaluate("return await (" + Self.fixture(NaverMapPanelScript.source) + ")(false);")
             try check(opened["mapVisible"] as? Bool == false, "place button restores search panel")
+            view.load(URLRequest(url: URL(string: parent + "/address")!))
+            let addressDeadline = Date().addingTimeInterval(12)
+            var addressReady = false
+            while Date() < addressDeadline {
+                let state = try? await evaluate("return JSON.stringify({ok:true,ready:location.pathname==='/address'&&!!document.querySelector('#pin')});")
+                if state?["ready"] as? Bool == true && !view.isLoading { addressReady = true; break }
+                try await Task.sleep(nanoseconds: 200_000_000)
+            }
+            guard addressReady else { throw NSError(domain: "local selected address fixture not loaded", code: 1) }
+            let rootBody = "return (" + Self.fixture(NaverPlaceRootScript.source) + ")();"
+            let addressPoint = try await evaluate(rootBody)
+            try check(addressPoint["ok"] as? Bool == true && addressPoint["kind"] as? String == "address" && addressPoint["placeID"] as? String == "", "shared address panel is readable without a registered POI")
+            let expected = try await evaluate("const m=document.querySelector('.mantle_map'); return JSON.stringify({longitude:Number(m.dataset.longitude),latitude:Number(m.dataset.latitude)});")
+            let coordinate = addressPoint["coordinate"] as? [String: Double]
+            try check(coordinate != nil && abs(coordinate!["longitude"]! - (expected["longitude"] as! Double)) < 1e-10 && abs(coordinate!["latitude"]! - (expected["latitude"] as! Double)) < 1e-10, "selected anchor and actual tile rectangles supply the exact fixture point")
+            _ = try await evaluate("document.querySelector('#pin').style.left='216px'; return JSON.stringify({ok:true});")
+            let otherPoint = try await evaluate(rootBody), otherCoordinate = otherPoint["coordinate"] as? [String: Double]
+            try check(otherPoint["name"] as? String == addressPoint["name"] as? String && otherPoint["address"] as? String == addressPoint["address"] as? String && otherCoordinate?["longitude"] != coordinate?["longitude"], "identical address labels with different pins produce different coordinates")
+            _ = try await evaluate("document.querySelector('#pin').style.display='none'; return JSON.stringify({ok:true});")
+            let hidden = try await evaluate(rootBody)
+            try check(hidden["kind"] as? String == "address" && hidden["coordinate"] is NSNull, "hidden pin keeps the address but cannot invent building coordinates")
+            _ = try await evaluate("const p=document.querySelector('#pin');p.style.display='';const q=p.cloneNode(true);q.id='secondPin';p.parentElement.append(q);return JSON.stringify({ok:true});")
+            let ambiguous = try await evaluate(rootBody)
+            try check(ambiguous["coordinate"] is NSNull, "multiple selected pins cannot select an arbitrary coordinate")
             print("NATIVE_NAVER_FRAME_CHECKS \(checks)/\(checks)"); exit(0)
         } catch { print("FAIL native Naver frame check: \(error)"); exit(1) }
     }

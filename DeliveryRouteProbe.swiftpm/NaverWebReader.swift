@@ -41,13 +41,18 @@ enum NaverWebReader {
         _ = try await evaluate(view, "return await (" + NaverMapPanelScript.source + ")(showMap);", arguments: ["showMap": showMap])
     }
 
-    static func selected(_ view: WKWebView, resolveCoordinate: Bool = true) async throws -> NaverPlaceCapture {
+    static func selected(_ view: WKWebView, resolveCoordinate: Bool = true, sharedURL: String? = nil) async throws -> NaverPlaceCapture {
         let before = try await root(view)
         let detail = before["kind"] as? String == "place" ? try await frame(view, kind: "place") : [:]
         let after = try await root(view)
         var value = try NaverPlaceBridge.call("merge", ["before": before, "after": after, "detail": detail,
                                                        "now": Date().timeIntervalSince1970 * 1000], as: NaverPlaceCapture.self)
-        if resolveCoordinate && value.coordinate == nil {
+        // An address chosen on the map denotes its selected pin, including on
+        // retry or in a saved folder. Manual address geocoding is a separate mode.
+        if let selectionURL = sharedURL ?? (value.kind == "address" ? view.url?.absoluteString : nil) {
+            value = try NaverPlaceBridge.call("shared", ["capture": try TMapBridge.object(value), "url": selectionURL], as: NaverPlaceCapture.self)
+        }
+        if resolveCoordinate && value.coordinate == nil && !(value.kind == "address" && value.sharedLinkURL != nil) {
             do { value = try await NaverAPIStore.shared.resolve(value) }
             catch is CancellationError { throw CancellationError() }
             catch {

@@ -1,7 +1,7 @@
 import Foundation
 
 enum NaverSharedLink {
-    enum Kind: Equatable { case place(String), folder(String), address(String), short }
+    enum Kind: Equatable { case place(String), folder(String), mapSelection, short }
     struct Target: Equatable { let kind: Kind; let url: URL }
     enum Failure: LocalizedError {
         case missing, multiple
@@ -20,23 +20,11 @@ enum NaverSharedLink {
         let accepted = values.compactMap(target)
         guard !accepted.isEmpty else { throw Failure.missing }
         guard accepted.count == 1 else { throw Failure.multiple }
-        // An address shared by NAVER has no POI ID. Use only an address-only
-        // share title; a business name plus address remains a place link.
-        if accepted[0].kind == .short, matches.count == 1,
-           let range = Range(matches[0].range, in: text) {
-            let title = text.replacingCharacters(in: range, with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let label = "^\\[네이버\\s*지도\\]\\s*"
-            if let labelRange = title.range(of: label, options: .regularExpression),
-               let address = roadAddress(String(title[labelRange.upperBound...])) {
-                return Target(kind: .address(address), url: accepted[0].url)
-            }
-        }
         return accepted[0]
     }
     // Do not take coordinates from a URL or treat a broad search as a place.
-    // A complete road address is only a query seed; Geocoding verifies the
-    // returned building before the user can save it.
+    // This helper checks a rendered address label only; it does not
+    // geocode a share title or choose the selected point.
     static func roadAddress(_ value: String) -> String? {
         guard value.utf8.count <= 2_000 else { return nil }
         let normalized = value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
@@ -72,15 +60,25 @@ enum NaverSharedLink {
         }
         if host == "map.naver.com" {
             if let id = match("^/(?:p|v5)/favorite/myPlace/folder/([A-Za-z0-9_-]{1,128})(?:/|$)") { return folder(id) }
-            if let id = match("^/(?:p|v5)/(?:entry|search/[^/]+)/place/([0-9]{1,20})(?:/|$)") { return place(id) }
-            if let query = match("^/(?:p|v5)/search/([^/]+)/?$"), let address = roadAddress(query) {
-                var components = URLComponents(); components.scheme = "https"; components.host = "map.naver.com"
-                components.path = "/p/search/" + address
-                if let url = components.url { return Target(kind: .address(address), url: url) }
+            if let id = match("^/(?:p|v5)/(?:entry|search/[^/]+)/place/([0-9]{1,20})(?:/|$)"),
+               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                components.scheme = "https"
+                if let secure = components.url { return Target(kind: .place(id), url: secure) }
             }
-            if let parts = URLComponents(url: url, resolvingAgainstBaseURL: false), ["/", "/p", "/index.nhn", "/local/siteview.nhn"].contains(url.path) {
+            if match("^/(?:p|v5)/search/([^/]+)/?$") != nil,
+               var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                components.scheme = "https"
+                if let secure = components.url { return Target(kind: .mapSelection, url: secure) }
+            }
+            if let parts = URLComponents(url: url, resolvingAgainstBaseURL: false), ["/", "/p", "/p/", "/v5", "/v5/", "/index.nhn", "/local/siteview.nhn"].contains(url.path) {
                 let items = parts.queryItems ?? []
                 let ids = items.filter { $0.name == "pinId" || $0.name == "code" }.compactMap(\.value)
+                // Coordinates alone do not identify a POI. Keep a selected-pin
+                // URL intact and verify its rendered marker in the map reader.
+                if items.contains(where: { $0.name == "lat" }) && items.contains(where: { $0.name == "lng" }) {
+                    var components = parts; components.scheme = "https"
+                    if let secure = components.url { return Target(kind: .mapSelection, url: secure) }
+                }
                 if ids.count == 1, ids[0].range(of: "^[0-9]{1,20}$", options: .regularExpression) != nil { return place(ids[0]) }
             }
         }

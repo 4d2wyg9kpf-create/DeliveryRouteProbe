@@ -68,6 +68,10 @@ final class NaverCustomerStore: ObservableObject {
         guard valid.coordinate != nil else { throw PlannerFailure.message("좌표가 없는 장소는 거래처 목록에 저장하지 않습니다. 좌표를 다시 읽어 주세요.") }
         var next = records
         let existing = try next.firstIndex { record in
+            if (valid.kind == "address" && valid.sharedLinkURL != nil) || (record.capture?.kind == "address" && record.capture?.sharedLinkURL != nil) {
+                guard let previous = record.capture else { return false }
+                return try NaverPlaceBridge.call("customerMatches", ["first": try TMapBridge.object(previous), "second": try TMapBridge.object(valid)], as: Bool.self)
+            }
             if record.id == valid.selectionKey || record.capture?.selectionKey == valid.selectionKey { return true }
             guard let previous = record.capture else { return false }
             return try NaverPlaceBridge.call("customerMatches", ["first": try TMapBridge.object(previous), "second": try TMapBridge.object(valid)], as: Bool.self)
@@ -77,7 +81,8 @@ final class NaverCustomerStore: ObservableObject {
         let displayName = name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? name! : valid.name
         var template = existing.map { next[$0].template } ?? DeliveryVisit()
         template.name = displayName; template.naverPlace = valid
-        let record = NaverCustomerRecord(id: existing.map { next[$0].id } ?? valid.selectionKey, name: displayName, capture: valid, template: template, folders: folders)
+        let newID = valid.kind == "address" && valid.sharedLinkURL != nil ? UUID().uuidString : valid.selectionKey
+        let record = NaverCustomerRecord(id: existing.map { next[$0].id } ?? newID, name: displayName, capture: valid, template: template, folders: folders)
         if let index = existing { next[index] = record } else { next.append(record) }
         try commit(next)
         return existing == nil
@@ -91,11 +96,17 @@ final class NaverCustomerStore: ObservableObject {
         if plan.naverOrigin != nil || TMapBridge.coordinate(plan, id: "depot") != nil {
             var origin = DeliveryVisit(); origin.id = "origin-depot"; origin.name = plan.originName
             origin.naverPlace = plan.naverOrigin; origin.tmapCoordinate = plan.tmapOrigin; origin.roadAccess = plan.originAccess
-            if let record = next.first(where: { $0.id == plan.originCustomerID || $0.capture?.selectionKey == plan.naverOrigin?.selectionKey && plan.naverOrigin != nil }) { origin.id = record.template.id }
+            if let record = next.first(where: { $0.id == plan.originCustomerID }) { origin.id = record.template.id }
+            else if let capture = plan.naverOrigin,
+                    let record = try next.first(where: { record in
+                        guard let previous = record.capture else { return false }
+                        return try NaverPlaceBridge.call("customerMatches", ["first": try TMapBridge.object(previous), "second": try TMapBridge.object(capture)], as: Bool.self)
+                    }) { origin.id = record.template.id }
             remembered.append(origin)
         }
         for visit in remembered {
-            let key = visit.naverPlace?.selectionKey ?? "manual:" + visit.id
+            let sharedAddress = visit.naverPlace?.kind == "address" && visit.naverPlace?.sharedLinkURL != nil
+            let key = sharedAddress ? next.first(where: { $0.template.id == visit.id })?.id ?? "shared:" + visit.id : visit.naverPlace?.selectionKey ?? "manual:" + visit.id
             if next.contains(where: { $0.id == key }) { next.removeAll { $0.id != key && $0.template.id == visit.id } }
             if let index = next.firstIndex(where: { $0.id == key || $0.template.id == visit.id }) {
                 next[index].template = visit; next[index].name = visit.name

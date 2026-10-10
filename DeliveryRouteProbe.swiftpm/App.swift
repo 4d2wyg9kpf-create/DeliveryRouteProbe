@@ -98,7 +98,7 @@ struct ProbeView: View {
                     Button("공유 링크 붙여넣기") { showSharedLink = true }
                         .disabled(model.isImportingSavedList || model.isReadingPlace || model.isOpeningSharedLink)
                     Button("저장 목록 전체 가져오기") { mapExpanded = true; model.openSavedLists(customers) }
-                    Button(model.isReadingPlace ? "장소 읽는 중" : "선택 장소 읽기", action: model.readSelectedPlace)
+                    Button(model.isReadingPlace ? "장소 읽는 중" : "선택 장소 읽기") { model.readSelectedPlace() }
                         .buttonStyle(.borderedProminent)
                         .disabled(model.isReading || model.isReadingBike || model.isReadingPlace || model.isImportingSavedList || model.isLoading)
                     Button("예제 경로", action: model.openSample)

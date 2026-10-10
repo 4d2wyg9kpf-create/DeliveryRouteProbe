@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 import urllib.request
+import base64
+import math
 
 MAIN = '''<!doctype html><meta name="viewport" content="width=device-width">
 <iframe id="entryIframe" src="http://127.0.0.1:8350/restaurant/101/home"></iframe>
@@ -21,12 +23,35 @@ let loaded=0;function append(end){for(;loaded<end;loaded++){let row=document.cre
 append(20);addEventListener('scroll',()=>{if(loaded===20)append(25);});
 </script>'''
 
+# The zero-size anchor is a selected address pin, not a registered POI or the
+# map center. Two points can share the identical visible address panel.
+ZOOM = 18
+TILE_X = math.floor((127.4 + 180) / 360 * 2 ** ZOOM)
+TILE_Y = math.floor((1 - math.asinh(math.tan(math.radians(36.3))) / math.pi) / 2 * 2 ** ZOOM)
+EXPECTED_LON = ((TILE_X + 196 / 256) / 2 ** ZOOM) * 360 - 180
+EXPECTED_LAT = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (TILE_Y + 196 / 256) / 2 ** ZOOM))))
+ADDRESS = f'''<!doctype html><meta name="viewport" content="width=device-width">
+<style>body{{margin:0}}.scroll_box{{height:120px}}.mantle_map{{position:relative;width:393px;height:520px;overflow:hidden}}.tile{{position:absolute;width:256px;height:256px}}#pin{{position:absolute;width:0;height:0;left:196px;top:196px}}.marker_icon_image_wrap{{position:absolute;left:-10px;top:-20px;width:20px;height:20px}}.marker_title{{position:absolute;left:12px;top:-20px;width:150px;height:20px}}</style>
+<div class="scroll_box"><div class="title_box"><span class="title">가상 주소 지점</span></div><div class="address_info_area"><span class="address_title">대전 중구 가상로 1</span></div></div>
+<div class="mantle_map" data-longitude="{EXPECTED_LON}" data-latitude="{EXPECTED_LAT}">
+''' + ''.join(f'<img class="tile" style="left:{dx * 256}px;top:{dy * 256}px" src="http://127.0.0.1:8349/nrb/styles/basic/1/{ZOOM}/{TILE_X + dx}/{TILE_Y + dy}.png">' for dx in [0, 1] for dy in [0, 1]) + '''
+<div class="ENTRY_MARKER"><div id="pin" data-maps-overlay="selected"><span class="marker_icon_image_wrap"><img width="20" height="20" src="http://127.0.0.1:8349/resource/api/v2/image/maps/selected-marker/test.png"></span><span class="marker_title">가상 주소 지점</span></div></div></div>'''
+PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOYcAAAAASUVORK5CYII=')
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         print("LOCAL_FIXTURE_HTTP", self.path, flush=True)
     def do_GET(self):
+        if self.path.endswith('.png'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.end_headers()
+            self.wfile.write(PNG)
+            return
         if self.path == '/main':
             content = MAIN
+        elif self.path == '/address':
+            content = ADDRESS
         elif '/detail-list/' in self.path:
             content = LIST
         else:

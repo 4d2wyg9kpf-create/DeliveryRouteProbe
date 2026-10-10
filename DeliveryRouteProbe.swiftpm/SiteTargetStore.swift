@@ -57,6 +57,9 @@ final class SiteTargetStore: ObservableObject {
         guard !title.isEmpty else { throw PlannerFailure.message("장소 이름을 입력하세요.") }
         var next = records
         let existing = try next.firstIndex { previous in
+            if (capture.kind == "address" && capture.sharedLinkURL != nil) || (previous.capture.kind == "address" && previous.capture.sharedLinkURL != nil) {
+                return try NaverPlaceBridge.call("customerMatches", ["first": try TMapBridge.object(previous.capture), "second": try TMapBridge.object(capture)], as: Bool.self)
+            }
             if previous.capture.selectionKey == capture.selectionKey { return true }
             return try NaverPlaceBridge.call("customerMatches", ["first": try TMapBridge.object(previous.capture), "second": try TMapBridge.object(capture)], as: Bool.self)
         }

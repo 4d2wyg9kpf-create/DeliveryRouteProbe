@@ -17,6 +17,7 @@ on:
       - 'scripts/test_public_data_live_clock.*'
       - 'scripts/test_place_destinations.*'
       - 'tests/naver_api_tests.js'
+      - 'tests/shared_pin_tests.js'
       - 'tests/delivery_flow_tests.js'
       - 'scripts/naver_frame_fixtures.py'
       - 'scripts/naver_fixture_info.plist'
@@ -42,6 +43,8 @@ jobs:
         run: bash scripts/test_naver_frames.sh
       - name: Verify official API parsing and free quota boundary cases
         run: node tests/naver_api_tests.js
+      - name: Verify shared pin coordinates cannot be replaced by building geocoding
+        run: node tests/shared_pin_tests.js
       - name: Verify nine selected deliveries optimize without manually registered travel legs
         run: node tests/delivery_flow_tests.js
       - name: Verify persisted native request gates with mocked API transport

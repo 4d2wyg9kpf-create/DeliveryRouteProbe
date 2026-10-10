@@ -101,7 +101,7 @@ struct NaverCustomerCatalogView: View {
             .onAppear {
                 do { try customers.remember(planner.plan) } catch { self.error = error.localizedDescription }
                 selectedIDs = Set(customers.records.filter { record in
-                    planner.plan.visits.contains { $0.id == record.template.id || (record.capture != nil && $0.naverPlace?.selectionKey == record.capture?.selectionKey) }
+                    planner.plan.visits.contains { $0.id == record.template.id || (record.capture?.matchesSelection($0.naverPlace) == true) }
                 }.map(\.id))
                 endMode = planner.plan.destination == nil ? "return" : "custom"
                 destinationID = planner.plan.destination?.customerID ?? ""
@@ -112,8 +112,8 @@ struct NaverCustomerCatalogView: View {
                         do {
                             // Remove any current visit too, so it cannot reappear on migration.
                             try customers.remove(record.id)
-                            for visit in planner.plan.visits where visit.id == record.template.id || (record.capture != nil && visit.naverPlace?.selectionKey == record.capture?.selectionKey) { planner.removeVisit(visit.id) }
-                            if planner.plan.originCustomerID == record.id || (record.capture != nil && planner.plan.naverOrigin?.selectionKey == record.capture?.selectionKey) || record.template.id == "origin-depot" { planner.clearOriginLocation() }
+                            for visit in planner.plan.visits where visit.id == record.template.id || (record.capture?.matchesSelection(visit.naverPlace) == true) { planner.removeVisit(visit.id) }
+                            if planner.plan.originCustomerID == record.id || (record.capture?.matchesSelection(planner.plan.naverOrigin) == true) || record.template.id == "origin-depot" { planner.clearOriginLocation() }
                             if planner.plan.destination?.customerID == record.id { planner.clearDestination() }
                             selectedIDs.remove(record.id)
                             if originID == record.id { originID = "current" }; if destinationID == record.id { destinationID = "" }
@@ -128,7 +128,7 @@ struct NaverCustomerCatalogView: View {
             let endpoint = originID == record.id || endMode == "custom" && destinationID == record.id
             if endpoint && record.capture?.coordinate != nil && record.template.tmapCoordinate == nil && record.template.roadAccess?.curbConfirmed != true { return true }
             guard selectedIDs.contains(record.id), record.capture?.coordinate != nil else { return false }
-            let existing = planner.plan.visits.first { $0.id == record.template.id || $0.naverPlace?.selectionKey == record.capture?.selectionKey }
+            let existing = planner.plan.visits.first { $0.id == record.template.id || record.capture?.matchesSelection($0.naverPlace) == true }
             return existing == nil || TMapBridge.coordinate(planner.plan, id: existing!.id) == nil
         }
     }

@@ -45,7 +45,7 @@ struct NaverSearchScreen: View {
                     } else {
                         NativeTextField("네이버지도 장소·목록 공유 링크", text: $sharedLink, keyboard: .URL).frame(minHeight: 44)
                         PasteButton(payloadType: String.self) { values in sharedLink = values.first ?? "" }
-                        Text("네이버지도의 공유문 전체를 붙여넣으세요. 주소 공유는 지도 화면 없이 좌표로 변환합니다. 장소는 확인 후 저장하고, 목록은 모든 장소를 가져옵니다.").font(.caption).foregroundStyle(.secondary)
+                        Text("네이버지도의 공유문 전체를 붙여넣으세요. 링크에서 선택 지점을 확인합니다. 공유문 앞의 주소로 좌표를 대신 변환하지 않습니다. 목록은 모든 장소를 가져옵니다.").font(.caption).foregroundStyle(.secondary)
                     }
                     Button(api.isBusy || importing ? "처리 중…" : mode == 0 ? "네이버 검색" : mode == 1 ? "주소 → 좌표 변환" : "공유 링크 가져오기") { search() }
                         .buttonStyle(.borderedProminent)
@@ -95,14 +95,14 @@ struct NaverSearchScreen: View {
                         inputs.finishEditing()
                         browser.openSavedLists(customers, sites: sites, destination: destination); showWeb = true
                     }.disabled(importing || api.isBusy)
-                    Text("개인 목록은 네이버 로그인이 필요할 수 있습니다. 공유·검색 좌표가 없으면 읽은 주소를 API로 변환하고, 확인된 장소만 저장합니다.").font(.caption).foregroundStyle(.secondary)
+                    Text("개인 목록은 네이버 로그인이 필요할 수 있습니다. 공유한 주소 지점은 선택 핀의 좌표를 확인한 뒤 저장합니다. 주소의 대표 좌표로 대신 저장하지 않습니다.").font(.caption).foregroundStyle(.secondary)
                 }
                 NaverQuotaSection(api: api)
             }
             .background {
                 // A wide, invisible document viewport lets shared links resolve
                 // without making the user fit a desktop map onto an iPhone.
-                if !showWeb && importingWeb { MapWebView(webView: browser.webView).frame(width: 900, height: 700).opacity(0).allowsHitTesting(false).accessibilityHidden(true) }
+                if !showWeb && importingWeb { MapWebView(webView: browser.webView).frame(width: 1400, height: 900).opacity(0).allowsHitTesting(false).accessibilityHidden(true) }
             }.clipped()
             .navigationTitle("네이버검색")
             .navigationBarTitleDisplayMode(.inline)
@@ -161,7 +161,7 @@ struct NaverLinkWebView: View {
             HStack {
                 Button { _ = browser.webView.goBack() } label: { Image(systemName: "chevron.left") }.disabled(!browser.canGoBack)
                 Button("새로고침") { browser.webView.reload() }
-                Button("선택 장소 읽기", action: browser.readSelectedPlace).disabled(browser.isLoading || browser.isReadingPlace || browser.isImportingSavedList || browser.isOpeningSharedLink)
+                Button("선택 장소 읽기") { browser.readSelectedPlace() }.disabled(browser.isLoading || browser.isReadingPlace || browser.isImportingSavedList || browser.isOpeningSharedLink)
             }.buttonStyle(.bordered)
             MapWebView(webView: browser.webView)
         }.navigationTitle("네이버 목록 · 로그인 확인").navigationBarTitleDisplayMode(.inline)
@@ -203,6 +203,9 @@ private struct NaverAPISelectionView: View {
                     NaverCoordinateLabel(capture: capture)
                     if capture.coordinate == nil {
                         Text(capture.coordinateIssue.isEmpty ? "주소에서 좌표를 변환해 주세요." : capture.coordinateIssue).font(.caption).foregroundStyle(.orange)
+                        if capture.kind == "address" && capture.sharedLinkURL != nil {
+                            Text("공유 링크의 선택 좌표가 필요합니다. 주소의 건물 대표 좌표로 대체하지 않습니다.").font(.caption).foregroundStyle(.orange)
+                        } else {
                         Button(resolving ? "좌표 변환 중…" : "읽은 주소로 좌표 변환") {
                             inputs.finishEditing(); resolving = true; error = nil
                             Task {
@@ -210,6 +213,7 @@ private struct NaverAPISelectionView: View {
                                 do { capture = try await api.resolve(capture) } catch { self.error = error.localizedDescription }
                             }
                         }.disabled(resolving || api.isBusy || capture.preferredAddress.isEmpty)
+                        }
                     } else { Text("좌표 제공: \(capture.geocodeProvider ?? "NAVER")").font(.caption) }
                 }
                 Section("목록에 저장") {

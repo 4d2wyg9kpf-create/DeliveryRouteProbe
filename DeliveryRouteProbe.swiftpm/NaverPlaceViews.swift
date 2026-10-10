@@ -41,6 +41,9 @@ struct NaverPlaceReadPanel: View {
                 }
             } else {
                 Text(capture.coordinateIssue).font(.caption).foregroundColor(.orange)
+                if capture.isSharedAddress {
+                    Text("공유 링크의 선택 핀 좌표가 필요합니다. 주소의 대표 좌표로 대체하지 않습니다.").font(.caption).foregroundColor(.orange)
+                } else {
                 Button(resolving ? "좌표 조회 중…" : "네이버 API로 좌표 조회") {
                     resolving = true; error = nil
                     Task {
@@ -54,6 +57,7 @@ struct NaverPlaceReadPanel: View {
                     }
                 }.disabled(resolving || NaverAPIStore.shared.isBusy)
                 Button("네이버 API 키 설정") { showAPISettings = true }.disabled(resolving)
+                }
             }
             Button("거래처 목록에 저장") {
                 do { try customers.save(capture); error = nil; browser.status = "거래처 목록에 저장했습니다. 이번 배송에 나갈 곳은 목록에서 체크하세요." }
@@ -139,8 +143,8 @@ private struct NaverPlaceImportView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { inputs.finishEditing(); dismiss() }.disabled(isConnecting) } }
             .interactiveDismissDisabled(isConnecting)
             .onAppear {
-                if planner.plan.naverOrigin?.selectionKey == capture.selectionKey || planner.plan.originName.replacingOccurrences(of: " ", with: "") == capture.name.replacingOccurrences(of: " ", with: "") { targetID = "depot" }
-                else if let matched = planner.plan.visits.first(where: { $0.naverPlace?.selectionKey == capture.selectionKey }) { targetID = matched.id }
+                if capture.matchesSelection(planner.plan.naverOrigin) || (!capture.isSharedAddress && planner.plan.originName.replacingOccurrences(of: " ", with: "") == capture.name.replacingOccurrences(of: " ", with: "")) { targetID = "depot" }
+                else if let matched = planner.plan.visits.first(where: { capture.matchesSelection($0.naverPlace) }) { targetID = matched.id }
                 else if planner.plan.visits.count >= 30 { targetID = planner.plan.visits.first?.id ?? "depot" }
             }
             .onChange(of: targetID) { _, _ in curbConfirmed = false }
