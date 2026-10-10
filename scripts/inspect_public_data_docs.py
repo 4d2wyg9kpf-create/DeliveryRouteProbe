@@ -1,6 +1,7 @@
 """Read public provider documentation without credentials or API calls."""
 import json
 import re
+import subprocess
 import urllib.request
 from pathlib import Path
 
@@ -11,6 +12,7 @@ URLS = {
     'cafes': 'https://www.data.go.kr/data/15154921/openapi.do',
     'catering': 'https://www.data.go.kr/data/15155159/openapi.do',
     'canteens': 'https://www.data.go.kr/data/15155168/openapi.do',
+    'bakery': 'https://www.data.go.kr/data/15155252/openapi.do',
     'stores': 'https://www.data.go.kr/data/15012005/openapi.do',
     'bakery-index': 'https://data.edmgr.kr/dataView.do?id=www-data-go-kr-data-filedata-15044973',
     'manual': 'https://www.localdata.go.kr/images/egovframework/portal/manual_260106.pdf',
@@ -27,7 +29,18 @@ for name, url in URLS.items():
         if name == 'manual':
             continue
         content = data.decode('utf-8', errors='replace')
-        for match in list(re.finditer(r'swagger|apiDoc|apis\.data|fileDownload|openapi\.do|[A-Za-z]+\.json', content, re.I))[:45]:
-            print(content[max(0, match.start() - 160):match.end() + 420].replace('\n', ' '))
+        match = re.search(r'const swaggerJson = `(.*?)`;', content, re.S)
+        if match:
+            parser = OUT / (name + '.cjs')
+            parser.write_text('process.stdout.write(JSON.stringify(JSON.parse(`' + match[1] + '`)));')
+            encoded = subprocess.check_output(['node', str(parser)])
+            (OUT / (name + '.swagger.json')).write_bytes(encoded)
+            spec = json.loads(encoded)
+            print(json.dumps({'host': spec.get('host'), 'paths': list(spec.get('paths', {}))}))
+            for path, operations in spec.get('paths', {}).items():
+                if path in ['/info', '/history', '/storeListInRadius']:
+                    print(json.dumps({'path': path, 'parameters': operations.get('parameters', operations.get('get', {}).get('parameters')), 'description': operations.get('get', {}).get('description')}, ensure_ascii=False))
+        for match in list(re.finditer(r'function fn_fileDownload|fileDownload\(|FILE_000|제과점', content))[:8]:
+            print(content[max(0, match.start() - 100):match.end() + 800].replace('\n', ' '))
     except Exception as error:
         print(json.dumps({'document': name, 'error': str(error)}, ensure_ascii=False))
