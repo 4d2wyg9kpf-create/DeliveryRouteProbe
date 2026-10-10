@@ -1,6 +1,14 @@
-# 배송경로 0.14.1 · iPhone / iPad
+# 배송경로 0.14.2 · iPhone / iPad
 
-현재 버전은 **0.14.1 / 빌드 26**이며 iOS 18 이상을 지원합니다. 앱 식별자는 `kr.deliverytools.routeprobe`, 표시 이름은 `DeliveryRoute`입니다. 기존 거래처·배송계획·티맵 설정은 같은 앱에 보관합니다.
+현재 버전은 **0.14.2 / 빌드 27**이며 iOS 18 이상을 지원합니다. 앱 식별자는 `kr.deliverytools.routeprobe`, 표시 이름은 `DeliveryRoute`입니다. 기존 거래처·배송계획·티맵 설정은 같은 앱에 보관합니다.
+
+## 업데이트 시 API 키 유지와 티맵 결과 표시
+
+티맵 appKey, NAVER HUB/기존 Developers 검색 Client ID·Secret, Maps Client ID·Secret과 무료 사용량 기록을 함께 보관합니다. 기존 Keychain 서비스·계정 이름을 유지하고 첫 실행 때 보호된 Application Support 파일로 자동 이관합니다. 앱을 삭제하지 않고 같은 앱 식별자로 덮어 설치하면 기존 키와 설정을 불러옵니다. 서명 변경으로 기존 Keychain에 접근하지 못해도 이미 생성된 보호 파일에서 복원합니다. 설정 화면의 **키 저장됨** 표시로 등록 여부를 확인하며 빈 입력란으로 저장해도 기존 키를 지우지 않습니다.
+
+새로운 저장 기록을 선택하도록 저장 순번과 체크섬을 확인합니다. 오래된 복사본 때문에 키가 되돌아가거나 무료 횟수가 초기화되지 않습니다. 기록이 손상되거나 보호 파일 저장에 실패하면 API 요청을 차단합니다. 보호 파일은 Documents·공유/내보내기·백업에 포함하지 않으며, 키 값은 화면·로그·검증 보고서·공개 소스에 출력하지 않습니다. iOS 파일 보호와 기기 Keychain을 사용합니다.
+
+**이번 배송 선택 → 티맵 최적화 → 티맵 경로·방문 순서 확인 → 배송계획에 반영하고 조건 검증**으로 연결했습니다. 배송계획의 기본 버튼은 티맵을 요청하므로 이동 구간을 직접 등록하지 않아도 됩니다. API 경로를 받으면 요약·지도·방문 순서를 화면 맨 위에 표시합니다. 시간·휴식·적재 조건 검증 결과와 받은 티맵 경로를 각각 확인할 수 있습니다. 예전의 저장 구간 계산은 메뉴의 **저장한 이동시간으로 순서 계산**에서 실행합니다.
 
 ## 지도 없이 네이버 API로 장소·좌표 찾기
 
@@ -55,9 +63,11 @@ HUB 검색은 **일·월 두 한도를 함께 검사하고 한 번에 기록한 
 
 main의 앱 소스 변경 또는 GitHub Actions의 Run workflow로 **Build unsigned iOS IPA**를 실행합니다. 표준 macos-15 서버에서 네이버 웹 프레임·합성 API 응답·실제 Swift 요청 차단 검사를 먼저 통과한 뒤 iOS arm64 기기 앱을 컴파일합니다. 설치 파일과 검증 보고서는 **DeliveryRouteProbe-unsigned-ipa** 자료에 포함되며 7일 보관합니다.
 
-설치 파일 `DeliveryRouteProbe_0.14.1-26-unsigned.ipa`는 기존처럼 Sideloadly에서 본인 계정으로 서명하여 설치합니다. Apple 계정·인증서·API 키를 공개 저장소에 입력하지 않습니다. 개인 서명 도구의 appIdName 오류를 막기 위해 앱 이름은 영문 DeliveryRoute를 사용합니다.
+설치 파일 `DeliveryRouteProbe_0.14.2-27-unsigned.ipa`는 기존처럼 Sideloadly에서 본인 계정으로 서명하여 설치합니다. Apple 계정·인증서·API 키를 공개 저장소에 입력하지 않습니다. 개인 서명 도구의 appIdName 오류를 막기 위해 앱 이름은 영문 DeliveryRoute를 사용합니다.
 
 ## 검증
+
+아래는 직전 0.14.1의 검증 기록이며 0.14.2는 새 저장·복원 검사와 기기용 빌드를 진행합니다. 완료 후 현재 결과로 갱신합니다.
 
 2026-10-10 [GitHub 빌드](https://github.com/4d2wyg9kpf-create/DeliveryRouteProbe/actions/runs/38018233855)가 성공했습니다.
 

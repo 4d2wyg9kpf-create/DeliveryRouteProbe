@@ -15,6 +15,7 @@ struct TMapScreen: View {
     @ObservedObject var browser: BrowserModel
     @EnvironmentObject private var customers: NaverCustomerStore
     let openNaver: (String) -> Void
+    let openPlanResult: () -> Void
     @State private var showSettings = false
     @State private var locationDraft: TMapLocationDraft?
     @State private var usageDraft: Int?
@@ -28,14 +29,14 @@ struct TMapScreen: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let route = store.route, store.routeIsValid {
+                    routeSection(route)
+                }
                 requestSection
                 timingSection
                 quotaSection
                 if let error = store.errorMessage {
                     Section { Text(error).foregroundColor(.red).font(.caption) }
-                }
-                if let route = store.route, store.routeIsValid {
-                    routeSection(route)
                 }
                 locationsSection
             }
@@ -167,7 +168,8 @@ struct TMapScreen: View {
             TMapRouteMap(route: route, plan: planner.plan).frame(height: 280)
             Text("받은 시각 \(resetTime(route.fetchedAtMillis)) · 유효기간 \(resetTime(route.expiresAtMillis))까지").font(.caption2)
             Button("티맵 순서를 배송계획에 반영하고 검증") {
-                inputs.finishEditing(); store.apply(to: planner)
+                inputs.finishEditing()
+                if store.apply(to: planner) { openPlanResult() }
             }.buttonStyle(.borderedProminent)
                 .disabled(!store.canApply(to: planner.plan) || planner.isComputing || store.isOptimizing)
             if !store.canApply(to: planner.plan) { Text("이미 반영했거나 입력이 달라졌습니다. 현재 계획의 새 순서가 필요하면 다시 요청하세요.").font(.caption) }
@@ -333,10 +335,14 @@ private struct TMapSettingsView: View {
         NavigationStack {
             Form {
                 Section("무료 상품과 앱키") {
+                    if store.hasAppKey {
+                        Label("티맵 앱키 저장됨", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        Text("업데이트 후에도 자동으로 불러옵니다. 키를 바꿀 때만 아래에 입력하세요.").font(.caption).foregroundStyle(.secondary)
+                    }
                     SecureField(store.hasAppKey ? "키 변경 시에만 입력" : "발급받은 appKey", text: $appKey)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     Toggle("SK open API의 Free 상품임을 확인함", isOn: $freeConfirmed)
-                    Text("Free 상품은 서버에서도 한도 초과를 차단합니다. 유료 종량제로 바꾸지 않고 사용하세요. 앱키와 사용량은 같은 기기에서 유지됩니다.").font(.caption)
+                    Text("Free 상품은 서버에서도 한도 초과를 차단합니다. 앱을 삭제하지 않고 업데이트하면 앱키와 사용량이 유지됩니다. 빈 칸으로 저장해도 기존 앱키를 유지합니다.").font(.caption)
                     Link("앱키 발급·상품 확인", destination: URL(string: "https://openapi.sk.com/")!)
                 }
                 Section("경로 기준") {

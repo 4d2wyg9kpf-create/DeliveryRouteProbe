@@ -217,8 +217,12 @@ struct NaverAPISettingsView: View {
                         Link("검색 API 이관 공지", destination: URL(string: "https://developers.naver.com/notice/article/32530")!)
                         Text("2026년 7월 31일 이전에 Developers에서 등록한 기존 검색 키만 사용합니다. 신규 등록은 HUB에서 진행하세요. 기존 키는 2027년 6월 30일까지 지원하며 HUB 키와 호환되지 않습니다. 기존 일 사용량을 유지합니다.").font(.caption)
                     }
-                    SecureField(api.hasSearchKeys ? "Client ID · 변경 시 입력" : "검색 Client ID", text: $searchID)
-                    SecureField(api.hasSearchKeys ? "Client Secret · 변경 시 입력" : "검색 Client Secret", text: $searchSecret)
+                    if api.hasSearchKeys && searchProvider == api.searchProvider {
+                        Label("검색 API 키 저장됨", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        Text("업데이트 후에도 자동으로 불러옵니다. 키를 바꿀 때만 입력하세요.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    SecureField(api.hasSearchKeys && searchProvider == api.searchProvider ? "Client ID · 변경 시 입력" : "검색 Client ID", text: $searchID)
+                    SecureField(api.hasSearchKeys && searchProvider == api.searchProvider ? "Client Secret · 변경 시 입력" : "검색 Client Secret", text: $searchSecret)
                 }
                 Section("네이버 클라우드 · 새 Maps Geocoding") {
                     Link("Maps 안내·신청", destination: URL(string: "https://www.ncloud.com/product/applicationService/maps")!)
@@ -226,13 +230,16 @@ struct NaverAPISettingsView: View {
                     LabeledContent("Application 이름") { Text("DeliveryRoute-Maps").textSelection(.enabled) }
                     Text("Geocoding만 사용하면 Web URL·Android 패키지·iOS Bundle ID 등록은 필요하지 않습니다. 지도 SDK를 추가해 iOS ID 입력이 필요하다면 아래 값을 사용하세요.").font(.caption)
                     Text("kr.deliverytools.routeprobe").font(.caption.monospaced()).textSelection(.enabled)
+                    if api.hasMapsKeys {
+                        Label("Maps API 키 저장됨", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    }
                     SecureField(api.hasMapsKeys ? "Client ID · 변경 시 입력" : "Maps Client ID", text: $mapsID)
                     SecureField(api.hasMapsKeys ? "Client Secret · 변경 시 입력" : "Maps Client Secret", text: $mapsSecret)
                     Toggle("이 계정이 Maps 무료 이용 대표 계정임을 확인", isOn: $freeConfirmed)
                     Text("월 300만 건 무료 제공은 대표 계정 하나에 적용됩니다. 확인 전에는 Maps 호출을 차단합니다. 초과분은 유료이므로 외부 사용 횟수도 반영해 주세요.").font(.caption)
                 }
                 Section {
-                    Text("빈 칸은 기존 키를 유지합니다. 키와 사용량은 기기 보관함에 저장하며 키를 바꿔도 이전 사용량 기록은 남습니다. Maps 무료 한도 기록은 앱별 키 사이에서도 공유합니다.").font(.caption).foregroundColor(.secondary)
+                    Text("빈 칸은 기존 키를 유지합니다. 앱을 삭제하지 않고 업데이트하면 키와 사용량을 자동으로 불러옵니다. 키를 바꿔도 이전 사용량 기록은 남습니다. Maps 무료 한도 기록은 앱별 키 사이에서도 공유합니다.").font(.caption).foregroundColor(.secondary)
                     if let error = api.errorMessage { Text(error).font(.caption).foregroundColor(.red) }
                     Button("설정 저장") {
                         if api.saveSettings(searchID: searchID, searchSecret: searchSecret, mapsID: mapsID, mapsSecret: mapsSecret, freeConfirmed: freeConfirmed, searchProvider: searchProvider, searchFreeConfirmed: searchFreeConfirmed) { searchID = ""; searchSecret = ""; mapsID = ""; mapsSecret = ""; dismiss() }

@@ -12,7 +12,10 @@ struct PlannerScreen: View {
     @EnvironmentObject private var inputs: NativeInputSession
     @ObservedObject var store: PlannerStore
     @ObservedObject var browser: BrowserModel
+    @ObservedObject var tmap: TMapStore
     let openRoute: (String) -> Void
+    let optimizeTMap: () -> Void
+    let openTMapResult: () -> Void
     @State private var section = 0
     @State private var visitDraft: DeliveryVisit?
     @State private var legDraft: DeliveryLeg?
@@ -37,13 +40,14 @@ struct PlannerScreen: View {
         NavigationStack {
             VStack(spacing: 0) {
                 HStack {
-                    Text("거래처 \(store.plan.visits.count)/30 · 구간 \(store.plan.legs.count)개").font(.subheadline)
+                    Text("이번 배송 \(store.plan.visits.count)/30곳").font(.subheadline)
                     Spacer()
                     if store.isComputing {
                         ProgressView()
                         Button("취소", action: store.cancelCalculation)
                     } else {
-                        Button("순서 계산") { inputs.finishEditing(); store.calculate() }.buttonStyle(.borderedProminent)
+                        Button("티맵 최적화") { inputs.finishEditing(); optimizeTMap() }.buttonStyle(.borderedProminent)
+                            .disabled(tmap.isOptimizing || tmap.isRefreshing)
                     }
                 }.padding(.horizontal).padding(.vertical, 8)
                 Picker("화면", selection: $section) {
@@ -69,6 +73,9 @@ struct PlannerScreen: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
+                        Button("저장한 이동시간으로 순서 계산") { inputs.finishEditing(); store.calculate() }
+                            .disabled(store.isComputing || tmap.isOptimizing)
+                        Divider()
                         Button("계획 내보내기") { exportPlan() }.disabled(preparingInputDiagnostics)
                         Button("계산 결과 내보내기") { exportResult() }.disabled(store.resultData == nil || preparingInputDiagnostics)
                         Button("계획 불러오기") { confirmImport = true }
@@ -158,7 +165,8 @@ struct PlannerScreen: View {
                 Text("휴식 가능으로 표시한 거래처에서만 배치합니다. 작업 전 대기시간에 쉴 수 있으면 그 60분을 중복해서 더하지 않습니다. 마지막 거래처에서 최종 도착지로 가는 구간도 휴식 필요 여부와 완료시각에 포함합니다.")
             }.font(.caption)
             Section("계산 범위") {
-                Text("저장한 구간 이동시간으로 한 차량의 방문 순서를 계산합니다. 미등록 구간은 사용할 수 없습니다. 네이버 저장값은 미래 교통정보가 아니며, 경로·교통 상황이 바뀌면 갱신이 필요합니다.")
+                Text("이번 배송을 선택하고 위의 ‘티맵 최적화’를 누르면 선택한 좌표로 경로·구간 이동시간을 받아 결과를 표시합니다. 이동 구간을 먼저 직접 등록할 필요는 없습니다. 받은 순서를 배송계획에 반영하면 시간·휴식·적재·도로 조건을 검증합니다.")
+                Text("직접 등록하거나 네이버에서 가져온 이동시간으로 계산하려면 우측 위 메뉴의 ‘저장한 이동시간으로 순서 계산’을 사용합니다. 이 계산에서는 등록한 구간만 사용할 수 있습니다.")
                 Text("적재 화면에서 실측 치수·위치·쌓임·통로·지지를 등록하고 적재 조건 반영을 켤 수 있습니다. 등록한 배치에서 상하차할 수 없는 방문 순서는 제외합니다.")
             }.font(.caption)
         }
@@ -228,7 +236,18 @@ struct PlannerScreen: View {
 
     private var results: some View {
         List {
+            if store.plan.tmapBinding == nil {
+                Section("티맵 경로 최적화") {
+                    Text("선택한 \(store.plan.visits.count)곳의 경로·이동시간은 티맵에서 가져옵니다. 아래 저장 구간 계산에 ‘미등록 이동 구간’이 표시되면 티맵 최적화를 실행해 주세요.").font(.caption)
+                    Button("선택한 배송지로 티맵 최적화") { inputs.finishEditing(); optimizeTMap() }
+                        .disabled(store.isComputing || tmap.isOptimizing || tmap.isRefreshing)
+                }
+            }
+            if tmap.route != nil && tmap.routeIsValid {
+                Section { Button("받은 티맵 경로·방문 순서 보기") { inputs.finishEditing(); openTMapResult() } }
+            }
             Section {
+                Text(store.plan.tmapBinding == nil ? "저장한 이동시간으로 계산한 결과" : "티맵 순서의 배송 조건 검증").font(.headline)
                 Text(store.message)
                 if let result = store.result {
                     ForEach(Array(result.messages.enumerated()), id: \.offset) { _, message in Text(message).font(.caption) }
@@ -289,7 +308,7 @@ struct PlannerScreen: View {
                         if let url = store.plan.selectedLeg(result.returnLegID, from: last.visitID, to: store.plan.finishNodeID ?? "depot")?.pageURL { Button("복귀 구간 지도 열기") { openRoute(url) } }
                     }
                 }
-                Text("지도 주소를 다시 열면 네이버가 경로를 재계산할 수 있습니다. 이 결과는 저장한 이동시간에 따른 일정 후보이며 실제 길안내의 경로 고정을 보장하지 않습니다.").font(.caption).foregroundColor(.secondary)
+                Text(store.plan.tmapBinding == nil ? "등록한 이동시간과 배송 조건으로 계산한 일정입니다. 경로·교통 상황이 바뀌면 이동시간을 갱신해 주세요." : "티맵이 반환한 순서와 이동시간에 배송 시간·휴식·적재·도로 조건을 반영한 일정입니다. 조건을 만족하지 못해도 받은 티맵 경로는 위 버튼에서 확인할 수 있습니다.").font(.caption).foregroundColor(.secondary)
             }
         }
     }

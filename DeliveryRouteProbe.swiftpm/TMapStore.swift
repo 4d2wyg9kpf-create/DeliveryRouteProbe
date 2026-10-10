@@ -15,7 +15,14 @@ private enum TMapKeychain {
     private static var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "state-v1"]
     }
-    static func read() throws -> Data? {
+    @MainActor private static let archive = APICredentialArchive(
+        readPrimary: { try readKeychain() }, writePrimary: { try writeKeychain($0) },
+        readProtected: { try APIProtectedStateFile(.tmap).read() },
+        writeProtected: { try APIProtectedStateFile(.tmap).write($0) },
+        validate: { try TMapStore.validateSavedState($0) })
+    @MainActor static func read() throws -> Data? { try archive.read() }
+    @MainActor static func write(_ data: Data) throws { try archive.write(data) }
+    private static func readKeychain() throws -> Data? {
         var q = query
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -25,7 +32,7 @@ private enum TMapKeychain {
         guard status == errSecSuccess, let data = item as? Data else { throw PlannerFailure.message("앱키·사용량 보관함을 열지 못했습니다. (\(status))") }
         return data
     }
-    static func write(_ data: Data) throws {
+    private static func writeKeychain(_ data: Data) throws {
         let updates = [kSecValueData as String: data]
         var status = SecItemUpdate(query as CFDictionary, updates as CFDictionary)
         if status == errSecItemNotFound {
@@ -64,6 +71,8 @@ final class TMapStore: ObservableObject {
     private var referenceUptime: TimeInterval?
     private var optimizationTask: Task<Void, Never>?
     private var requestedPlan: Data?
+    private let writeState: (Data) throws -> Void
+    private let transport: ((URLRequest) async throws -> (Data, URLResponse))?
     private let delegate = TMapNetworkDelegate()
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -77,9 +86,18 @@ final class TMapStore: ObservableObject {
         return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }()
 
-    private init() {
+    private convenience init() {
+        self.init(read: { try TMapKeychain.read() }, write: { try TMapKeychain.write($0) }, transport: nil)
+    }
+    init(read: () throws -> Data?, write: @escaping (Data) throws -> Void,
+         transport: ((URLRequest) async throws -> (Data, URLResponse))?) {
+        writeState = write; self.transport = transport
         do {
-            if let data = try TMapKeychain.read() { state = try JSONDecoder().decode(TMapSecureState.self, from: data) }
+            if let data = try read() {
+                guard data.count <= 2_000_000 else { throw APICredentialStorageError.invalid }
+                state = try JSONDecoder().decode(TMapSecureState.self, from: data)
+                guard state.ledger.version == 1 else { throw APICredentialStorageError.invalid }
+            }
             publishSettings()
             if hasAppKey, let account = state.ledger.accounts[keyID] {
                 // Show the saved balance. Do not reset it from the device's calendar.
@@ -90,6 +108,10 @@ final class TMapStore: ObservableObject {
             recoveryBlocked = true
             errorMessage = "앱키·사용량 기록을 읽지 못해 호출을 차단했습니다. \(error.localizedDescription)"
         }
+    }
+    static func validateSavedState(_ data: Data) throws {
+        let state = try JSONDecoder().decode(TMapSecureState.self, from: data)
+        guard state.ledger.version == 1 else { throw APICredentialStorageError.invalid }
     }
     private var keyID: String { SHA256.hash(data: Data(state.appKey.utf8)).map { String(format: "%02x", $0) }.joined() }
     var nowMillis: Double? {
@@ -117,7 +139,7 @@ final class TMapStore: ObservableObject {
     }
     private func commit(_ value: TMapSecureState) throws {
         guard !recoveryBlocked else { throw PlannerFailure.message("기존 사용량 기록 복구가 필요해 요청을 차단했습니다.") }
-        try TMapKeychain.write(JSONEncoder().encode(value))
+        try writeState(JSONEncoder().encode(value))
         state = value
         publishSettings()
     }
@@ -152,11 +174,15 @@ final class TMapStore: ObservableObject {
             Task { await refreshClock() }
         } catch { errorMessage = error.localizedDescription }
     }
+    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        if let transport { return try await transport(request) }
+        return try await session.data(for: request)
+    }
     private func trustedTime() async throws -> Double {
         var request = URLRequest(url: URL(string: "https://openapi.sk.com/")!, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 15)
         request.httpMethod = "HEAD"
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-        let (_, response) = try await session.data(for: request)
+        let (_, response) = try await send(request)
         guard let http = response as? HTTPURLResponse, (200..<500).contains(http.statusCode), let text = http.value(forHTTPHeaderField: "Date") else { throw PlannerFailure.message("서버 기준 시각을 확인하지 못해 요청을 보류했습니다. 잠시 후 다시 확인해 주세요.") }
         if let age = http.value(forHTTPHeaderField: "Age"), let seconds = Double(age), seconds > 30 { throw PlannerFailure.message("오래된 기준 시각이 반환돼 요청을 보류했습니다.") }
         let format = DateFormatter()
@@ -201,6 +227,7 @@ final class TMapStore: ObservableObject {
             // Validate all local inputs before reserving a free request.
             let request = try TMapBridge.call("request", ["plan": try TMapBridge.object(plan), "options": try TMapBridge.object(options)], as: TMapRequest.self)
             let planFingerprint = try TMapBridge.fingerprintData(plan)
+            route = nil; requestedPlan = nil
             isOptimizing = true
             errorMessage = nil
             message = "서버 시각과 무료 잔여량을 확인하고 있습니다."
@@ -220,7 +247,7 @@ final class TMapStore: ObservableObject {
                     networkRequest.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
                     networkRequest.setValue("application/json", forHTTPHeaderField: "Accept")
                     message = "티맵 경유지 최적화 \(request.apiID)를 요청했습니다. 무료 1회 사용을 기록했습니다."
-                    let (data, response) = try await session.data(for: networkRequest)
+                    let (data, response) = try await send(networkRequest)
                     try Task.checkCancellation()
                     guard let http = response as? HTTPURLResponse, data.count <= 32_000_000 else { throw PlannerFailure.message("티맵 응답을 읽지 못했습니다.") }
                     let object = (try? JSONSerialization.jsonObject(with: data)) ?? [:]
@@ -246,7 +273,8 @@ final class TMapStore: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
     func cancel() { optimizationTask?.cancel() }
-    func apply(to planner: PlannerStore) {
+    @discardableResult
+    func apply(to planner: PlannerStore) -> Bool {
         do {
             guard canApply(to: planner.plan), let route = route, let now = nowMillis else { throw PlannerFailure.message("계획이 변경됐거나 티맵 결과가 만료됐습니다. 현재 계획을 다시 최적화해 주세요.") }
             let plan = try TMapBridge.call("apply", ["plan": try TMapBridge.object(planner.plan), "route": try TMapBridge.object(route), "now": now], as: DeliveryPlan.self)
@@ -254,6 +282,7 @@ final class TMapStore: ObservableObject {
             planner.calculate()
             message = "티맵 순서를 계획에 연결했습니다. 배송계획의 계산 결과에서 시간·적재·도로 조건을 확인해 주세요."
             errorMessage = nil
-        } catch { errorMessage = error.localizedDescription }
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
     }
 }

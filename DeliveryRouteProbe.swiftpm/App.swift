@@ -30,9 +30,8 @@ struct DeliveryRootView: View {
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         TabView(selection: $selectedTab) {
-            TMapScreen(store: tmap, planner: planner, browser: model) { url in
-                openNaver(url)
-            }
+            TMapScreen(store: tmap, planner: planner, browser: model,
+                       openNaver: openNaver, openPlanResult: { selectedTab = 1 })
                 .tabItem { Label("티맵 최적화", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }.tag(3)
             Group {
                 // Do not construct/attach a web view behind the planner.
@@ -41,9 +40,8 @@ struct DeliveryRootView: View {
             }
             .disabled(selectedTab != 0)
             .tabItem { Label("네이버 검색", systemImage: "magnifyingglass") }.tag(0)
-            PlannerScreen(store: planner, browser: model) { url in
-                openNaver(url)
-            }
+            PlannerScreen(store: planner, browser: model, tmap: tmap, openRoute: openNaver,
+                          optimizeTMap: startTMapOptimization, openTMapResult: { selectedTab = 3 })
             .disabled(selectedTab != 1)
             .tabItem { Label("배송계획", systemImage: "list.number") }.tag(1)
             TripScreen(store: trip, planner: planner, browser: model) { url in
@@ -64,6 +62,11 @@ struct DeliveryRootView: View {
             if phase != .active { planner.saveNow() }
             else { Task { await tmap.refreshClock() } }
         }
+    }
+    private func startTMapOptimization() {
+        inputs.finishEditing()
+        selectedTab = 3
+        tmap.optimize(plan: planner.plan)
     }
     private func openNaver(_ url: String) {
         inputs.finishEditing()

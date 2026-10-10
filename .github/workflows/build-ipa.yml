@@ -12,7 +12,9 @@ on:
       - 'scripts/package_unsigned_ipa.py'
       - 'scripts/test_naver_frames.*'
       - 'scripts/test_naver_api.*'
+      - 'scripts/test_api_persistence.*'
       - 'tests/naver_api_tests.js'
+      - 'tests/delivery_flow_tests.js'
       - 'scripts/naver_frame_fixtures.py'
       - 'scripts/naver_fixture_info.plist'
       - '.github/workflows/build-ipa.yml'
@@ -37,8 +39,12 @@ jobs:
         run: bash scripts/test_naver_frames.sh
       - name: Verify official API parsing and free quota boundary cases
         run: node tests/naver_api_tests.js
+      - name: Verify nine selected deliveries optimize without manually registered travel legs
+        run: node tests/delivery_flow_tests.js
       - name: Verify persisted native request gates with mocked API transport
         run: bash scripts/test_naver_api.sh
+      - name: Verify API keys and quota ledgers survive updates and Keychain access changes
+        run: bash scripts/test_api_persistence.sh
       - name: Upload native check log
         if: always()
         uses: actions/upload-artifact@v7

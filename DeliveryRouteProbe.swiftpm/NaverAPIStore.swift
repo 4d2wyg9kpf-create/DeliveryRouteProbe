@@ -86,7 +86,14 @@ private enum NaverAPIKeychain {
     private static var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "kr.deliverytools.routeprobe.naver-api", kSecAttrAccount as String: "state-v1"]
     }
-    static func read() throws -> Data? {
+    @MainActor private static let archive = APICredentialArchive(
+        readPrimary: { try readKeychain() }, writePrimary: { try writeKeychain($0) },
+        readProtected: { try APIProtectedStateFile(.naverAPI).read() },
+        writeProtected: { try APIProtectedStateFile(.naverAPI).write($0) },
+        validate: { try NaverAPIStore.validateSavedState($0) })
+    @MainActor static func read() throws -> Data? { try archive.read() }
+    @MainActor static func write(_ data: Data) throws { try archive.write(data) }
+    private static func readKeychain() throws -> Data? {
         var q = query; q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
         var value: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &value)
@@ -94,7 +101,7 @@ private enum NaverAPIKeychain {
         guard status == errSecSuccess, let data = value as? Data else { throw PlannerFailure.message("네이버 키·사용량 보관함을 읽지 못했습니다. (\(status))") }
         return data
     }
-    static func write(_ data: Data) throws {
+    private static func writeKeychain(_ data: Data) throws {
         var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
             var q = query; q[kSecValueData as String] = data; q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -157,6 +164,10 @@ final class NaverAPIStore: ObservableObject {
                 }
             }
         } catch { recoveryBlocked = true; errorMessage = "기존 키·사용량 기록 오류로 네이버 API 호출을 차단했습니다. \(error.localizedDescription)" }
+    }
+    static func validateSavedState(_ data: Data) throws {
+        let state = try JSONDecoder().decode(NaverSecureState.self, from: data)
+        guard state.version == 1, state.ledger.version == 1 else { throw APICredentialStorageError.invalid }
     }
     private func publish() {
         hasSearchKeys = !state.searchID.isEmpty && !state.searchSecret.isEmpty

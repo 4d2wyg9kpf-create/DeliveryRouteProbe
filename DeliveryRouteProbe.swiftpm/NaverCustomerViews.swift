@@ -38,6 +38,7 @@ struct NaverCustomerCatalogView: View {
                 }
                 Section("이번에 배송할 거래처") {
                     Text("전체 목록은 보관하고, 체크한 곳만 이번 배송에 방문합니다. 최대 30곳을 선택할 수 있습니다.").font(.caption)
+                    Text("선택을 저장한 다음 ‘티맵 최적화’를 누르면 경로·이동시간을 가져오고 방문 순서를 표시합니다.").font(.caption).foregroundColor(.secondary)
                     HStack {
                         Text("\(selectedIDs.count)곳 선택 / 전체 \(customers.records.count)곳")
                         Spacer()
