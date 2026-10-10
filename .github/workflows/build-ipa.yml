@@ -14,6 +14,7 @@ on:
       - 'scripts/test_naver_api.*'
       - 'scripts/test_api_persistence.*'
       - 'scripts/test_public_data.*'
+      - 'scripts/test_place_destinations.*'
       - 'tests/naver_api_tests.js'
       - 'tests/delivery_flow_tests.js'
       - 'scripts/naver_frame_fixtures.py'
@@ -48,6 +49,8 @@ jobs:
         run: bash scripts/test_api_persistence.sh
       - name: Verify public business radius, license dates, pagination, persistence and request gates
         run: bash scripts/test_public_data.sh
+      - name: Verify selected place destinations, bulk import, deduplication and deletion persist independently
+        run: bash scripts/test_place_destinations.sh
       - name: Upload native check log
         if: always()
         uses: actions/upload-artifact@v7

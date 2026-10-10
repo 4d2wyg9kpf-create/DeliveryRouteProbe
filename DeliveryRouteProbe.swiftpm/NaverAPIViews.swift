@@ -199,7 +199,7 @@ private struct NaverAPISelectionView: View {
                     if !capture.jibunAddress.isEmpty { Text("지번: \(capture.jibunAddress)").font(.caption) }
                     NaverCoordinateLabel(capture: capture)
                     if capture.coordinate == nil {
-                        Text(capture.coordinateIssue ?? "주소에서 좌표를 변환해 주세요.").font(.caption).foregroundStyle(.orange)
+                        Text(capture.coordinateIssue.isEmpty ? "주소에서 좌표를 변환해 주세요." : capture.coordinateIssue).font(.caption).foregroundStyle(.orange)
                         Button(resolving ? "좌표 변환 중…" : "읽은 주소로 좌표 변환") {
                             inputs.finishEditing(); resolving = true; error = nil
                             Task {

@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-enum NaverImportDestination: String, CaseIterable, Identifiable {
+enum NaverImportDestination: String, CaseIterable, Identifiable, Hashable {
     case customers, sites
     var id: String { rawValue }
     var title: String { self == .customers ? "티맵 거래처 목록" : "입지 평가대상지 목록" }
@@ -39,7 +39,7 @@ final class SiteTargetStore: ObservableObject {
                 guard archive.version == 1, archive.records.count <= 5_000,
                       Set(archive.records.map(\.id)).count == archive.records.count else { throw PlannerFailure.message("평가대상지 보관함 형식이 다릅니다.") }
                 for record in archive.records {
-                    let verified = try NaverPlaceBridge.validate(record.capture)
+                    let verified = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(record.capture)], as: NaverPlaceCapture.self)
                     guard let coordinate = verified.coordinate,
                           coordinate.latitude == record.coordinate.latitude,
                           coordinate.longitude == record.coordinate.longitude else { throw PlannerFailure.message("저장된 평가대상지 좌표를 확인해 주세요.") }
@@ -51,7 +51,7 @@ final class SiteTargetStore: ObservableObject {
 
     @discardableResult
     func save(_ capture: NaverPlaceCapture, name: String? = nil, folder: String = "") throws -> Bool {
-        let capture = try NaverPlaceBridge.validate(capture)
+        let capture = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self)
         guard let coordinate = capture.coordinate else { throw PlannerFailure.message("좌표를 확인한 장소만 평가대상지에 저장할 수 있습니다.") }
         let title = (name ?? capture.name).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw PlannerFailure.message("장소 이름을 입력하세요.") }

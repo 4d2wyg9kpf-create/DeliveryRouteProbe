@@ -39,9 +39,11 @@ final class NaverCustomerStore: ObservableObject {
     @Published private(set) var records: [NaverCustomerRecord] = []
     @Published var errorMessage: String?
     private var writable = true
-    init() {
+    private let directory: URL?
+    init(directory: URL? = nil) {
+        self.directory = directory
         do {
-            let url = try Self.fileURL()
+            let url = try Self.fileURL(directory)
             if FileManager.default.fileExists(atPath: url.path) {
                 let data = try Data(contentsOf: url)
                 guard data.count <= 20_000_000 else { throw PlannerFailure.message("거래처 파일이 너무 큽니다.") }
@@ -54,9 +56,8 @@ final class NaverCustomerStore: ObservableObject {
             }
         } catch { writable = false; errorMessage = "저장한 거래처를 읽지 못했습니다. 기존 파일은 보존했습니다. \(error.localizedDescription)" }
     }
-    private static func fileURL() throws -> URL {
-        let root = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let directory = root.appendingPathComponent("RouteProbe", isDirectory: true)
+    private static func fileURL(_ override: URL? = nil) throws -> URL {
+        let directory = try override ?? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("RouteProbe", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent("naver-customers.json")
     }
@@ -128,7 +129,7 @@ final class NaverCustomerStore: ObservableObject {
     private func commit(_ next: [NaverCustomerRecord]) throws {
         guard writable else { throw PlannerFailure.message(errorMessage ?? "거래처 파일을 저장할 수 없습니다.") }
         let data = try JSONEncoder().encode(NaverCustomerArchive(records: next))
-        try data.write(to: Self.fileURL(), options: .atomic)
+        try data.write(to: Self.fileURL(directory), options: .atomic)
         records = next; errorMessage = nil
     }
 }

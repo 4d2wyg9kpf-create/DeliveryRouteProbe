@@ -1,7 +1,7 @@
 import Foundation
 import CoreFoundation
 
-enum PublicDataService: String, Codable, CaseIterable, Identifiable {
+enum PublicDataService: String, Codable, CaseIterable, Identifiable, Hashable {
     case stores, restaurants, cafes, bakery, catering, canteens
     var id: String { rawValue }
     var title: String {
@@ -30,7 +30,7 @@ enum PublicDataService: String, Codable, CaseIterable, Identifiable {
         case .stores: return "/B553077/api/open/sdsc2/storeListInRadius"
         case .restaurants: return "/1741000/general_restaurants/info"
         case .cafes: return "/1741000/rest_cafes/info"
-        case .bakery: return "/1741000/bakery_business/info"
+        case .bakery: return "/1741000/bakeries/info"
         case .catering: return "/1741000/contract_catering/info"
         case .canteens: return "/1741000/group_meal_facilities/info"
         }

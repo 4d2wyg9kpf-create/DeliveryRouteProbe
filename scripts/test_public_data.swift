@@ -19,7 +19,8 @@ private func license(_ id: String = "fixture-permit", date: String = "20261010",
 private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: String = "00", nested: Bool = true) throws -> Data {
     let body: [String: Any] = ["pageNo": number, "numOfRows": 100, "totalCount": total, "items": ["item": rows], "stdrYm": "202609"]
     let response: [String: Any] = ["header": ["resultCode": code, "resultMsg": "synthetic"], "body": body]
-    return try bytes(nested ? ["response": response] : response)
+    let payload: [String: Any] = nested ? ["response": response] : response
+    return try bytes(payload)
 }
 
 @MainActor private final class Fixture {
