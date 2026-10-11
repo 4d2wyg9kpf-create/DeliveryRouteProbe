@@ -64,7 +64,7 @@ struct RealtyHousingClient {
         next.fields["approvalDate"] = field("date01"); next.fields["use"] = field("purpose01")
         next.fields["buildings"] = matches(field("dangi01"), #"([0-9,]+)"#).first?.replacingOccurrences(of: ",", with: "") ?? ""
         next.fields["households"] = matches(html, #"<p[^>]*>\s*([0-9,]+)세대\s*</p>"#).first?.replacingOccurrences(of: ",", with: "") ?? ""
-        let x = matches(html, #"x_coord\s*:\s*['\"]([0-9.]+)['\"]"#).first, y = matches(html, #"y_coord\s*:\s*['\"]([0-9.]+)['\"]"#).first
+        let x = matches(html, #"x_coord\s*:\s*['\"]([-+]?[0-9.]+)['\"]"#).first, y = matches(html, #"y_coord\s*:\s*['\"]([-+]?[0-9.]+)['\"]"#).first
         if let x, let y, let dx = Double(x), let dy = Double(y) {
             next.fields["sourceX"] = x; next.fields["sourceY"] = y
             next.coordinate = RealtyCoordinateProjection.convert(x: dx, y: dy)

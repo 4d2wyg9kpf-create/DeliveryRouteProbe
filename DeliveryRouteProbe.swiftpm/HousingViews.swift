@@ -189,12 +189,17 @@ struct HousingComplexView: View {
     let complexID: String
     @State private var fields: [String: String] = [:]
     @State private var showMap = false
+    @State private var reading = false
+    @State private var detailTask: Task<Void, Never>?
     @State private var error: String?
     private var complex: HousingComplex? { store.complexes.first { $0.id == complexID } }
     var body: some View {
         Form {
             if let complex {
                 Section("단지 정보 · 사용자 수정") {
+                    if complex.original != nil {
+                        Button(reading ? "상세 수집 중…" : "이 단지의 최신 상세 수집") { loadDetail(complex) }.disabled(reading || store.isBusy)
+                    }
                     ForEach(HousingField.allCases) { field in
                         VStack(alignment: .leading) { Text(field.title).font(.caption).foregroundStyle(.secondary)
                             NativeTextField(field.title, text: Binding(get: { fields[field.rawValue] ?? "" }, set: { fields[field.rawValue] = $0 }))
@@ -232,6 +237,26 @@ struct HousingComplexView: View {
             .sheet(isPresented: $showMap) {
                 if let complex { CoordinateEditorView(title: "단지 좌표", coordinate: complex.coordinate, original: complex.original?.coordinate) { try store.edit(complex, fields: [:], coordinate: $0) } }
             }
+            .onDisappear { detailTask?.cancel() }
+    }
+    private func loadDetail(_ complex: HousingComplex) {
+        guard let source = complex.original else { return }; reading = true; error = nil
+        detailTask = Task {
+            defer { reading = false; detailTask = nil }
+            do {
+                try await DeviceShareHooks.prepareRequest()
+                var updated = try await RealtyHousingClient().detail(source)
+                if updated.fields["roadAddress", default: ""].isEmpty, KakaoRouteStore.shared.settings.mapFreeConfirmed, !KakaoRouteStore.shared.settings.key.isEmpty {
+                    if let road = try await KakaoRouteStore.shared.roadAddress(for: updated) { updated.fields["roadAddress"] = road; updated.detailAt = Date(); updated.issues.removeAll { $0.contains("도로명주소") } }
+                }
+                var region = try store.originalRegion(source.regionCode)
+                guard let index = region.records.firstIndex(where: { $0.id == source.id }) else { throw DeviceShareError.invalid }
+                region.records[index] = updated; region.generation = Date().timeIntervalSince1970 * 1000
+                try store.importRegion(region)
+                if let value = self.complex { fields = value.fields }
+            } catch is CancellationError { error = "수집을 중단했습니다." }
+            catch { self.error = error.localizedDescription }
+        }
     }
 }
 func housingCSV(_ complexes: [HousingComplex], regions: [HousingRegionSummary]) -> String {

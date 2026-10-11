@@ -66,7 +66,8 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         }
         let detail = try String(contentsOfFile: "tests/fixtures/realty-detail.html", encoding: .utf8), basis = try String(contentsOfFile: "tests/fixtures/realty-basis.html", encoding: .utf8)
         let source = HousingSource(id: "realty:11680:20432271", aptCode: "20432271", noticeDate: "20260626", regionCode: "1168010300", fields: ["name": "T&K개포(TK개포)"])
-        let parsed = try RealtyHousingClient.parseBasis(basis, source: RealtyHousingClient.parseDetail(detail, source: source))
+        var parsed = try RealtyHousingClient.parseBasis(basis, source: RealtyHousingClient.parseDetail(detail, source: source))
+        parsed.detailAt = Date(timeIntervalSince1970: 1_900_000_000)
         try check("actual mobile detail separates buildings households date and use") {
             try require(parsed.fields["buildings"] == "1" && parsed.fields["households"] == "13" && parsed.fields["approvalDate"] == "2022-02-07" && parsed.fields["use"] == "다세대", "detail fields")
         }
@@ -78,6 +79,11 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         try check("source map projection agrees with the source's Proj4 transform") {
             let points: [(Double,Double,Double,Double)] = [(204287.575165678,441473.492823977,127.04926075091029,37.47543442515722),(238000,317000,127.42414608236756,36.353080274084796),(150000,200000,126.45109688989228,35.29810867531292),(370000,600000,128.96001728697144,38.88717116288498)]
             for (x,y,lon,lat) in points { let v = RealtyCoordinateProjection.convert(x: x,y: y)!; try require(abs(v.longitude-lon) < 0.000002 && abs(v.latitude-lat) < 0.000002, "projection mismatch") }
+        }
+        try check("negative mobile northing in Jeju remains a valid coordinate") {
+            let html = detail.replacingOccurrences(of: "204287.575165678", with: "180000").replacingOccurrences(of: "441473.492823977", with: "-30000")
+            let value = try RealtyHousingClient.parseDetail(html, source: source)
+            try require(abs((value.coordinate?.latitude ?? 0)-33.22575291699372) < 0.000002, "Jeju negative coordinate omitted")
         }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("housing-test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }

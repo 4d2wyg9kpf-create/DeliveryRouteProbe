@@ -105,22 +105,33 @@ final class SiteTargetStore: ObservableObject {
         guard coordinate.map(Self.valid) ?? true, let index = records.firstIndex(where: { $0.id == id }) else { throw DeviceShareError.invalid }
         var next = records; next[index].coordinateOverride = coordinate; try commit(next)
     }
+    static func sharingKey(_ record: SiteTarget) -> String {
+        if let housingID = record.housingID { return "site/housing/" + DeviceShareCodec.key(housingID) }
+        if let capture = record.capture {
+            if !capture.placeID.isEmpty { return "site/place/" + capture.placeID }
+            if capture.isSharedAddress { return "site/address/" + DeviceShareCodec.key(DeviceShareCodec.addressIdentity(capture.preferredAddress)) }
+            return "site/selection/" + DeviceShareCodec.key(capture.selectionKey)
+        }
+        return "site/manual/" + record.id
+    }
     func sharingSnapshot() throws -> DeviceShareSnapshot {
         guard writable else { throw DeviceShareError.unavailable }
         var result = DeviceShareSnapshot()
-        for record in records { result.values["site/" + record.id] = try DeviceShareCodec.encode(record) }
+        for record in records { result.values[Self.sharingKey(record)] = try DeviceShareCodec.encode(record) }
         return result
     }
     func applySharing(_ replica: DeviceShareReplica) throws {
+        let local = Dictionary(records.map { (Self.sharingKey($0), $0) }, uniquingKeysWith: { first, _ in first })
         var next: [SiteTarget] = []
         for (key, entry) in replica.records where key.hasPrefix("site/") {
             guard let data = entry.value else { continue }
-            let record = try DeviceShareCodec.decode(SiteTarget.self, data)
-            guard key == "site/" + record.id, Self.valid(record.coordinate), record.coordinateOverride.map(Self.valid) ?? true else { throw DeviceShareError.invalid }
+            var record = try DeviceShareCodec.decode(SiteTarget.self, data)
+            guard key == Self.sharingKey(record), Self.valid(record.coordinate), record.coordinateOverride.map(Self.valid) ?? true else { throw DeviceShareError.invalid }
             if let capture = record.capture {
                 let verified = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self)
                 guard verified.coordinate?.longitude == record.coordinate.longitude, verified.coordinate?.latitude == record.coordinate.latitude else { throw DeviceShareError.invalid }
             }
+            if let previous = local[key] { record.id = previous.id }
             next.append(record)
         }
         next.sort { $0.addedAt < $1.addedAt }

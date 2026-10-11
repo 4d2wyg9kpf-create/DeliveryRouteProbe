@@ -61,7 +61,7 @@ enum KakaoRouteAPI {
             if mode == .walk { c.queryItems?.append(URLQueryItem(name: "route_mode", value: "SHORTEST")) }
         } else if !mode.isBatch {
             func point(_ p: RouteEndpoint) -> String { "\(p.coordinate.longitude),\(p.coordinate.latitude)" }
-            c.queryItems = [URLQueryItem(name: "origin", value: point(origin)), URLQueryItem(name: "destination", value: point(end)), URLQueryItem(name: "priority", value: priority)]
+            c.queryItems = [URLQueryItem(name: "origin", value: point(origin)), URLQueryItem(name: "destination", value: point(end)), URLQueryItem(name: "priority", value: priority), URLQueryItem(name: "summary", value: "true")]
             if mode == .future {
                 guard let departure, departure.timeIntervalSince(now) >= 60 else { throw PlannerFailure.message("미래 운행 출발 시각을 1분 이후로 지정하세요.") }
                 c.queryItems?.append(URLQueryItem(name: "departure_time", value: self.departure(departure)))

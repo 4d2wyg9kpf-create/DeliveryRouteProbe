@@ -192,6 +192,22 @@ private func sharedBusiness(_ longitude: String = "127.4000001") throws -> Naver
             let copy = SiteTargetStore(directory: siteFolder)
             try require(copy.records.first { $0.id == id }?.effectiveCoordinate.longitude == 127.4 && copy.records.first { $0.id == id }?.capture == nil, "manual target lost")
         }
+        try check("independently selected same Naver place shares once and preserves local identity") {
+            let copy = SiteTargetStore(directory: siteFolder.appendingPathComponent("device-b"))
+            _ = try copy.save(try sharedBusiness("127.4000002"))
+            let localID = copy.records[0].id
+            var replica = DeviceShareReplica(deviceID: UUID().uuidString), observed: [String: Data] = [:]
+            try replica.capture(siteTargets.sharingSnapshot(), observed: &observed); try copy.applySharing(replica)
+            try require(copy.records.count == 2 && copy.records.first { $0.capture != nil }?.id == localID, "shared site duplicated")
+            try require(copy.records.first { $0.capture != nil }?.effectiveCoordinate.longitude == 127.4009, "shared manual edit lost")
+        }
+        try check("restoring customer coordinates returns to raw capture after template migration") {
+            let id = siteCustomers.records[0].id
+            var plan = DeliveryPlan(); var visit = siteCustomers.records[0].template
+            visit.tmapCoordinate = TMapCoordinate(longitude: 127.4009, latitude: 36.3008); plan.visits = [visit]
+            try siteCustomers.remember(plan); try siteCustomers.setCoordinate(id, coordinate: nil)
+            try require(siteCustomers.records[0].effectiveCoordinate?.longitude == siteCustomers.records[0].capture?.coordinate?.longitude, "restored customer kept migrated manual position")
+        }
         print("Place destination native checks: \(passed)/\(passed) passed")
     }
 }
