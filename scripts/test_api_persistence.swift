@@ -360,7 +360,8 @@ private func bytes(_ value: [String: Any]) throws -> Data { try JSONSerializatio
             DeviceShareHooks.didChange = { reservations in if !reservations.isEmpty { throw DeviceShareError.unavailable } }
             defer { DeviceShareHooks.didChange = nil }
             do { _ = try await sa.search("가상 거래처") } catch { }
-            try require(fa.charged == 0 && (try fa.used()) == 1, "unsaved shared request dispatched or local count lost")
+            let restored = fa.naver(fa.archive())
+            try require(fa.charged == 0 && (try fa.used()) == 2 && restored.quotas["search"]?.used == 1 && restored.quotas["searchMonth"]?.used == 1, "unsaved shared request dispatched or daily/monthly local counts lost")
         }
         let result: [String: Any] = ["passed": checks.filter { $0["passed"] as? Bool == true }.count, "total": checks.count,
             "checks": checks, "native_stores_tested": true, "live_api_calls": false, "physical_device_update_tested": false]
