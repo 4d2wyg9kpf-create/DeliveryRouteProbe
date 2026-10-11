@@ -82,17 +82,17 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("housing-test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }
         let catalog = HousingStore(directory: folder)
-        var region = HousingRegion(code: "1168010300", sido: HousingArea(code: "11", name: "서울특별시"), sigungu: HousingArea(code: "680", name: "강남구"), dong: HousingArea(code: "10300", name: "개포동"), generation: 1, sourceCount: 1, records: [parsed])
+        var region = HousingRegion(code: "1168010300", sido: HousingArea(code: "11", name: "서울특별시"), sigungu: HousingArea(code: "680", name: "강남구"), dong: HousingArea(code: "10300", name: "개포동"), generation: 1_900_000_000_000, sourceCount: 1, records: [parsed])
         try catalog.importRegion(region)
         try check("recollection refreshes original while preserving only user edited fields") {
             try catalog.edit(catalog.complexes[0], fields: ["name": "가공 단지", "parking": "8"])
-            region.records[0].fields["name"] = "새 원본명"; region.records[0].fields["households"] = "15"; region.generation = 2; try catalog.importRegion(region)
+            region.records[0].fields["name"] = "새 원본명"; region.records[0].fields["households"] = "15"; region.generation = 1_900_000_000_001; try catalog.importRegion(region)
             let value = catalog.complexes[0]; try require(value.name == "가공 단지" && value.fields["parking"] == "8" && value.fields["households"] == "15" && value.original?.fields["name"] == "새 원본명", "override precedence")
         }
         try check("two processed complexes can refer to the same original and hide survives recollection") {
             let original = catalog.complexes[0]; _ = try catalog.add(name: "분리 단지", regionCode: region.code, coordinate: b.coordinate, sourceIDs: original.sourceIDs)
             try require(catalog.complexes.count == 2 && catalog.complexes.allSatisfy { $0.sourceIDs == [parsed.id] }, "N-to-N source mapping")
-            try catalog.hide(original); region.generation = 3; try catalog.importRegion(region)
+            try catalog.hide(original); region.generation = 1_900_000_000_002; try catalog.importRegion(region)
             try require(catalog.complexes.count == 1 && HousingStore(directory: folder).complexes.count == 1, "hide resurrected")
         }
         try check("shared edits transfer without requiring source recollection") {

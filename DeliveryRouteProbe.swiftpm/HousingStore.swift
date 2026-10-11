@@ -3,30 +3,61 @@ import Combine
 
 @MainActor
 final class HousingStore: ObservableObject {
-    @Published private(set) var regions: [HousingRegion] = []
+    @Published private(set) var regions: [HousingRegionSummary] = []
     @Published private(set) var edits: [HousingEdit] = []
     @Published private(set) var complexes: [HousingComplex] = []
     @Published var errorMessage: String?
     @Published var progress = ""
     @Published var isBusy = false
     private let directory: URL
+    private var index: HousingIndex?
+    private var searchRegion = ""
+    private var searchKeyword = ""
+    private var syncFolderIdentity = ""
     private var writable = true
     private var published = Set<String>()
     private var ready = Set<String>()
     init(directory: URL? = nil) {
         self.directory = directory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("RouteProbe/Housing", isDirectory: true)
         do {
+            index = try HousingIndex(directory: self.directory)
+            regions = try index!.summaries()
             if FileManager.default.fileExists(atPath: self.directory.path) {
                 for file in try FileManager.default.contentsOfDirectory(at: self.directory, includingPropertiesForKeys: nil) where file.lastPathComponent.hasPrefix("region-") && file.pathExtension == "json" {
-                    let region = try Self.decode(Data(contentsOf: file)); regions.append(region)
+                    let code = file.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "region-", with: "")
+                    if !regions.contains(where: { $0.code == code }) { let region = try Self.decode(Data(contentsOf: file)); try index!.replace(region); regions.append(HousingRegionSummary(region)) }
                 }
                 let file = self.directory.appendingPathComponent("edits.json")
                 if FileManager.default.fileExists(atPath: file.path) { edits = try DeviceShareCodec.decode([HousingEdit].self, Data(contentsOf: file)); try Self.validate(edits) }
             }
-            publish()
+            if !regions.contains(where: { $0.code == "1168010300" }) {
+                let seed = try Self.decode(Data(HousingSeed.source.utf8)); try importRegion(seed, share: false)
+            }
+            ready = Set(regions.map(\.code)); publish()
         } catch { writable = false; errorMessage = "공동주택 보관 자료를 읽지 못했습니다. 기존 자료는 보존했습니다. " + error.localizedDescription }
     }
-    private func publish() { regions.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }; complexes = HousingCatalog.effective(regions: regions, edits: edits) }
+    private func publish() {
+        regions.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        do {
+            let sources = try index?.search(region: searchRegion, keyword: searchKeyword, sourceIDs: Set(edits.flatMap(\.sourceIDs))) ?? []
+            complexes = HousingCatalog.effective(sources: sources, edits: edits).filter { (searchRegion.isEmpty || $0.regionCode == searchRegion) && (searchKeyword.isEmpty || ($0.name + $0.address + ($0.fields["jibunAddress"] ?? "")).localizedCaseInsensitiveContains(searchKeyword)) }
+        } catch { errorMessage = error.localizedDescription }
+    }
+    func search(region: String, keyword: String) async {
+        searchRegion = region; searchKeyword = keyword
+        let edits = edits, directory = directory, ids = Set(edits.flatMap(\.sourceIDs))
+        do {
+            let sources = try await Task.detached(priority: .utility) { try HousingIndex.search(directory: directory, region: region, keyword: keyword, sourceIDs: ids) }.value
+            guard searchRegion == region, searchKeyword == keyword else { return }
+            complexes = HousingCatalog.effective(sources: sources, edits: edits).filter { (region.isEmpty || $0.regionCode == region) && (keyword.isEmpty || ($0.name + $0.address + ($0.fields["jibunAddress"] ?? "")).localizedCaseInsensitiveContains(keyword)) }
+        } catch { errorMessage = error.localizedDescription }
+    }
+    func originalRegion(_ code: String) throws -> HousingRegion { try Self.decode(Data(contentsOf: directory.appendingPathComponent("region-" + code + ".json"))) }
+    func exportRegions(_ code: String) throws -> [HousingRegion] {
+        let selected = regions.filter { code.isEmpty || $0.code == code }
+        guard !code.isEmpty || selected.reduce(0, { $0 + $1.sourceCount }) <= 20_000 else { throw PlannerFailure.message("큰 자료는 법정동을 선택해 나누어 내보내세요.") }
+        return try selected.map { try originalRegion($0.code) }
+    }
     nonisolated static func decode(_ data: Data) throws -> HousingRegion {
         guard data.count <= 50_000_000 else { throw DeviceShareError.invalid }
         let region = try JSONDecoder().decode(HousingRegion.self, from: data); try region.validate(); return region
@@ -41,7 +72,8 @@ final class HousingStore: ObservableObject {
         if let existing, existing.generation > region.generation { return }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try DeviceShareCodec.encode(region).write(to: directory.appendingPathComponent("region-" + region.code + ".json"), options: .atomic)
-        regions.removeAll { $0.code == region.code }; regions.append(region); publish()
+        try index?.replace(region)
+        regions.removeAll { $0.code == region.code }; regions.append(HousingRegionSummary(region)); publish()
         if share { ready.insert(region.code); try DeviceShareHooks.changed() } else { ready.remove(region.code) }
     }
     func shareRegion(_ code: String) throws { ready.insert(code); try DeviceShareHooks.changed() }
@@ -101,12 +133,13 @@ final class HousingStore: ObservableObject {
     // Different collectors never overwrite the same shared source file.
     func synchronizeSources(_ folder: URL) async throws {
         guard writable else { throw DeviceShareError.unavailable }
+        if syncFolderIdentity != folder.absoluteString { published.removeAll(); ready.formUnion(regions.map(\.code)); syncFolderIdentity = folder.absoluteString }
         let current = Dictionary(regions.map { ($0.code, $0.generation) }, uniquingKeysWith: max)
         let incoming = try await Task.detached(priority: .utility) { try HousingFolderIO.read(folder, current: current) }.value
         for region in incoming { try importRegion(region, share: false) }
-        let outgoing = try regions.compactMap { region -> (String, Data)? in
-            guard ready.contains(region.code) else { return nil }
-            let data = try DeviceShareCodec.encode(region); let key = region.code + "-" + String(Int(region.generation)) + "-" + DeviceShareCodec.digest(data).prefix(12)
+        let outgoing = try regions.compactMap { summary -> (String, Data)? in
+            guard ready.contains(summary.code) else { return nil }
+            let data = try DeviceShareCodec.encode(originalRegion(summary.code)); let key = summary.code + "-" + String(Int(summary.generation)) + "-" + DeviceShareCodec.digest(data).prefix(12)
             return published.contains(key) ? nil : (key, data)
         }
         try await Task.detached(priority: .utility) { try HousingFolderIO.write(outgoing, folder: folder) }.value

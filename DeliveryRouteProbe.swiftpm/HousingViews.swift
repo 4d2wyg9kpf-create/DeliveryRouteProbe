@@ -40,7 +40,7 @@ struct HousingCatalogView: View {
                 Picker("시군구", selection: $district) { Text("선택").tag(""); ForEach(districts) { Text($0.name).tag($0.code) } }.disabled(store.isBusy)
                 Picker("법정동 · 리", selection: $dong) { Text("전체 보관 자료").tag(""); ForEach(dongs) { Text($0.name).tag($0.code) } }.disabled(store.isBusy)
                 Text("보관 지역 \(store.regions.count)곳 · 원본 \(store.regions.reduce(0) { $0 + $1.sourceCount })건 · 표시 \(filtered.count)건").font(.caption)
-                Text("전국 수집 완료 여부는 보관 지역별로 확인하세요. 미수집 지역과 상세 미수집 항목은 빈칸으로 표시합니다.").font(.caption).foregroundStyle(.secondary)
+                Text("전국 수집 완료 여부는 보관 지역별로 확인하세요. 검색 결과는 최대 2,000건을 읽습니다. 미수집 지역과 상세 미수집 항목은 빈칸으로 표시합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("원본 수집 · 공유") {
                 Button("선택 법정동 목록 수집·새로고침") { collect(details: false) }.disabled(dong.isEmpty || store.isBusy)
@@ -51,9 +51,9 @@ struct HousingCatalogView: View {
                 NavigationLink("기기 간 공유 폴더 설정") { DeviceSharingSettingsView() }
                 Button("JSON 자료 가져오기") { importing = true }.disabled(store.isBusy)
                 Button("보관 자료·사용자 수정 JSON 내보내기") {
-                    do { document = DataTextDocument(String(decoding: try JSONEncoder().encode(HousingExport(regions: store.regions, edits: store.edits)), as: UTF8.self)); exporting = true } catch { self.error = error.localizedDescription }
+                    do { document = DataTextDocument(String(decoding: try JSONEncoder().encode(HousingExport(regions: try store.exportRegions(dong.isEmpty ? "" : regionCode), edits: store.edits)), as: UTF8.self)); exporting = true } catch { self.error = error.localizedDescription }
                 }
-                Button("평가용 CSV 내보내기") { document = DataTextDocument(housingCSV(store.complexes, regions: store.regions)); exporting = true }
+                Button("현재 검색 결과 CSV 내보내기") { document = DataTextDocument(housingCSV(store.complexes, regions: store.regions)); exporting = true }
                 if let error = error ?? store.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
             }
             if !store.regions.isEmpty {
@@ -81,6 +81,7 @@ struct HousingCatalogView: View {
             }
         }.navigationTitle("공동주택 목록").navigationBarTitleDisplayMode(.inline)
             .task { do { sidos = try await client.areas() } catch { self.error = error.localizedDescription; sidos = Array(Set(store.regions.map(\.sido))).sorted { $0.name < $1.name } } }
+            .task(id: regionCode + "|" + keyword) { await store.search(region: dong.isEmpty ? "" : regionCode, keyword: keyword) }
             .onChange(of: sido) { _, value in
                 district = ""; dong = ""; districts = []; dongs = []
                 guard !value.isEmpty else { return }
@@ -133,7 +134,7 @@ struct HousingCatalogView: View {
     private func collectRegion(_ s: HousingArea, _ g: HousingArea, _ d: HousingArea, details: Bool, refresh: Bool) async throws {
         let code = s.code + g.code + d.code
         var region: HousingRegion
-        if !refresh, let existing = store.regions.first(where: { $0.code == code }) { region = existing }
+        if !refresh, store.regions.contains(where: { $0.code == code }) { region = try store.originalRegion(code) }
         else { store.progress = "\(s.name) \(g.name) \(d.name) 목록 수집"; region = try await client.list(sido: s, sigungu: g, dong: d); try store.importRegion(region) }
         guard details else { return }
         defer { try? store.shareRegion(code) }
@@ -216,7 +217,7 @@ struct HousingComplexView: View {
             }
     }
 }
-func housingCSV(_ complexes: [HousingComplex], regions: [HousingRegion]) -> String {
+func housingCSV(_ complexes: [HousingComplex], regions: [HousingRegionSummary]) -> String {
     func quote(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
     let headings = ["고유ID", "원본ID", "법정동코드", "시도", "시군구", "법정동"] + HousingField.allCases.map(\.title) + ["위도", "경도"]
     let areas = Dictionary(regions.map { ($0.code, $0) }, uniquingKeysWith: { _, new in new })

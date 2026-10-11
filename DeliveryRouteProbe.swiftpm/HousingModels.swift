@@ -62,7 +62,10 @@ struct HousingComplex: Identifiable {
 }
 enum HousingCatalog {
     static func effective(regions: [HousingRegion], edits: [HousingEdit]) -> [HousingComplex] {
-        let sources = Dictionary(regions.flatMap(\.records).map { ($0.id, $0) }, uniquingKeysWith: { _, newer in newer })
+        effective(sources: regions.flatMap(\.records), edits: edits)
+    }
+    static func effective(sources incoming: [HousingSource], edits: [HousingEdit]) -> [HousingComplex] {
+        let sources = Dictionary(incoming.map { ($0.id, $0) }, uniquingKeysWith: { _, newer in newer })
         let overrides = Dictionary(edits.map { ($0.id, $0) }, uniquingKeysWith: { _, newer in newer })
         let ids = Set(sources.keys).union(overrides.keys)
         return ids.compactMap { id in

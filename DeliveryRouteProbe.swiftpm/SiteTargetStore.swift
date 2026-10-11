@@ -97,7 +97,7 @@ final class SiteTargetStore: ObservableObject {
             next[existing].coordinate = coordinate
         } else {
             guard next.count < 5_000 else { throw DeviceShareError.invalid }
-            next.append(SiteTarget(id: id, name: name, address: address, coordinate: coordinate, capture: nil, folders: [], addedAt: Date(), housingID: housingID))
+            next.append(SiteTarget(id: id, name: name, address: address, coordinate: coordinate, capture: nil, housingID: housingID, folders: [], addedAt: Date()))
         }
         try commit(next); return id
     }
@@ -117,7 +117,10 @@ final class SiteTargetStore: ObservableObject {
             guard let data = entry.value else { continue }
             let record = try DeviceShareCodec.decode(SiteTarget.self, data)
             guard key == "site/" + record.id, Self.valid(record.coordinate), record.coordinateOverride.map(Self.valid) ?? true else { throw DeviceShareError.invalid }
-            if let capture = record.capture { _ = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self) }
+            if let capture = record.capture {
+                let verified = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self)
+                guard verified.coordinate?.longitude == record.coordinate.longitude, verified.coordinate?.latitude == record.coordinate.latitude else { throw DeviceShareError.invalid }
+            }
             next.append(record)
         }
         next.sort { $0.addedAt < $1.addedAt }

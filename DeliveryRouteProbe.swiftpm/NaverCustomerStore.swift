@@ -55,6 +55,7 @@ final class NaverCustomerStore: ObservableObject {
                 let archive = try JSONDecoder().decode(NaverCustomerArchive.self, from: data)
                 guard archive.version == 1, Set(archive.records.map(\.id)).count == archive.records.count else { throw PlannerFailure.message("거래처 파일 형식을 확인해 주세요.") }
                 for record in archive.records {
+                    guard record.coordinateOverride.map(Self.validCoordinate) ?? true else { throw DeviceShareError.invalid }
                     if let capture = record.capture { _ = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self) }
                 }
                 records = archive.records
@@ -93,6 +94,7 @@ final class NaverCustomerStore: ObservableObject {
         try commit(next)
         return existing == nil
     }
+    static func validCoordinate(_ c: TMapCoordinate) -> Bool { c.longitude.isFinite && c.latitude.isFinite && (124...132).contains(c.longitude) && (32...40).contains(c.latitude) }
     func setCoordinate(_ id: String, coordinate: TMapCoordinate?) throws {
         guard coordinate.map({ $0.longitude.isFinite && $0.latitude.isFinite && (124...132).contains($0.longitude) && (32...40).contains($0.latitude) }) ?? true,
               let index = records.firstIndex(where: { $0.id == id }) else { throw DeviceShareError.invalid }
@@ -186,6 +188,7 @@ extension NaverCustomerStore {
             var record = try DeviceShareCodec.decode(NaverCustomerRecord.self, data)
             guard Self.sharingKey(record) == key, !record.id.isEmpty, record.id.utf8.count <= 2_000,
                   record.name.utf8.count <= 2_000, record.folders.count <= 500 else { throw DeviceShareError.invalid }
+            guard record.coordinateOverride.map(Self.validCoordinate) ?? true else { throw DeviceShareError.invalid }
             if let capture = record.capture { _ = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self) }
             if let previous = local[key] { record.id = previous.id; record.template.id = previous.template.id }
             next.append(record)

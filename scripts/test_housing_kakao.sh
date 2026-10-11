@@ -9,6 +9,8 @@ swiftc -parse-as-library \
   DeliveryRouteProbe.swiftpm/KakaoRouteModels.swift \
   DeliveryRouteProbe.swiftpm/KakaoRouteStore.swift \
   DeliveryRouteProbe.swiftpm/HousingModels.swift \
+  DeliveryRouteProbe.swiftpm/HousingSeed.swift \
+  DeliveryRouteProbe.swiftpm/HousingIndex.swift \
   DeliveryRouteProbe.swiftpm/HousingStore.swift \
   DeliveryRouteProbe.swiftpm/RealtyHousingClient.swift \
   scripts/test_housing_kakao.swift \
