@@ -301,6 +301,67 @@ private func bytes(_ value: [String: Any]) throws -> Data { try JSONSerializatio
             let live = try APIProtectedStateFile(.tmap)
             try require(live.url.path.contains("Application Support/DeliveryRouteSecureState/tmap.state") && !live.url.path.contains("/Documents/"), "credential location exposed")
         }
+        await test("Shared NAVER daily/monthly usage totals do not echo when imported or requested again") {
+            let fa = try Fixture(), fb = try Fixture(), sa = fa.naver(fa.archive()), sb = fb.naver(fb.archive())
+            _ = try await sa.search("가상 거래처"); _ = try await sb.search("가상 거래처")
+            var a = DeviceShareReplica(deviceID: UUID().uuidString), b = DeviceShareReplica(deviceID: UUID().uuidString)
+            var oa: [String: Data] = [:], ob: [String: Data] = [:]
+            try a.capture(sa.sharingSnapshot(), observed: &oa); try b.capture(sb.sharingSnapshot(), observed: &ob)
+            try a.merge(b); try sa.applySharing(a); try sb.applySharing(a)
+            try require(sa.quotas["search"]?.used == 2 && sb.quotas["searchMonth"]?.used == 2, "import lost a daily/monthly request")
+            b = a; b.deviceID = UUID().uuidString; ob = try sb.sharingSnapshot().values
+            DeviceShareHooks.didChange = { reservations in try b.capture(sb.sharingSnapshot(), observed: &ob, reservations: reservations) }
+            defer { DeviceShareHooks.didChange = nil }
+            _ = try await sb.search("가상 거래처")
+            try sa.applySharing(b)
+            try require(sa.quotas["search"]?.used == 3 && sa.quotas["searchMonth"]?.used == 3, "import counted as another request")
+        }
+        await test("Shared TMAP 10-stop bucket sums device calls and retains receiver vehicle settings") {
+            let fa = try Fixture(.tmap), fb = try Fixture(.tmap)
+            var input = try json(fb.primary!); var options = input["options"] as! [String: Any]; options["truckHeight"] = 350; input["options"] = options; fb.primary = try bytes(input)
+            let sa = fa.tmap(fa.archive()), sb = fb.tmap(fb.archive())
+            sa.optimize(plan: DeliveryPlan()); try await waitForTMap(sa)
+            sb.optimize(plan: DeliveryPlan()); try await waitForTMap(sb)
+            var a = DeviceShareReplica(deviceID: UUID().uuidString), b = DeviceShareReplica(deviceID: UUID().uuidString)
+            var oa: [String: Data] = [:], ob: [String: Data] = [:]
+            try a.capture(sa.sharingSnapshot(), observed: &oa); try b.capture(sb.sharingSnapshot(), observed: &ob); try a.merge(b)
+            try sb.applySharing(a)
+            try require(sb.quotas.first { $0.id == 10 }?.used == 2 && sb.quotas.first { $0.id == 10 }?.remaining == 48, "10-stop count incorrectly clamped")
+            try require(sb.options.truckHeight == 350, "vehicle settings copied from another device")
+        }
+        await test("Shared credential bundles restore a blank native NAVER store with quota gates intact") {
+            let fa = try Fixture(), sa = fa.naver(fa.archive()); _ = try await sa.search("가상 거래처")
+            var replica = DeviceShareReplica(deviceID: UUID().uuidString), observed: [String: Data] = [:]
+            try replica.capture(sa.sharingSnapshot(), observed: &observed)
+            var stored: Data?
+            let blank = NaverAPIStore(read: { nil }, write: { stored = $0 }, transport: { try await fa.respond($0) })
+            try blank.applySharing(replica)
+            try require(blank.hasMapsKeys && blank.hasSearchKeys && blank.searchProvider == .hub && blank.searchFreeConfirmed && blank.quotas["search"]?.used == 1 && stored != nil, "shared key or count missing")
+        }
+        await test("Shared key deletion persists without removing historical usage or permitting dispatch") {
+            let fa = try Fixture(), sa = fa.naver(fa.archive())
+            var replica = DeviceShareReplica(deviceID: UUID().uuidString), observed: [String: Data] = [:]
+            try replica.capture(sa.sharingSnapshot(), observed: &observed)
+            var removed = try sa.sharingSnapshot(); removed.values.removeAll()
+            try replica.capture(removed, observed: &observed); try sa.applySharing(replica)
+            do { _ = try await sa.search("가상 거래처") } catch { }
+            let restored = fa.naver(fa.archive())
+            try require(!sa.hasSearchKeys && !sa.hasMapsKeys && !restored.hasSearchKeys && !restored.hasMapsKeys && fa.charged == 0, "deleted NAVER credentials retained or dispatched")
+            let ft = try Fixture(.tmap), st = ft.tmap(ft.archive())
+            replica = DeviceShareReplica(deviceID: UUID().uuidString); observed = [:]
+            try replica.capture(st.sharingSnapshot(), observed: &observed)
+            removed = try st.sharingSnapshot(); removed.values.removeAll()
+            try replica.capture(removed, observed: &observed); try st.applySharing(replica)
+            st.optimize(plan: DeliveryPlan())
+            try require(!st.hasAppKey && st.quotas.isEmpty && !ft.tmap(ft.archive()).hasAppKey && ft.charged == 0, "deleted TMAP credential retained or dispatched")
+        }
+        await test("Shared checkpoint failure blocks charged requests after a durable local reservation") {
+            let fa = try Fixture(), sa = fa.naver(fa.archive())
+            DeviceShareHooks.didChange = { reservations in if !reservations.isEmpty { throw DeviceShareError.unavailable } }
+            defer { DeviceShareHooks.didChange = nil }
+            do { _ = try await sa.search("가상 거래처") } catch { }
+            try require(fa.charged == 0 && (try fa.used()) == 1, "unsaved shared request dispatched or local count lost")
+        }
         let result: [String: Any] = ["passed": checks.filter { $0["passed"] as? Bool == true }.count, "total": checks.count,
             "checks": checks, "native_stores_tested": true, "live_api_calls": false, "physical_device_update_tested": false]
         print(String(data: try! JSONSerialization.data(withJSONObject: result, options: [.sortedKeys, .prettyPrinted]), encoding: .utf8)!)

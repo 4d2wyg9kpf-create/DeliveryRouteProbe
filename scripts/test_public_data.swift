@@ -455,6 +455,40 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
             do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("corruption bypass") } catch {}
             try require(f.gets == 0 && store.errorMessage != nil, "no data dispatch")
         }
+        try await asyncCheck("shared public API keys, approvals and used totals import without duplicate requests") {
+            let fa = Fixture(), fb = Fixture(), sa = fa.store(), sb = fb.store(); try fa.ready(sa); try fb.ready(sb)
+            _ = try await sa.nearby(center: center, radius: 500); _ = try await sb.nearby(center: center, radius: 500)
+            var a = DeviceShareReplica(deviceID: UUID().uuidString), b = DeviceShareReplica(deviceID: UUID().uuidString)
+            var oa: [String: Data] = [:], ob: [String: Data] = [:]
+            try a.capture(sa.sharingSnapshot(), observed: &oa); try b.capture(sb.sharingSnapshot(), observed: &ob); try a.merge(b)
+            let original = fa.gets + fb.gets
+            try sa.applySharing(a); try sb.applySharing(a)
+            try require(sa.quotas.first { $0.id == .stores }?.used == original && sb.quotas.first { $0.id == .stores }?.used == original, "public usage not summed")
+            try require(sa.hasKey && sb.approved.contains("stores") && fa.gets + fb.gets == original, "import consumed quota or lost keys")
+        }
+        try await asyncCheck("shared public key deletion revokes approvals and blocks requests after restart") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            var replica = DeviceShareReplica(deviceID: UUID().uuidString), observed: [String: Data] = [:]
+            try replica.capture(store.sharingSnapshot(), observed: &observed)
+            var removed = try store.sharingSnapshot(); removed.values.removeAll()
+            try replica.capture(removed, observed: &observed); try store.applySharing(replica)
+            do { _ = try await store.nearby(center: center, radius: 500); throw CheckFailure.failed("deleted key dispatched") } catch is PublicDataFailure {}
+            let restored = f.store()
+            try require(!store.hasKey && store.approved.isEmpty && !restored.hasKey && restored.approved.isEmpty && f.gets == 0, "public credential deletion not durable")
+        }
+        try check("excluded buildings merge by normalized address and remotely deleted addresses stay deleted") {
+            var da: Data?, db: Data?
+            let ea = LicenseExclusionStore(read: { nil }, write: { da = $0 }), eb = LicenseExclusionStore(read: { nil }, write: { db = $0 })
+            try ea.add("대전 중구 유천로 35 2층"); try eb.add("대전광역시 중구 유천로 35 (유천동)"); try eb.add("대전광역시 서구 둔산로 1")
+            var a = DeviceShareReplica(deviceID: UUID().uuidString), b = DeviceShareReplica(deviceID: UUID().uuidString)
+            var oa: [String: Data] = [:], ob: [String: Data] = [:]
+            try a.capture(ea.sharingSnapshot(), observed: &oa); try b.capture(eb.sharingSnapshot(), observed: &ob); try a.merge(b)
+            try ea.applySharing(a); try eb.applySharing(a)
+            try require(ea.records.count == 2 && eb.records.count == 2 && da != nil && db != nil, "address merge duplicated or lost a building")
+            oa = try ea.sharingSnapshot().values
+            try ea.remove(ea.records.first { $0.address.contains("유천로") }!.id); try a.capture(ea.sharingSnapshot(), observed: &oa); try eb.applySharing(a)
+            try require(eb.records.count == 1 && eb.records[0].address.contains("둔산로"), "deleted exclusion resurrected")
+        }
         print("Public data native checks: \(passed)/\(passed) passed")
     }
 }

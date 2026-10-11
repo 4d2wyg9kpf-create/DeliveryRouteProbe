@@ -36,7 +36,10 @@ struct NaverSavedListReport {
 
 @MainActor
 final class NaverCustomerStore: ObservableObject {
+    static let shared = NaverCustomerStore()
     @Published private(set) var records: [NaverCustomerRecord] = []
+    private(set) var needsPlanMigration = true
+    private var sharedDeletionKeys: Set<String> = []
     @Published var errorMessage: String?
     private var writable = true
     private let directory: URL?
@@ -53,6 +56,7 @@ final class NaverCustomerStore: ObservableObject {
                     if let capture = record.capture { _ = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self) }
                 }
                 records = archive.records
+                needsPlanMigration = false
             }
         } catch { writable = false; errorMessage = "저장한 거래처를 읽지 못했습니다. 기존 파일은 보존했습니다. \(error.localizedDescription)" }
     }
@@ -105,6 +109,8 @@ final class NaverCustomerStore: ObservableObject {
             remembered.append(origin)
         }
         for visit in remembered {
+            let candidate = NaverCustomerRecord(id: "", name: visit.name, capture: visit.naverPlace, template: visit, folders: [])
+            if sharedDeletionKeys.contains(Self.sharingKey(candidate)) { continue }
             let sharedAddress = visit.naverPlace?.kind == "address" && visit.naverPlace?.sharedLinkURL != nil
             let key = sharedAddress ? next.first(where: { $0.template.id == visit.id })?.id ?? "shared:" + visit.id : visit.naverPlace?.selectionKey ?? "manual:" + visit.id
             if next.contains(where: { $0.id == key }) { next.removeAll { $0.id != key && $0.template.id == visit.id } }
@@ -142,5 +148,43 @@ final class NaverCustomerStore: ObservableObject {
         let data = try JSONEncoder().encode(NaverCustomerArchive(records: next))
         try data.write(to: Self.fileURL(directory), options: .atomic)
         records = next; errorMessage = nil
+        needsPlanMigration = false
+        try DeviceShareHooks.changed()
+    }
+}
+
+extension NaverCustomerStore {
+    static func sharingKey(_ record: NaverCustomerRecord) -> String {
+        if let capture = record.capture {
+            if !capture.placeID.isEmpty { return "customer/place/" + capture.placeID }
+            if capture.isSharedAddress { return "customer/address/" + DeviceShareCodec.key(DeviceShareCodec.addressIdentity(capture.preferredAddress)) }
+            if capture.kind == "address" { return "customer/named-address/" + DeviceShareCodec.key(capture.name.replacingOccurrences(of: " ", with: "") + "|" + DeviceShareCodec.addressIdentity(capture.preferredAddress)) }
+            return "customer/selection/" + DeviceShareCodec.key(capture.selectionKey)
+        }
+        return "customer/manual/" + record.template.id
+    }
+    func sharingSnapshot() throws -> DeviceShareSnapshot {
+        guard writable else { throw DeviceShareError.unavailable }
+        var result = DeviceShareSnapshot()
+        for record in records { result.values[Self.sharingKey(record)] = try DeviceShareCodec.encode(record) }
+        return result
+    }
+    func applySharing(_ replica: DeviceShareReplica) throws {
+        guard writable else { throw DeviceShareError.unavailable }
+        let local = Dictionary(records.map { (Self.sharingKey($0), $0) }, uniquingKeysWith: { first, _ in first })
+        var next: [NaverCustomerRecord] = []
+        var deletions: Set<String> = []
+        for (key, entry) in replica.records.sorted(by: { $0.key < $1.key }) where key.hasPrefix("customer/") {
+            guard let data = entry.value else { deletions.insert(key); continue }
+            var record = try DeviceShareCodec.decode(NaverCustomerRecord.self, data)
+            guard Self.sharingKey(record) == key, !record.id.isEmpty, record.id.utf8.count <= 2_000,
+                  record.name.utf8.count <= 2_000, record.folders.count <= 500 else { throw DeviceShareError.invalid }
+            if let capture = record.capture { _ = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self) }
+            if let previous = local[key] { record.id = previous.id; record.template.id = previous.template.id }
+            next.append(record)
+        }
+        guard next.count <= 10_000, Set(next.map(\.id)).count == next.count else { throw DeviceShareError.invalid }
+        if try DeviceShareCodec.encode(next) != DeviceShareCodec.encode(records) { try commit(next) }
+        sharedDeletionKeys = deletions
     }
 }

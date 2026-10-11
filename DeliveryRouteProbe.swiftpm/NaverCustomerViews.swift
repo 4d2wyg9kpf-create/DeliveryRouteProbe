@@ -99,7 +99,7 @@ struct NaverCustomerCatalogView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { dismiss() } } }
             .onAppear {
-                do { try customers.remember(planner.plan) } catch { self.error = error.localizedDescription }
+                do { if customers.needsPlanMigration { try customers.remember(planner.plan) } } catch { self.error = error.localizedDescription }
                 selectedIDs = Set(customers.records.filter { record in
                     planner.plan.visits.contains { $0.id == record.template.id || (record.capture?.matchesSelection($0.naverPlace) == true) }
                 }.map(\.id))

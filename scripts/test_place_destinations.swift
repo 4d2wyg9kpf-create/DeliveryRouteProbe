@@ -132,6 +132,21 @@ private func sharedPoint(_ longitude: Double, url: String) throws -> NaverPlaceC
                 catch { try require(pinCustomers.records.count == 1 && pinSites.records.count == 1, "missing point modified a list") }
             }
         }
+        try check("shared customer catalog retains selected point and deletion across stale plans") {
+            let ca = NaverCustomerStore(directory: folder.appendingPathComponent("sync-a")), cb = NaverCustomerStore(directory: folder.appendingPathComponent("sync-b"))
+            _ = try ca.save(pinA); _ = try cb.save(pinB)
+            let originalID = ca.records[0].id
+            var a = DeviceShareReplica(deviceID: "00000000-0000-0000-0000-000000000001"), b = DeviceShareReplica(deviceID: "00000000-0000-0000-0000-000000000002")
+            var oa: [String: Data] = [:], ob: [String: Data] = [:]
+            try a.capture(ca.sharingSnapshot(), observed: &oa); try b.capture(cb.sharingSnapshot(), observed: &ob); try a.merge(b)
+            try ca.applySharing(a); try cb.applySharing(a)
+            try require(ca.records.count == 1 && cb.records.count == 1 && ca.records[0].id == originalID && ca.records[0].capture?.coordinate?.longitude == 127.4000002 && ca.records[0].capture?.sharedLinkURL == pinB.sharedLinkURL, "shared pin or identity changed")
+            var stale = DeliveryPlan(); stale.visits = ca.records.map(\.template)
+            oa = try ca.sharingSnapshot().values
+            try ca.remove(ca.records[0].id); try a.capture(ca.sharingSnapshot(), observed: &oa)
+            try cb.applySharing(a); try cb.remember(stale)
+            try require(cb.records.isEmpty, "stale delivery plan resurrected a remotely deleted customer")
+        }
         print("Place destination native checks: \(passed)/\(passed) passed")
     }
 }

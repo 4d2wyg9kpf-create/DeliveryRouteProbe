@@ -266,7 +266,7 @@ struct PublicDataSettingsView: View {
                         Toggle("이 서비스의 활용승인·무료 제공 확인", isOn: Binding(get: { approved.contains(service.rawValue) }, set: { if $0 { approved.insert(service.rawValue) } else { approved.remove(service.rawValue) } }))
                         NumberRow(title: "포털에 승인된 일일 한도", value: Binding(get: { limits[service.rawValue] ?? 10_000 }, set: { limits[service.rawValue] = $0 }))
                         if let quota = store.quotas.first(where: { $0.id == service }) {
-                            Text("이 기기 기록 \(quota.used.formatted())회 · 잔여 \(quota.remaining.formatted())회").font(.caption)
+                            Text("사용 기록 \(quota.used.formatted())회 · 잔여 \(quota.remaining.formatted())회").font(.caption)
                             if let reset = quota.resetAt { Text("앱 초기화 대기 종료 \(publicTimestamp(reset))").font(.caption2) }
                             if quota.blocked { Text("한도 소진·서버 차단·초기화 대기").font(.caption).foregroundStyle(.orange) }
                         }
@@ -274,9 +274,10 @@ struct PublicDataSettingsView: View {
                 }
                 Section {
                     Button("잔여량 기준 시각 새로 확인") { Task { await store.refreshClock() } }.disabled(store.isBusy)
-                    Text("공식 개발계정 기본 한도는 서비스별 10,000회입니다. 한 번의 조회가 여러 페이지·지역을 요청할 수 있습니다. 실패·중단도 기록하고 한도 소진 시 차단합니다. 일 초기화는 한국시간 0시, 앱 재개는 5분 뒤를 기준으로 하며 서버가 계속 제한하면 다시 차단합니다. 다른 기기의 사용량은 자동 동기화되지 않습니다.").font(.caption).foregroundStyle(.secondary)
+                    Text("공식 개발계정 기본 한도는 서비스별 10,000회입니다. 한 번의 조회가 여러 페이지·지역을 요청할 수 있습니다. 실패·중단도 기록하고 한도 소진 시 차단합니다. 일 초기화는 한국시간 0시, 앱 재개는 5분 뒤를 기준으로 하며 서버가 계속 제한하면 다시 차단합니다. ‘기기 간 공유’에서 같은 폴더를 연결하면 다른 기기의 사용량도 합산합니다.").font(.caption).foregroundStyle(.secondary)
                     if let error = store.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
                 }
+                Section { DeviceSharingSettingsLink() }
             }.navigationTitle("공공데이터 API 설정").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("닫기") { inputs.finishEditing(); dismiss() }.disabled(store.isBusy) }

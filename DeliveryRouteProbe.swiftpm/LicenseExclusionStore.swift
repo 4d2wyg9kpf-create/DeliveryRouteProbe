@@ -108,5 +108,32 @@ final class LicenseExclusionStore: ObservableObject {
         _ = try Self.decode(data)
         try writeState(data)
         records = next; errorMessage = nil
+        try DeviceShareHooks.changed()
+    }
+}
+
+extension LicenseExclusionStore {
+    func sharingSnapshot() throws -> DeviceShareSnapshot {
+        guard writable else { throw DeviceShareError.unavailable }
+        var result = DeviceShareSnapshot()
+        for record in records {
+            guard let key = PublicRoadAddress.buildingKey(record.address) else { throw DeviceShareError.invalid }
+            result.values["excluded/" + DeviceShareCodec.key(key)] = try DeviceShareCodec.encode(record)
+        }
+        return result
+    }
+    func applySharing(_ replica: DeviceShareReplica) throws {
+        guard writable else { throw DeviceShareError.unavailable }
+        let previous = Dictionary(records.map { ($0.address, $0.id) }, uniquingKeysWith: { first, _ in first })
+        var next: [LicenseExcludedAddress] = []
+        for (key, entry) in replica.records.sorted(by: { $0.key < $1.key }) where key.hasPrefix("excluded/") {
+            guard let data = entry.value else { continue }
+            var record = try DeviceShareCodec.decode(LicenseExcludedAddress.self, data)
+            guard let identity = PublicRoadAddress.buildingKey(record.address), key == "excluded/" + DeviceShareCodec.key(identity) else { throw DeviceShareError.invalid }
+            if let id = previous[record.address] { record.id = id }
+            next.append(record)
+        }
+        _ = try Self.decode(DeviceShareCodec.encode(LicenseExclusionArchive(records: next)))
+        if try DeviceShareCodec.encode(next) != DeviceShareCodec.encode(records) { try commit(next) }
     }
 }

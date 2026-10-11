@@ -159,7 +159,7 @@ struct TMapScreen: View {
         return String(chars[4...5]) + "/" + String(chars[6...7]) + " " + String(chars[8...9]) + ":" + String(chars[10...11])
     }
     private var quotaSection: some View {
-        Section("무료 잔여량 · 이 기기 호출 기준") {
+        Section("무료 잔여량 · 사용 기록 기준") {
             if store.quotas.isEmpty { Text("앱키를 등록하고 기준 시각을 확인하면 표시됩니다.").font(.caption) }
             ForEach(store.quotas) { quota in
                 VStack(alignment: .leading, spacing: 5) {
@@ -178,7 +178,7 @@ struct TMapScreen: View {
             }
             Button(store.isRefreshing ? "기준 시각 확인 중…" : "잔여량·기준 시각 새로 확인") { Task { await store.refreshClock() } }
                 .disabled(store.isRefreshing || store.isOptimizing)
-            Text("실패·중단한 요청도 포함합니다. 같은 키를 다른 기기나 테스트에서 사용했다면 총 사용 횟수를 반영해 주세요. 실제 서버 잔여량을 직접 조회하는 기능은 없습니다.").font(.caption)
+            Text("실패·중단한 요청도 포함합니다. 같은 공유 폴더를 연결한 기기의 호출 횟수는 합산합니다. 연결하지 않은 기기·다른 앱의 사용량은 직접 반영해 주세요. 실제 서버 잔여량을 직접 조회하는 기능은 없습니다.").font(.caption)
             Text("앱의 일 한도는 한국시간 자정을 기준으로 계산하고, 5분 뒤 재개합니다. 티맵 서버가 계속 제한하면 다시 차단합니다. 초기화 시각은 공식 확인 전의 앱 설정 기준입니다.").font(.caption).foregroundColor(.secondary)
         }
     }
@@ -393,6 +393,7 @@ private struct TMapSettingsView: View {
                     }
                 }
                 if let error = store.errorMessage { Text(error).foregroundColor(.red).font(.caption) }
+                Section { DeviceSharingSettingsLink() }
             }
             .navigationTitle("티맵 설정")
             .toolbar {

@@ -177,10 +177,11 @@ final class PublicDataStore: ObservableObject {
             })
         }
     }
-    private func commit(_ next: PublicSecureState) throws {
+    private func commit(_ next: PublicSecureState, reservations: [String] = []) throws {
         guard !blockedRecovery else { throw PublicDataFailure.message("보관함 오류를 해결한 뒤 다시 시도하세요.") }
         let data = try JSONEncoder().encode(next); try Self.validateSavedState(data); try writeState(data)
         state = next; publish()
+        try DeviceShareHooks.changed(reservations: reservations)
     }
     private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
         if let transport { return try await transport(request) }
@@ -245,10 +246,11 @@ final class PublicDataStore: ObservableObject {
         entry.used += 1
         var next = state; next.accounts[accountKey(service)] = entry
         // Persist the request count before any billable request leaves.
-        try commit(next)
+        try commit(next, reservations: ["public|\(accountKey(service))|\(entry.period)|\(service.rawValue)"])
     }
     private func page(_ service: PublicDataService, parameters: [String: String], page: Int) async throws -> PublicDataPage {
         try Task.checkCancellation()
+        try await DeviceShareHooks.prepareRequest()
         var url = URLComponents(); url.scheme = "https"; url.host = "apis.data.go.kr"; url.path = service.path
         var parameters = parameters
         parameters[service == .stores ? "ServiceKey" : "serviceKey"] = state.serviceKey
@@ -303,6 +305,7 @@ final class PublicDataStore: ObservableObject {
         return PublicFetchedRows(rows: rows, total: total ?? rows.count, month: month, complete: false, issues: ["10,000건 조회 범위에 도달했습니다. 반경·기간을 줄여 다시 조회하세요."])
     }
     func nearby(center: TMapCoordinate, radius: Int) async throws -> PublicNearbyResult {
+        try await DeviceShareHooks.prepareRequest()
         guard !isBusy else { throw PublicDataFailure.message("다른 공공데이터 조회가 진행 중입니다.") }
         guard !blockedRecovery else { throw PublicDataFailure.message(errorMessage ?? "공공데이터 보관함 오류로 조회를 차단했습니다.") }
         guard radius >= 1, radius <= 2_000, center.latitude.isFinite, center.longitude.isFinite,
@@ -320,6 +323,7 @@ final class PublicDataStore: ObservableObject {
             radius: radius, sourceTotal: rows.total, skipped: skipped, complete: rows.complete, issues: rows.issues)
     }
     func newDaejeonLicenses(from: String, through: String, services: [PublicDataService]) async throws -> PublicSalesResult {
+        try await DeviceShareHooks.prepareRequest()
         guard !isBusy else { throw PublicDataFailure.message("다른 공공데이터 조회가 진행 중입니다.") }
         guard !blockedRecovery else { throw PublicDataFailure.message(errorMessage ?? "공공데이터 보관함 오류로 조회를 차단했습니다.") }
         guard PublicDataParser.date(from) == from, PublicDataParser.date(through) == through, from <= through,
@@ -353,5 +357,44 @@ final class PublicDataStore: ObservableObject {
         }
         return PublicSalesResult(records: result.values.sorted { $0.permissionDate == $1.permissionDate ? $0.name < $1.name : $0.permissionDate > $1.permissionDate },
             fetchedAt: now!, from: from, through: through, complete: complete, issues: issues, services: services)
+    }
+}
+
+extension PublicDataStore {
+    func sharingSnapshot() throws -> DeviceShareSnapshot {
+        guard !blockedRecovery else { throw APICredentialStorageError.unavailable }
+        var result = DeviceShareSnapshot()
+        if !state.serviceKey.isEmpty { result.values["setting/public-data"] = try DeviceShareCodec.encode(DeviceSharePublicSettings(key: state.serviceKey, approved: state.approved.sorted(), limits: state.limits)) }
+        for (key, account) in state.accounts {
+            guard let slot = key.split(separator: ":").first.map(String.init), let service = PublicDataService(rawValue: slot) else { throw DeviceShareError.invalid }
+            result.usage.append(DeviceShareUsageObservation(domain: "public", account: key, period: account.period, slot: slot,
+                used: account.used, limit: limit(service), blocked: account.blocked, trustedMillis: state.lastTrustedMillis))
+        }
+        return result
+    }
+    func applySharing(_ replica: DeviceShareReplica) throws {
+        var next = state
+        if !isBusy {
+            if let value = try replica.value("setting/public-data", as: DeviceSharePublicSettings.self) {
+                try DeviceShareCodec.validateKey(value.key, max: 2_000)
+                guard value.key.range(of: #"^[A-Za-z0-9+/=_-]+$"#, options: .regularExpression) != nil else { throw DeviceShareError.invalid }
+                next.serviceKey = value.key; next.approved = Set(value.approved); next.limits = value.limits
+            } else if let record = replica.records["setting/public-data"], record.value == nil {
+                next.serviceKey = ""; next.approved = []
+            }
+        }
+        for bucket in replica.usages("public") {
+            let item = bucket.observation
+            guard let service = PublicDataService(rawValue: item.slot), item.account.hasPrefix(service.rawValue + ":"),
+                  item.account.split(separator: ":").last.map({ String($0).range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil }) == true else { throw DeviceShareError.invalid }
+            let old = next.accounts[item.account]
+            if let old, old.period > item.period { continue }
+            let samePeriod = old?.period == item.period
+            next.accounts[item.account] = PublicQuotaAccount(period: item.period, used: min(10_000_000, max(samePeriod ? old!.used : 0, bucket.total)), blocked: item.blocked || (samePeriod && old!.blocked))
+            next.lastTrustedMillis = max(next.lastTrustedMillis, item.trustedMillis)
+        }
+        let data = try DeviceShareCodec.encode(next); try Self.validateSavedState(data)
+        if data != (try DeviceShareCodec.encode(state)) { try commit(next) }
+        publish()
     }
 }

@@ -185,10 +185,11 @@ final class NaverAPIStore: ObservableObject {
     private func host(_ provider: String) -> String {
         provider == "maps" ? "maps.apigw.ntruss.com" : state.searchProvider == .hub ? "naverapihub.apigw.ntruss.com" : "openapi.naver.com"
     }
-    private func commit(_ next: NaverSecureState) throws {
+    private func commit(_ next: NaverSecureState, reservations: [String] = []) throws {
         guard !recoveryBlocked else { throw PlannerFailure.message("보관함 오류를 해결하기 전에는 요청할 수 없습니다.") }
         try writeState(JSONEncoder().encode(next))
         state = next; publish()
+        try DeviceShareHooks.changed(reservations: reservations)
     }
     private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
         if let transport { return try await transport(request) }
@@ -208,7 +209,11 @@ final class NaverAPIStore: ObservableObject {
     }
     private func changeQuota(_ method: String, provider: String, now: Double, extra: [String: Any] = [:]) throws {
         guard provider == "search", state.searchProvider == .hub, ["reserve", "refresh", "raise"].contains(method) else {
-            try saveQuota(quotaChange(method, provider: provider, now: now, extra: extra)); return
+            let change = try quotaChange(method, provider: provider, now: now, extra: extra)
+            var next = state; next.ledger = change.ledger
+            let reserved = method == "reserve" ? ["naver|\(key(provider))|\(change.ledger.accounts[key(provider)]!.period)|\(provider)"] : []
+            try commit(next, reservations: reserved)
+            quotas[provider] = change.quota; return
         }
         let dailyBefore = try quotaChange("refresh", provider: "search", now: now)
         let daily = try quotaChange(method, provider: "search", now: now, extra: extra)
@@ -221,7 +226,9 @@ final class NaverAPIStore: ObservableObject {
             monthly = try quotaChange(method, provider: "searchMonth", now: now, ledger: daily.ledger)
         }
         // Both guards must pass; persist both counters in one write before dispatch.
-        var next = state; next.ledger = monthly.ledger; try commit(next)
+        var next = state; next.ledger = monthly.ledger
+        let reserved = method == "reserve" ? ["search", "searchMonth"].map { "naver|\(key($0))|\(monthly.ledger.accounts[key($0)]!.period)|\($0)" } : []
+        try commit(next, reservations: reserved)
         quotas["search"] = daily.quota; quotas["searchMonth"] = monthly.quota
     }
     @discardableResult
@@ -289,6 +296,7 @@ final class NaverAPIStore: ObservableObject {
     }
     private func fetch(_ provider: String, query: String) async throws -> [String: Any] {
         try Task.checkCancellation()
+        try await DeviceShareHooks.prepareRequest()
         guard !recoveryBlocked else { throw PlannerFailure.message(errorMessage ?? "사용량 보관함 오류로 요청을 차단했습니다.") }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.utf8.count <= 2000, !trimmed.unicodeScalars.contains(where: { $0.value < 32 }) else { throw PlannerFailure.message("검색어·주소를 확인해 주세요.") }
@@ -335,6 +343,7 @@ final class NaverAPIStore: ObservableObject {
         return body
     }
     func search(_ query: String) async throws -> [NaverAPIResult] {
+        try await DeviceShareHooks.prepareRequest()
         guard !isBusy else { throw PlannerFailure.message("진행 중인 네이버 요청이 끝난 뒤 다시 시도해 주세요.") }
         isBusy = true; defer { isBusy = false }
         let response = try await fetch("search", query: query)
@@ -345,6 +354,7 @@ final class NaverAPIStore: ObservableObject {
         return try await resolve(capture)
     }
     func resolve(_ capture: NaverPlaceCapture) async throws -> NaverPlaceCapture {
+        try await DeviceShareHooks.prepareRequest()
         _ = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self)
         guard !capture.isSharedAddress else { throw PlannerFailure.message("공유한 주소 지점은 선택 핀의 좌표를 읽어야 합니다. 건물 대표 좌표로 변환하지 않습니다.") }
         let cacheKey = SHA256.hash(data: try JSONEncoder().encode([capture.selectionKey, capture.name, capture.address, capture.roadAddress, capture.jibunAddress])).map { String(format: "%02x", $0) }.joined()
@@ -365,5 +375,59 @@ final class NaverAPIStore: ObservableObject {
         } else { throw PlannerFailure.message("네이버 API 설정에서 새 Maps의 Geocoding 키와 무료 대표 계정 여부를 등록해 주세요. 지도를 표시할 필요는 없습니다.") }
         if resolved.count > 200 { resolved.removeAll() }; resolved[cacheKey] = (value, ProcessInfo.processInfo.systemUptime)
         return value
+    }
+}
+
+extension NaverAPIStore {
+    func sharingSnapshot() throws -> DeviceShareSnapshot {
+        guard !recoveryBlocked else { throw APICredentialStorageError.unavailable }
+        var result = DeviceShareSnapshot()
+        if !state.searchID.isEmpty {
+            result.values["setting/naver-search"] = try DeviceShareCodec.encode(DeviceShareNaverSearch(id: state.searchID, secret: state.searchSecret, provider: state.searchProvider.rawValue, freeConfirmed: state.searchFreeConfirmed))
+        }
+        if !state.mapsID.isEmpty { result.values["setting/naver-maps"] = try DeviceShareCodec.encode(DeviceShareNaverMaps(id: state.mapsID, secret: state.mapsSecret, freeConfirmed: state.mapsFreeConfirmed)) }
+        for (key, account) in state.ledger.accounts {
+            let slot = key == "maps-free" ? "maps" : key.hasPrefix("hub-month:") ? "searchMonth" : "search"
+            let limit = slot == "maps" ? 3_000_000 : slot == "searchMonth" ? 775_000 : 25_000
+            result.usage.append(DeviceShareUsageObservation(domain: "naver", account: key, period: account.period, slot: slot, used: account.used,
+                limit: limit, blocked: account.blocked, trustedMillis: account.lastTrustedMs, resetMillis: account.resetMillis))
+        }
+        return result
+    }
+    func applySharing(_ replica: DeviceShareReplica) throws {
+        var next = state
+        if !isBusy {
+            if let value = try replica.value("setting/naver-search", as: DeviceShareNaverSearch.self) {
+                try DeviceShareCodec.validateKey(value.id); try DeviceShareCodec.validateKey(value.secret)
+                guard let provider = NaverSearchProvider(rawValue: value.provider) else { throw DeviceShareError.invalid }
+                next.searchID = value.id; next.searchSecret = value.secret; next.searchProvider = provider; next.searchFreeConfirmed = value.freeConfirmed
+            } else if let record = replica.records["setting/naver-search"], record.value == nil {
+                next.searchID = ""; next.searchSecret = ""; next.searchFreeConfirmed = false
+            }
+            if let value = try replica.value("setting/naver-maps", as: DeviceShareNaverMaps.self) {
+                try DeviceShareCodec.validateKey(value.id); try DeviceShareCodec.validateKey(value.secret)
+                next.mapsID = value.id; next.mapsSecret = value.secret; next.mapsFreeConfirmed = value.freeConfirmed
+            } else if let record = replica.records["setting/naver-maps"], record.value == nil {
+                next.mapsID = ""; next.mapsSecret = ""; next.mapsFreeConfirmed = false
+            }
+        }
+        for bucket in replica.usages("naver") {
+            let item = bucket.observation
+            guard item.account == "maps-free" || item.account.range(of: #"^(?:search|hub|hub-month):[a-f0-9]{64}$"#, options: .regularExpression) != nil else { throw DeviceShareError.invalid }
+            let slot = item.account == "maps-free" ? "maps" : item.account.hasPrefix("hub-month:") ? "searchMonth" : "search"
+            guard item.slot == slot else { throw DeviceShareError.invalid }
+            let limit = slot == "maps" ? 3_000_000 : slot == "searchMonth" ? 775_000 : 25_000
+            let old = next.ledger.accounts[item.account]
+            if let old, old.period > item.period { continue }
+            let samePeriod = old?.period == item.period
+            next.ledger.accounts[item.account] = NaverQuotaAccount(period: item.period, used: min(limit, max(samePeriod ? old!.used : 0, bucket.total)), blocked: item.blocked || (samePeriod && old!.blocked), resetMillis: item.resetMillis, lastTrustedMs: max(samePeriod ? old!.lastTrustedMs : 0, item.trustedMillis))
+        }
+        try Self.validateSavedState(DeviceShareCodec.encode(next))
+        let keysChanged = next.searchID != state.searchID || next.searchSecret != state.searchSecret || next.searchProvider != state.searchProvider || next.mapsID != state.mapsID || next.mapsSecret != state.mapsSecret
+        if try DeviceShareCodec.encode(next) != DeviceShareCodec.encode(state) { try commit(next) }
+        if keysChanged { resolved.removeAll(); clocks.removeAll(); quotas.removeAll() }
+        for provider in quotaProviders {
+            if let account = state.ledger.accounts[key(provider)] { quotas[provider] = try quotaChange("refresh", provider: provider, now: account.lastTrustedMs).quota }
+        }
     }
 }

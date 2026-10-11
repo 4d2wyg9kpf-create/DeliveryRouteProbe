@@ -240,12 +240,12 @@ struct NaverQuotaSection: View {
     @State private var usageProvider: String?
     @State private var usageText = ""
     var body: some View {
-        Section("네이버 무료 잔여량 · 이 기기 기준") {
+        Section("네이버 무료 잔여량 · 사용 기록 기준") {
             quotaRow("search", title: "지역 검색 · 하루 25,000회")
             if api.searchProvider == .hub { quotaRow("searchMonth", title: "HUB 지역 검색 · 월 최대 775,000회") }
             quotaRow("maps", title: "Maps 주소 변환 · 월 3,000,000건")
             Button("잔여량·기준 시간 새로 확인") { Task { await api.refreshQuotas() } }.disabled(api.isBusy)
-            Text("요청 전에 기록하며 실패·중단도 포함합니다. 다른 기기·앱의 사용량은 자동 조회하지 못합니다. 같은 검색 Client ID의 다른 검색 API, 같은 Maps 대표 계정의 다른 앱에서 사용한 총 횟수도 반영해 주세요.").font(.caption).foregroundColor(.secondary)
+            Text("요청 전에 기록하며 실패·중단도 포함합니다. 같은 공유 폴더를 연결한 기기의 사용량은 합산합니다. 연결하지 않은 기기·다른 앱의 사용량은 자동 조회하지 못합니다. 같은 검색 Client ID의 다른 검색 API, 같은 Maps 대표 계정의 다른 앱에서 사용한 총 횟수도 반영해 주세요.").font(.caption).foregroundColor(.secondary)
             Text("클라우드 한도는 한국시간 매일 0시·매월 1일 0시에 초기화합니다. 앱은 경계에서 5분을 더 기다리며 서버가 계속 제한하면 다시 차단합니다. HUB 일·월 한도 중 하나라도 소진되면 검색할 수 없습니다.").font(.caption).foregroundColor(.secondary)
         }
         .sheet(isPresented: Binding(get: { usageProvider != nil }, set: { if !$0 { usageProvider = nil } })) {
@@ -340,6 +340,7 @@ struct NaverAPISettingsView: View {
                         if api.saveSettings(searchID: searchID, searchSecret: searchSecret, mapsID: mapsID, mapsSecret: mapsSecret, freeConfirmed: freeConfirmed, searchProvider: searchProvider, searchFreeConfirmed: searchFreeConfirmed) { searchID = ""; searchSecret = ""; mapsID = ""; mapsSecret = ""; dismiss() }
                     }.buttonStyle(.borderedProminent).disabled(api.isBusy)
                 }
+                Section { DeviceSharingSettingsLink() }
             }.navigationTitle("네이버 API 설정").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { dismiss() }.disabled(api.isBusy) } }
                 .onAppear { freeConfirmed = api.mapsFreeConfirmed; searchProvider = api.searchProvider; searchFreeConfirmed = api.searchFreeConfirmed }

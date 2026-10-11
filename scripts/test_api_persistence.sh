@@ -3,6 +3,7 @@ set -euo pipefail
 route_root="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$route_root/build/logs"
 swiftc -parse-as-library \
+  "$route_root/DeliveryRouteProbe.swiftpm/DeviceShareModels.swift" \
   "$route_root/DeliveryRouteProbe.swiftpm/APICredentialArchive.swift" \
   "$route_root/DeliveryRouteProbe.swiftpm/TMapModels.swift" \
   "$route_root/DeliveryRouteProbe.swiftpm/TMapEngineSource.swift" \

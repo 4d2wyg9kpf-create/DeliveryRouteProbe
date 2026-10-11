@@ -137,11 +137,12 @@ final class TMapStore: ObservableObject {
         freePlanConfirmed = state.freePlanConfirmed
         hasAppKey = !state.appKey.isEmpty
     }
-    private func commit(_ value: TMapSecureState) throws {
+    private func commit(_ value: TMapSecureState, reservations: [String] = []) throws {
         guard !recoveryBlocked else { throw PlannerFailure.message("기존 사용량 기록 복구가 필요해 요청을 차단했습니다.") }
         try writeState(JSONEncoder().encode(value))
         state = value
         publishSettings()
+        try DeviceShareHooks.changed(reservations: reservations)
     }
     private func quotaCall(_ method: String, now: Double, extra: [String: Any] = [:]) throws -> TMapQuotaChange {
         var input: [String: Any] = ["ledger": try TMapBridge.object(state.ledger), "keyID": keyID, "now": now]
@@ -151,7 +152,8 @@ final class TMapStore: ObservableObject {
     private func saveQuota(_ result: TMapQuotaChange) throws {
         var next = state
         next.ledger = result.ledger
-        try commit(next)
+        let reservations = result.reservation.map { ["tmap|\($0.keyID)|\($0.period)|\($0.apiID)"] } ?? []
+        try commit(next, reservations: reservations)
         if let values = result.quotas { quotas = values }
     }
     func saveSettings(appKey: String, freeConfirmed: Bool, options: TMapOptions) {
@@ -236,6 +238,7 @@ final class TMapStore: ObservableObject {
             optimizationTask = Task {
                 defer { isOptimizing = false; optimizationTask = nil }
                 do {
+                    try await DeviceShareHooks.prepareRequest()
                     let now = try await trustedTime()
                     try Task.checkCancellation()
                     let reserved = try quotaCall("reserve", now: now, extra: ["apiID": request.apiID, "freePlanConfirmed": state.freePlanConfirmed])
@@ -286,5 +289,48 @@ final class TMapStore: ObservableObject {
             errorMessage = nil
             return true
         } catch { errorMessage = error.localizedDescription; return false }
+    }
+}
+
+extension TMapStore {
+    func sharingSnapshot() throws -> DeviceShareSnapshot {
+        guard !recoveryBlocked else { throw APICredentialStorageError.unavailable }
+        var result = DeviceShareSnapshot()
+        if !state.appKey.isEmpty { result.values["setting/tmap"] = try DeviceShareCodec.encode(DeviceShareTMapSettings(appKey: state.appKey, freeConfirmed: state.freePlanConfirmed)) }
+        for (key, account) in state.ledger.accounts {
+            for (slot, bucket) in account.buckets {
+                result.usage.append(DeviceShareUsageObservation(domain: "tmap", account: key, period: account.period, slot: slot,
+                    used: bucket.used, limit: ["10", "20"].contains(slot) ? 50 : 1, blocked: bucket.serverBlocked, trustedMillis: account.lastTrustedMs))
+            }
+        }
+        return result
+    }
+    func applySharing(_ replica: DeviceShareReplica) throws {
+        var next = state
+        if !isOptimizing && !isRefreshing {
+            if let value = try replica.value("setting/tmap", as: DeviceShareTMapSettings.self) {
+                try DeviceShareCodec.validateKey(value.appKey)
+                next.appKey = value.appKey; next.freePlanConfirmed = value.freeConfirmed
+            } else if let record = replica.records["setting/tmap"], record.value == nil {
+                next.appKey = ""; next.freePlanConfirmed = false
+            }
+        }
+        for bucket in replica.usages("tmap") {
+            let item = bucket.observation
+            guard item.account.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil, ["10", "20", "30", "100"].contains(item.slot) else { throw DeviceShareError.invalid }
+            let old = next.ledger.accounts[item.account]
+            if let old, old.period > item.period { continue }
+            var account = old?.period == item.period ? old! : TMapQuotaAccount(period: item.period, lastTrustedMs: item.trustedMillis, buckets: ["10": TMapQuotaBucket(used: 0, serverBlocked: false), "20": TMapQuotaBucket(used: 0, serverBlocked: false), "30": TMapQuotaBucket(used: 0, serverBlocked: false), "100": TMapQuotaBucket(used: 0, serverBlocked: false)])
+            let previous = account.buckets[item.slot]
+            let limit = ["10", "20"].contains(item.slot) ? 50 : 1
+            account.buckets[item.slot] = TMapQuotaBucket(used: min(limit, max(previous?.used ?? 0, bucket.total)), serverBlocked: item.blocked || previous?.serverBlocked == true)
+            account.lastTrustedMs = max(account.lastTrustedMs, item.trustedMillis)
+            next.ledger.accounts[item.account] = account
+        }
+        try Self.validateSavedState(DeviceShareCodec.encode(next))
+        let keyChanged = next.appKey != state.appKey
+        if try DeviceShareCodec.encode(next) != DeviceShareCodec.encode(state) { try commit(next) }
+        if keyChanged { route = nil; requestedPlan = nil; referenceMillis = nil; referenceUptime = nil; quotas = [] }
+        if hasAppKey, let account = state.ledger.accounts[keyID] { quotas = try quotaCall("refresh", now: account.lastTrustedMs).quotas ?? [] }
     }
 }

@@ -21,7 +21,7 @@ struct DeliveryRouteProbeApp: App {
 struct DeliveryRootView: View {
     @StateObject private var model = BrowserModel()
     @StateObject private var planner = PlannerStore()
-    @StateObject private var customers = NaverCustomerStore()
+    @StateObject private var customers = NaverCustomerStore.shared
     @StateObject private var tmap = TMapStore.shared
     @StateObject private var sites = SiteTargetStore()
     @StateObject private var publicData = PublicDataStore.shared
@@ -43,12 +43,27 @@ struct DeliveryRootView: View {
         .environmentObject(customers)
         .environmentObject(sites)
         .onAppear {
-            do { try customers.remember(planner.plan) }
+            do { if customers.needsPlanMigration { try customers.remember(planner.plan) } }
             catch { customers.errorMessage = error.localizedDescription }
+            DeviceSharingStore.shared.bind(snapshot: {
+                var result = try tmap.sharingSnapshot()
+                result.append(try NaverAPIStore.shared.sharingSnapshot())
+                result.append(try publicData.sharingSnapshot())
+                result.append(try customers.sharingSnapshot())
+                result.append(try LicenseExclusionStore.shared.sharingSnapshot())
+                return result
+            }, apply: { replica in
+                try tmap.applySharing(replica)
+                try NaverAPIStore.shared.applySharing(replica)
+                try publicData.applySharing(replica)
+                try customers.applySharing(replica)
+                try LicenseExclusionStore.shared.applySharing(replica)
+            })
             InputDiagnostics.shared.start()
         }
         .onChange(of: selectedTab) { _, _ in inputs.finishEditing() }
         .onChange(of: scenePhase) { _, phase in
+            DeviceSharingStore.shared.setActive(phase == .active)
             if phase != .active { planner.saveNow() }
             else { Task { await tmap.refreshClock() } }
         }
