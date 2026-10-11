@@ -19,11 +19,11 @@ private func pinURL(_ longitude: String = "127.4000001") -> URL {
         URLQueryItem(name: "title", value: "대전 중구 가상로 1")]
     return parts.url!
 }
-private func siteURL(_ longitude: String = "127.4000001") -> URL {
+private func siteURL(_ longitude: String = "127.4000001", name: String = "가상식당 가상점") -> URL {
     var parts = URLComponents(string: "https://map.naver.com/")!
     parts.queryItems = [URLQueryItem(name: "pinId", value: "101"), URLQueryItem(name: "pinType", value: "site"),
         URLQueryItem(name: "menu", value: "location"), URLQueryItem(name: "appMenu", value: "location"),
-        URLQueryItem(name: "title", value: "가상식당 가상점"), URLQueryItem(name: "lat", value: "36.3000001"),
+        URLQueryItem(name: "title", value: name), URLQueryItem(name: "lat", value: "36.3000001"),
         URLQueryItem(name: "lng", value: longitude)]
     return parts.url!
 }
@@ -179,6 +179,41 @@ private func siteURL(_ longitude: String = "127.4000001") -> URL {
             let first = try JSONSerialization.jsonObject(with: JSONEncoder().encode(c)), second = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fresh))
             let check = try NaverPlaceBridge.call("sameSelection", ["capture": first, "fresh": second, "useCoordinate": true], as: NaverPlaceSelectionCheck.self)
             try require(check.same, "retained address prevented HTTP revalidation")
+        }
+        await test("business share with an unparenthesized building name retains the full address and HTTP coordinate") {
+            let name = "학교법인 가상학원 가상대학교병원", address = "대전 서구 가상대로 95 가상대학교병원"
+            let f = Fixture(); f.location = siteURL(name: name).absoluteString
+            let c = try await f.pin("[네이버지도]\n\(name)\n\(address)\nhttps://naver.me/fixtureHospital")
+            try require(c.name == name && c.address == address && c.roadAddress == address && c.sharedPinEvidence?.sharedAddress == address, "building address omitted or truncated")
+            try require(c.coordinate?.longitude == 127.4000001 && c.coordinate?.latitude == 36.3000001 && f.requests.count == 1 && c.method == "naver_shared_link_coordinate", "building name changed the pin")
+        }
+        await test("inline building address and unit suffix remain share metadata") {
+            let f = Fixture(); f.location = siteURL().absoluteString
+            let address = "대전 유성구 가상로 11 가상빌딩 2층 201호"
+            let c = try await f.pin("[네이버 지도] 가상식당 가상점 \(address) https://naver.me/fixtureSite")
+            try require(c.address == address && c.sharedPinEvidence?.sharedName == c.name, "inline building or unit omitted")
+            try require(NaverSharedLink.roadAddress(c.address) == "대전 유성구 가상로 11", "unit changed the road validation key")
+        }
+        await test("building-name support still requires a complete road address and building number boundary") {
+            try require(NaverSharedLink.roadAddress("대전 서구 가상대로 95-1 가상병원") == "대전 서구 가상대로 95-1", "building subnumber omitted")
+            for incomplete in ["대전 서구 가상대로 가상병원", "대전 서구 가상대로 95A", "대전 서구 가상대로 1234567 가상병원", "서구 가상대로 95 가상병원"] {
+                try require(NaverSharedLink.roadAddress(incomplete) == nil, "incomplete road or partial number accepted")
+            }
+        }
+        await test("full building address survives persistence and browserless HTTP revalidation") {
+            let f = Fixture(); f.location = siteURL().absoluteString
+            let address = "대전 유성구 가상로 11 가상빌딩 (가상동)"
+            let c = try await f.pin("[네이버지도]\n가상식당 가상점\n\(address)\nhttps://naver.me/fixtureSite")
+            let data = try JSONEncoder().encode(c), copy = try JSONDecoder().decode(NaverPlaceCapture.self, from: data)
+            var target = try NaverSharedLink.parse(copy.sharedLinkURL!)
+            target.sharedName = copy.sharedPinEvidence?.sharedName; target.sharedAddress = copy.sharedPinEvidence?.sharedAddress
+            let resolver = NaverSharedLinkResolver { request in
+                (Data(), HTTPURLResponse(url: request.url!, statusCode: 307, httpVersion: "HTTP/1.1", headerFields: ["Location": siteURL().absoluteString])!)
+            }
+            guard case .pin(let fresh) = try await resolver.resolve(target) else { throw PlannerFailure.message("expected pin") }
+            let first = try JSONSerialization.jsonObject(with: JSONEncoder().encode(copy)), second = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fresh))
+            let check = try NaverPlaceBridge.call("sameSelection", ["capture": first, "fresh": second, "useCoordinate": true], as: NaverPlaceSelectionCheck.self)
+            try require(copy.address == address && fresh.address == address && check.same && copy.matchesSelection(fresh), "building metadata did not round-trip")
         }
         print(String(decoding: try! JSONSerialization.data(withJSONObject: ["passed": checks.filter { $0["passed"] as? Bool == true }.count, "total": checks.count, "checks": checks], options: [.sortedKeys]), as: UTF8.self))
         if checks.contains(where: { $0["passed"] as? Bool != true }) { exit(1) }

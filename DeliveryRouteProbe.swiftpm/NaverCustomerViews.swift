@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NaverCustomerCatalogView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var inputs: NativeInputSession
     @EnvironmentObject private var customers: NaverCustomerStore
     @ObservedObject var planner: PlannerStore
     @ObservedObject var browser: BrowserModel
@@ -14,13 +15,35 @@ struct NaverCustomerCatalogView: View {
     @State private var endMode = "return"
     @State private var destinationID = ""
     @State private var resolvingID: String?
+    @State private var searchText = ""
+    @AppStorage("customerCatalog.sortByName") private var sortByName = true
     var body: some View {
+        let ordered = orderedRecords
+        let visible = matchingRecords(in: ordered)
+        let visibleIDs = Set(visible.map(\.id))
+        let hiddenSelected = customers.records.filter { selectedIDs.contains($0.id) && !visibleIDs.contains($0.id) }.count
         NavigationStack {
             List {
+                Section("거래처 찾기") {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+                        NativeTextField("상호 · 주소 · 폴더명 검색", text: $searchText).frame(minHeight: 44)
+                    }
+                    Picker("정렬", selection: $sortByName) {
+                        Text("상호순").tag(true)
+                        Text("기존 순서").tag(false)
+                    }.pickerStyle(.segmented)
+                    if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("검색 결과 \(visible.count)곳 / 전체 \(customers.records.count)곳").font(.caption).foregroundColor(.secondary)
+                    }
+                    if hiddenSelected > 0 {
+                        Text("검색 결과 밖에 선택한 거래처 \(hiddenSelected)곳이 있습니다. 함께 저장됩니다.").font(.caption).foregroundColor(.blue)
+                    }
+                }
                 Section("출발지 · 최종 도착지") {
                     Picker("출발지", selection: $originID) {
                         Text("현재 출발지: \(planner.plan.originName)").tag("current")
-                        ForEach(customers.records) { Text($0.name).tag($0.id) }
+                        ForEach(ordered) { Text($0.name).tag($0.id) }
                     }
                     Picker("도착 방식", selection: $endMode) {
                         Text("출발지로 복귀").tag("return")
@@ -29,7 +52,7 @@ struct NaverCustomerCatalogView: View {
                     if endMode == "custom" {
                         Picker("최종 도착지", selection: $destinationID) {
                             Text("도착지를 선택하세요").tag("")
-                            ForEach(customers.records) { Text($0.name).tag($0.id) }
+                            ForEach(ordered) { Text($0.name).tag($0.id) }
                         }
                     }
                     if endMode == "last" { Text("티맵 최적화는 고정된 최종 도착지가 필요합니다. 이 방식에서는 등록한 이동시간으로 배송계획을 계산합니다.").font(.caption).foregroundColor(.secondary) }
@@ -41,14 +64,21 @@ struct NaverCustomerCatalogView: View {
                     HStack {
                         Text("\(selectedIDs.count)곳 선택 / 전체 \(customers.records.count)곳")
                         Spacer()
-                        Button("선택 해제") { selectedIDs.removeAll(); curbConfirmed = false }.buttonStyle(.borderless)
+                        Button("전체 선택 해제") { inputs.finishEditing(); selectedIDs.removeAll(); curbConfirmed = false }.buttonStyle(.borderless)
                     }
                 }
                 if let message = customers.errorMessage { Text(message).foregroundColor(.red).font(.caption) }
                 if customers.records.isEmpty { Text("네이버에서 장소를 읽거나 저장 목록을 가져오면 여기에 보관됩니다.").foregroundColor(.secondary) }
-                ForEach(customers.records) { record in
+                else if visible.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("검색 결과가 없습니다.").foregroundColor(.secondary)
+                        Button("검색 지우고 전체 보기") { inputs.finishEditing(); searchText = "" }.buttonStyle(.borderless)
+                    }
+                }
+                ForEach(visible) { record in
                     HStack(spacing: 12) {
                         Button {
+                            inputs.finishEditing()
                             if selectedIDs.contains(record.id) { selectedIDs.remove(record.id) }
                             else if selectedIDs.count < 30 { selectedIDs.insert(record.id) }
                             else { error = "이번 배송은 최대 30곳까지 선택할 수 있습니다." }
@@ -89,15 +119,17 @@ struct NaverCustomerCatalogView: View {
                     }
                     if let error { Text(error).foregroundColor(.red).font(.caption) }
                     Button("선택한 \(selectedIDs.count)곳으로 이번 배송 설정 저장") {
+                        inputs.finishEditing()
                         do { try customers.applySelection(selectedIDs, planner: planner, curbConfirmed: curbConfirmed, originID: originID, endMode: endMode, destinationID: destinationID); dismiss() }
                         catch { self.error = error.localizedDescription }
                     }.buttonStyle(.borderedProminent)
                         .disabled(planner.isComputing || resolvingID != nil || (needsCoordinateConfirmation && !curbConfirmed) || (endMode == "custom" && destinationID.isEmpty))
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("거래처 목록 · 이번 배송 선택")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { inputs.finishEditing(); dismiss() } } }
             .onAppear {
                 do { if customers.needsPlanMigration { try customers.remember(planner.plan) } } catch { self.error = error.localizedDescription }
                 selectedIDs = Set(customers.records.filter { record in
@@ -121,6 +153,26 @@ struct NaverCustomerCatalogView: View {
                     }
                 }
             } message: { Text("앱의 거래처 목록과 이번 배송 설정에서 지웁니다. 네이버에 저장된 원본 목록은 유지합니다.") }
+        }
+    }
+    // Filtering and sorting are display operations. Keep the complete selection
+    // and endpoint choices even when their rows do not match the search.
+    private var orderedRecords: [NaverCustomerRecord] {
+        guard sortByName else { return customers.records }
+        return customers.records.sorted { first, second in
+            let order = first.name.localizedStandardCompare(second.name)
+            return order == .orderedSame ? first.id < second.id : order == .orderedAscending
+        }
+    }
+    private func matchingRecords(in records: [NaverCustomerRecord]) -> [NaverCustomerRecord] {
+        let terms = searchText.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !terms.isEmpty else { return records }
+        return records.filter { record in
+            var fields = [record.name, record.template.name] + record.folders
+            if let capture = record.capture { fields += [capture.name, capture.address, capture.roadAddress, capture.jibunAddress] }
+            if let address = record.template.tmapCoordinate?.detailAddress { fields.append(address) }
+            let values = fields.map { $0.split(whereSeparator: { $0.isWhitespace }).joined() }
+            return terms.allSatisfy { term in values.contains { $0.localizedStandardContains(term) } }
         }
     }
     private var needsCoordinateConfirmation: Bool {

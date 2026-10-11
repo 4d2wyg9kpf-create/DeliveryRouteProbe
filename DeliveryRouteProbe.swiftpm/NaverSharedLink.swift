@@ -36,8 +36,11 @@ enum NaverSharedLink {
             let regionPattern = #"(?:^|\s)(서울(?:특별시)?|부산(?:광역시)?|대구(?:광역시)?|인천(?:광역시)?|광주(?:광역시)?|대전(?:광역시)?|울산(?:광역시)?|세종(?:특별자치시)?|경기(?:도)?|강원(?:도|특별자치도)?|충북|충청북도|충남|충청남도|전북|전라북도|전북특별자치도|전남|전라남도|경북|경상북도|경남|경상남도|제주(?:도|특별자치도)?)(?=\s)"#
             if let expression = try? NSRegularExpression(pattern: regionPattern) {
                 for match in expression.matches(in: prefix, range: NSRange(prefix.startIndex..., in: prefix)) {
-                    guard let region = Range(match.range(at: 1), in: prefix),
-                          let address = roadAddress(String(prefix[region.lowerBound...])) else { continue }
+                    guard let region = Range(match.range(at: 1), in: prefix) else { continue }
+                    let address = String(prefix[region.lowerBound...])
+                    guard roadAddress(address) != nil else { continue }
+                    // Keep building names and units in the pasted address.
+                    // The building-number portion is only a validation key.
                     chosen.sharedAddress = address
                     let name = String(prefix[..<region.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
                     chosen.sharedName = name.isEmpty ? nil : name
@@ -48,15 +51,15 @@ enum NaverSharedLink {
         return chosen
     }
     // Do not treat arbitrary URL coordinates or a broad search as a place.
-    // This helper checks a rendered address label only; it does not
-    // geocode a share title or choose the selected point.
+    // This helper validates an address label and returns the road/building
+    // portion; it does not geocode a share title or choose the selected point.
     static func roadAddress(_ value: String) -> String? {
         guard value.utf8.count <= 2_000 else { return nil }
         let normalized = value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         let regions = ["서울", "서울특별시", "부산", "부산광역시", "대구", "대구광역시", "인천", "인천광역시", "광주", "광주광역시", "대전", "대전광역시", "울산", "울산광역시", "세종", "세종특별자치시", "경기", "경기도", "강원", "강원도", "강원특별자치도", "충북", "충청북도", "충남", "충청남도", "전북", "전라북도", "전북특별자치도", "전남", "전라남도", "경북", "경상북도", "경남", "경상남도", "제주", "제주도", "제주특별자치도"]
         let region = regions.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|")
         let count = normalized.hasPrefix("세종 ") || normalized.hasPrefix("세종특별자치시 ") ? "0,3" : "1,3"
-        let pattern = "^((?:" + region + ")\\s+(?:[가-힣0-9·.]+(?:시|군|구|읍|면)\\s+){" + count + "}[가-힣0-9·.]+(?:대로|로|길)\\s*(?:지하\\s*)?[0-9]{1,6}(?:-[0-9]{1,6})?)(?:\\s*[,（(].*)?$"
+        let pattern = "^((?:" + region + ")\\s+(?:[가-힣0-9·.]+(?:시|군|구|읍|면)\\s+){" + count + "}[가-힣0-9·.]+(?:대로|로|길)\\s*(?:지하\\s*)?[0-9]{1,6}(?:-[0-9]{1,6})?)(?:\\s+.*|\\s*[,（(].*)?$"
         guard let expression = try? NSRegularExpression(pattern: pattern),
               let match = expression.firstMatch(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)),
               let range = Range(match.range(at: 1), in: normalized) else { return nil }
