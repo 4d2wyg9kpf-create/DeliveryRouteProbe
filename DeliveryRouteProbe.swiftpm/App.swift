@@ -38,6 +38,8 @@ struct DeliveryRootView: View {
                 .tabItem { Label("티맵최적화", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }.tag(1)
             LocationAnalysisScreen(store: publicData, openNaver: { selectedTab = 0 })
                 .tabItem { Label("입지분석", systemImage: "mappin.and.ellipse") }.tag(2)
+            NavigationStack { DaejeonNewLicensesView(store: publicData) }
+                .tabItem { Label("신규업소", systemImage: "calendar.badge.plus") }.tag(3)
         }
         .environmentObject(inputs)
         .environmentObject(customers)

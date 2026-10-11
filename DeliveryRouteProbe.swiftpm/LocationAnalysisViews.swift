@@ -11,12 +11,6 @@ struct LocationAnalysisScreen: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    NavigationLink { DaejeonNewLicensesView(store: store) } label: {
-                        Label("대전 신규 인허가 · 영업 목록", systemImage: "calendar.badge.plus")
-                    }
-                    Text("일반음식점·휴게음식점·제과점·위탁급식·집단급식소를 인허가일자별로 확인합니다.").font(.caption).foregroundStyle(.secondary)
-                }
                 Section("평가대상지 · \(sites.records.count)곳") {
                     Button("네이버검색에서 평가대상지 추가", action: openNaver)
                     Text("네이버검색의 저장할 곳을 ‘입지 평가대상지 목록’으로 선택하세요. 장소를 누르면 주변의 영업 중인 상가 자료를 조회합니다.").font(.caption).foregroundStyle(.secondary)
@@ -169,10 +163,17 @@ struct DaejeonNewLicensesView: View {
                     }
                 }
             }
-        }.navigationTitle("대전 신규 인허가").navigationBarTitleDisplayMode(.inline)
+        }.navigationTitle("신규업소").navigationBarTitleDisplayMode(.inline)
             .environment(\.timeZone, TimeZone(identifier: "Asia/Seoul")!)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                        .disabled(loading).accessibilityLabel("신규업소 공공데이터 API 설정")
+                }
+            }
             .sheet(isPresented: $showSettings) { PublicDataSettingsView(store: store) }
-            .onDisappear { queryTask?.cancel() }
+        // This is a root tab. Switching tabs or opening exclusions keeps the
+        // current query alive; the explicit stop button cancels it.
     }
     private func load() {
         loading = true; result = nil; error = nil
