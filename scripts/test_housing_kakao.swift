@@ -154,6 +154,18 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
             let text = try String(contentsOf: csv,encoding: .utf8)
             try require(text.components(separatedBy: "\r\n").count == 5003 && text.contains("result-0"), "full export omitted older records")
         }
+        try check("an unconfigured device cannot overwrite an existing shared Kakao credential") {
+            var replica = DeviceShareReplica(deviceID: UUID().uuidString), observed: [String: Data] = [:]
+            try replica.capture(api.sharingSnapshot(), observed: &observed)
+            var secondState: Data?
+            let empty = KakaoRouteStore(read: { nil }, write: { secondState = $0 }, transport: mock, directory: folder.appendingPathComponent("blank-device"))
+            let snapshot = try empty.sharingSnapshot()
+            try require(snapshot.values["setting/kakao"] == nil, "empty bootstrap exports a key deletion")
+            var fresh = DeviceShareReplica(deviceID: UUID().uuidString); fresh.counter = 9000
+            var blankObserved: [String: Data] = [:]; try fresh.capture(snapshot, observed: &blankObserved); try fresh.merge(replica)
+            try empty.applySharing(fresh)
+            try require(!empty.settings.key.isEmpty && secondState != nil, "shared credential lost")
+        }
         print("Housing Kakao native checks: \(passed)/\(passed) passed")
     }
 }

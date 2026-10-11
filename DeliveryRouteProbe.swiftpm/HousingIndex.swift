@@ -26,6 +26,7 @@ final class HousingIndex {
         url = directory.appendingPathComponent("search.sqlite")
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw DeviceShareError.unavailable }
         sqlite3_busy_timeout(db, 5000)
+        try run("PRAGMA journal_mode=WAL")
         try run("CREATE TABLE IF NOT EXISTS regions(code TEXT PRIMARY KEY, data BLOB NOT NULL)")
         try run("CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, region TEXT NOT NULL, name TEXT NOT NULL, address TEXT NOT NULL, data BLOB NOT NULL)")
         try run("CREATE INDEX IF NOT EXISTS sources_region_name ON sources(region,name)")

@@ -8,6 +8,7 @@ final class KakaoDistanceArchive {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         guard sqlite3_open_v2(directory.appendingPathComponent("kakao-distances.sqlite").path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw DeviceShareError.unavailable }
         sqlite3_busy_timeout(db,5000)
+        try run("PRAGMA journal_mode=WAL")
         try run("CREATE TABLE IF NOT EXISTS distances(id TEXT PRIMARY KEY, queried REAL NOT NULL, data BLOB NOT NULL)")
         try run("CREATE INDEX IF NOT EXISTS distances_queried ON distances(queried)")
     }

@@ -108,8 +108,9 @@ final class KakaoRouteStore: ObservableObject {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode), http.url?.host == "www.naver.com",
               let header = http.value(forHTTPHeaderField: "Date"), let date = f.date(from: header), date.timeIntervalSince1970 * 1000 + 300_000 >= state.trustedMillis else { throw PlannerFailure.message("인터넷 시각을 확인하지 못했습니다. 사용량 초기화를 보류합니다.") }
-        let age = http.value(forHTTPHeaderField: "Age").flatMap(Double.init) ?? 0
-        guard age.isFinite, age <= 5, age >= 0 else { throw PlannerFailure.message("이전 인터넷 시각 응답입니다. 다시 확인하세요.") }
+        if let rawAge = http.value(forHTTPHeaderField: "Age") {
+            guard let age = Double(rawAge), age.isFinite, age <= 5, age >= 0 else { throw PlannerFailure.message("이전 인터넷 시각 응답입니다. 다시 확인하세요.") }
+        }
         var next = state; next.trustedMillis = max(next.trustedMillis, date.timeIntervalSince1970 * 1000); try commit(next)
         clock = Date(timeIntervalSince1970: next.trustedMillis / 1000); referenceUptime = ProcessInfo.processInfo.systemUptime
     }
@@ -150,7 +151,8 @@ final class KakaoRouteStore: ObservableObject {
     }
     func sharingSnapshot() throws -> DeviceShareSnapshot {
         guard !blockedRecovery else { throw DeviceShareError.unavailable }
-        var value = DeviceShareSnapshot(); value.values["setting/kakao"] = try DeviceShareCodec.encode(settings)
+        var value = DeviceShareSnapshot()
+        if !settings.key.isEmpty { value.values["setting/kakao"] = try DeviceShareCodec.encode(settings) }
         for (id, bucket) in state.usage {
             let parts = id.split(separator: "|").map(String.init); guard parts.count == 3 else { throw DeviceShareError.invalid }
             let limit = parts[2] == "all" ? 3_000_000 : KakaoRouteMode(rawValue: parts[2])?.dailyLimit ?? (parts[2] == "address" ? 100_000 : 1_000)
@@ -166,7 +168,9 @@ final class KakaoRouteStore: ObservableObject {
             var bucket = next.usage[id] ?? KakaoUsage(); bucket.used = max(bucket.used, entry.total); bucket.blocked = bucket.blocked || value.blocked
             next.usage[id] = bucket; next.trustedMillis = max(next.trustedMillis, value.trustedMillis)
         }
+        let clockChanged = next.trustedMillis > state.trustedMillis
         if try DeviceShareCodec.encode(next) != DeviceShareCodec.encode(state) { try commit(next) }
+        if clockChanged { clock = nil }
     }
 }
 
