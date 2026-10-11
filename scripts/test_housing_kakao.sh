@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+route_root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$route_root"
+mkdir -p build/logs
+swiftc -parse-as-library \
+  DeliveryRouteProbe.swiftpm/DeviceShareModels.swift \
+  DeliveryRouteProbe.swiftpm/APICredentialArchive.swift \
+  DeliveryRouteProbe.swiftpm/KakaoRouteModels.swift \
+  DeliveryRouteProbe.swiftpm/KakaoRouteStore.swift \
+  DeliveryRouteProbe.swiftpm/HousingModels.swift \
+  DeliveryRouteProbe.swiftpm/HousingStore.swift \
+  DeliveryRouteProbe.swiftpm/RealtyHousingClient.swift \
+  scripts/test_housing_kakao.swift \
+  -o build/housing-kakao-tests
+build/housing-kakao-tests | tee build/logs/housing-kakao.log

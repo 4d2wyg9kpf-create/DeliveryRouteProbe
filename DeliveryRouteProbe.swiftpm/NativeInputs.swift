@@ -34,17 +34,18 @@ struct NativeTextField: UIViewRepresentable {
     var keyboard: UIKeyboardType = .default
     var alignment: NSTextAlignment = .natural
     var digitsOnly = false
+    var secure = false
     var onEditingChanged: (Bool) -> Void = { _ in }
     @EnvironmentObject private var inputs: NativeInputSession
 
     init(_ title: String, text: Binding<String>, keyboard: UIKeyboardType = .default,
-         alignment: NSTextAlignment = .natural, digitsOnly: Bool = false,
+         alignment: NSTextAlignment = .natural, digitsOnly: Bool = false, secure: Bool = false,
          onEditingChanged: @escaping (Bool) -> Void = { _ in }) {
         self.title = title
         self._text = text
         self.keyboard = keyboard
         self.alignment = alignment
-        self.digitsOnly = digitsOnly
+        self.digitsOnly = digitsOnly; self.secure = secure
         self.onEditingChanged = onEditingChanged
     }
 
@@ -55,6 +56,7 @@ struct NativeTextField: UIViewRepresentable {
         field.borderStyle = .roundedRect
         field.placeholder = title
         field.keyboardType = keyboard
+        field.isSecureTextEntry = secure
         field.autocapitalizationType = .none
         field.autocorrectionType = .no
         field.spellCheckingType = .no

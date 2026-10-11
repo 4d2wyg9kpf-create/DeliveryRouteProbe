@@ -8,10 +8,14 @@ struct LocationAnalysisScreen: View {
     @State private var showSettings = false
     @State private var deleting: SiteTarget?
     @State private var confirmDelete = false
+    @State private var editingCoordinate: SiteTarget?
+    @State private var addingPoint = false
     var body: some View {
         NavigationStack {
             List {
                 Section("평가대상지 · \(sites.records.count)곳") {
+                    NavigationLink("공동주택 목록에서 평가대상지 선택") { HousingCatalogView() }
+                    Button("지도에서 새 평가대상지·시설 추가") { addingPoint = true }
                     Button("네이버검색에서 평가대상지 추가", action: openNaver)
                     Text("네이버검색의 저장할 곳을 ‘입지 평가대상지 목록’으로 선택하세요. 장소를 누르면 주변의 영업 중인 상가 자료를 조회합니다.").font(.caption).foregroundStyle(.secondary)
                     if sites.records.isEmpty { Text("등록된 평가대상지가 없습니다.").foregroundStyle(.secondary) }
@@ -21,22 +25,29 @@ struct LocationAnalysisScreen: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(site.name).bold()
                                     Text(site.address).font(.caption).foregroundStyle(.secondary)
-                                    Text("경도 \(site.coordinate.longitude, specifier: "%.6f") · 위도 \(site.coordinate.latitude, specifier: "%.6f")").font(.caption2).foregroundStyle(.secondary)
+                                    Text("경도 \(site.effectiveCoordinate.longitude, specifier: "%.6f") · 위도 \(site.effectiveCoordinate.latitude, specifier: "%.6f")").font(.caption2).foregroundStyle(.secondary)
                                     if !site.folders.isEmpty { Text(site.folders.joined(separator: " · ")).font(.caption2).foregroundStyle(.secondary) }
                                 }
                             }
+                            Button { editingCoordinate = site } label: { Image(systemName: "mappin.and.ellipse") }.buttonStyle(.borderless).accessibilityLabel("\(site.name) 지도 좌표 수정")
                             Button(role: .destructive) { deleting = site; confirmDelete = true } label: { Image(systemName: "trash") }.buttonStyle(.borderless).accessibilityLabel("\(site.name) 평가대상지 삭제")
                         }
                     }
                     if let error = sites.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
                 }
                 Section("입지 평가") {
-                    Text("현재는 평가대상지와 주변 업체를 확인합니다. 평가 항목·점수·비교 방법은 추후 단계별로 추가합니다.").font(.caption).foregroundStyle(.secondary)
+                    NavigationLink("시설까지 도보·대중교통·자동차 거리 조회") { KakaoRouteView() }
+                    Text("평가대상지와 시설을 목록에 등록하고 거리·시간을 조회해 CSV로 내보낼 수 있습니다. 점수·비교 방법은 추후 추가합니다.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section { Button("공공데이터 API 설정") { showSettings = true } }
             }.navigationTitle("입지분석").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { showSettings = true } label: { Image(systemName: "gearshape") }.accessibilityLabel("공공데이터 API 설정") } }
                 .sheet(isPresented: $showSettings) { PublicDataSettingsView(store: store) }
+                .sheet(item: $editingCoordinate) { site in
+                    CoordinateEditorView(title: site.name, coordinate: site.effectiveCoordinate, original: site.coordinate,
+                        onReset: { try sites.setCoordinate(site.id, coordinate: nil) }, onSave: { try sites.setCoordinate(site.id, coordinate: $0) })
+                }
+                .sheet(isPresented: $addingPoint) { ManualSiteView() }
                 .confirmationDialog("평가대상지 삭제", isPresented: $confirmDelete, titleVisibility: .visible) {
                     if let deleting { Button("\(deleting.name) 삭제", role: .destructive) { do { try sites.remove(deleting.id) } catch { sites.errorMessage = error.localizedDescription } } }
                 } message: { Text("이 앱의 평가대상지 목록에서 삭제합니다.") }
@@ -45,7 +56,9 @@ struct LocationAnalysisScreen: View {
 }
 
 struct NearbyBusinessesView: View {
+    @EnvironmentObject private var sites: SiteTargetStore
     let site: SiteTarget
+    private var currentSite: SiteTarget { sites.records.first { $0.id == site.id } ?? site }
     @ObservedObject var store: PublicDataStore
     @State private var radius = 500
     @State private var keyword = ""
@@ -91,6 +104,10 @@ struct NearbyBusinessesView: View {
                         Text(business.category).font(.caption).foregroundStyle(.secondary)
                         Text(business.address).font(.caption).textSelection(.enabled)
                         Text("경도 \(business.longitude, specifier: "%.6f") · 위도 \(business.latitude, specifier: "%.6f")").font(.caption2).foregroundStyle(.secondary)
+                        Button("시설 목록에 추가") {
+                            do { _ = try sites.saveManual(name: business.name, address: business.address, coordinate: TMapCoordinate(longitude: business.longitude, latitude: business.latitude)) }
+                            catch { self.error = error.localizedDescription }
+                        }.font(.caption)
                         if let url = naverAddressURL(business.name, business.address) { Link("네이버에서 확인", destination: url).font(.caption) }
                     }
                 }
@@ -104,7 +121,7 @@ struct NearbyBusinessesView: View {
         let requestedRadius = radius
         queryTask = Task {
             defer { loading = false; queryTask = nil }
-            do { result = try await store.nearby(center: site.coordinate, radius: requestedRadius) }
+            do { result = try await store.nearby(center: currentSite.effectiveCoordinate, radius: requestedRadius) }
             catch is CancellationError { error = "조회를 중단했습니다. 요청한 횟수는 사용량에 포함합니다." }
             catch { self.error = error.localizedDescription }
         }

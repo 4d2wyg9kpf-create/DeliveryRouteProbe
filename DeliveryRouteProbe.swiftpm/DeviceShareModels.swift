@@ -160,12 +160,12 @@ struct DeviceShareReplica: Codable, Equatable {
             UUID(uuidString: stamp.device) != nil && (1...max(1, counter)).contains(stamp.counter)
         }
         for (key, record) in records {
-            guard key.utf8.count <= 1_000, ["setting/", "customer/", "excluded/"].contains(where: { key.hasPrefix($0) }),
+            guard key.utf8.count <= 1_000, ["setting/", "customer/", "excluded/", "site/", "housing/"].contains(where: { key.hasPrefix($0) }),
                   validStamp(record.stamp), (record.value?.count ?? 0) <= 500_000 else { throw DeviceShareError.invalid }
         }
         for (key, bucket) in usage {
             let item = bucket.observation
-            guard key == item.id, ["tmap", "naver", "public"].contains(item.domain), item.account.utf8.count <= 200,
+            guard key == item.id, ["tmap", "naver", "public", "kakao"].contains(item.domain), item.account.utf8.count <= 200,
                   item.period.range(of: #"^\d{4}-\d{2}(?:-\d{2})?$"#, options: .regularExpression) != nil,
                   item.slot.utf8.count <= 100, (0...10_000_000).contains(item.used), (1...10_000_000).contains(item.limit),
                   item.trustedMillis.isFinite, item.trustedMillis >= 0, item.resetMillis.isFinite, item.resetMillis >= 0,

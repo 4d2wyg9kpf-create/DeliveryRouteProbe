@@ -250,7 +250,7 @@ var DeliveryNaverPlaces=(function(){
     let changed=removed.length>0;
     for(const customer of customers.filter(c=>wanted.has(c.id))){
       let existing=p.visits.find(v=>v.id===customer.template?.id||(customer.capture&&selectionMatches({first:v.naverPlace,second:customer.capture})));
-      if(existing&&previousCoordinate(p,existing.id))continue; // Preserve a separately confirmed vehicle position.
+      if(existing&&previousCoordinate(p,existing.id)&&!customer.coordinateOverride)continue; // Preserve a separately confirmed vehicle position.
       const candidate=copy(customer.template);
       if(!candidate||!candidate.id||['depot','destination'].includes(candidate.id)||!text(candidate.name,500,'거래처 이름'))fail('거래처 저장 정보를 확인해 주세요.');
       if(customer.capture){
@@ -260,6 +260,14 @@ var DeliveryNaverPlaces=(function(){
       }else if(!existing){
         if(p.visits.some(v=>v.id===candidate.id))fail('거래처 식별자가 중복됐습니다.');
         p.visits.push(candidate);
+      }
+      if(customer.coordinateOverride){
+        const manual=coordinate(customer.coordinateOverride);if(!manual)fail('수정한 좌표 형식을 확인해 주세요.');
+        const visit=p.visits.find(v=>v.id===(existing?existing.id:candidate.id));
+        if(!visit)fail('수정할 배송지를 찾지 못했습니다.');
+        if(JSON.stringify(previousCoordinate(p,visit.id))!==JSON.stringify(manual))changed=true;
+        visit.tmapCoordinate={...manual,detailAddress:customer.capture?.requestAddress||customer.capture?.preferredAddress||''};
+        for(const leg of p.legs||[])if(leg.fromID===visit.id||leg.toID===visit.id)leg.locationInvalidated=true;
       }
       if(!existing)changed=true;
     }
@@ -274,7 +282,7 @@ var DeliveryNaverPlaces=(function(){
     const signature=JSON.stringify([p.originName,p.tmapOrigin,p.originAccess,p.destination,p.returnToOrigin]);
     function selected(id){
       const record=customers.find(c=>c.id===id);if(!record?.template)fail('선택한 출발지·도착지가 목록에 없습니다.');
-      const v=record.template,actual=previousCoordinate({visits:[v]},v.id),capture=record.capture?copy(validate(record.capture)):null;
+      const v=record.template,actual=coordinate(record.coordinateOverride)||previousCoordinate({visits:[v]},v.id),capture=record.capture?copy(validate(record.capture)):null;
       if(!actual&&(!capture?.coordinate||input.curbConfirmed!==true))fail('출발지·도착지의 좌표와 실제 정차 위치를 확인해 주세요.');
       const coord=actual||capture.coordinate,requestAddress=v.tmapCoordinate?.detailAddress||capture?.requestAddress||capture?.roadAddress||capture?.address||'';
       const access=copy(v.roadAccess||{roadType:'',curbConfirmed:false,note:''});

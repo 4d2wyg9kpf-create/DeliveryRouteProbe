@@ -11,6 +11,7 @@ struct NaverCustomerCatalogView: View {
     @State private var error: String?
     @State private var deleting: NaverCustomerRecord?
     @State private var confirmDelete = false
+    @State private var editingCoordinate: NaverCustomerRecord?
     @State private var originID = "current"
     @State private var endMode = "return"
     @State private var destinationID = ""
@@ -90,7 +91,7 @@ struct NaverCustomerCatalogView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(record.name).foregroundColor(.primary)
                                     if let capture = record.capture, !capture.preferredAddress.isEmpty { Text(capture.preferredAddress).font(.caption).foregroundColor(.secondary) }
-                                    if let coordinate = record.template.tmapCoordinate ?? record.capture?.coordinate {
+                                    if let coordinate = record.effectiveCoordinate {
                                         Text("경도 \(coordinate.longitude, specifier: "%.6f") · 위도 \(coordinate.latitude, specifier: "%.6f")").font(.caption2).foregroundColor(.secondary)
                                     } else { Text("좌표 지정 필요").font(.caption2).foregroundColor(.orange) }
                                     if !record.folders.isEmpty { Text(record.folders.joined(separator: " · ")).font(.caption2).foregroundColor(.secondary) }
@@ -108,6 +109,8 @@ struct NaverCustomerCatalogView: View {
                                 }
                             }.font(.caption).buttonStyle(.borderless).disabled(resolvingID != nil)
                         }
+                        Button { inputs.finishEditing(); editingCoordinate = record } label: { Image(systemName: "mappin.and.ellipse") }
+                            .buttonStyle(.borderless).accessibilityLabel("\(record.name) 지도 좌표 수정")
                         Button(role: .destructive) { deleting = record; confirmDelete = true } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless).disabled(resolvingID != nil).accessibilityLabel("\(record.name) 거래처 목록에서 삭제")
                     }
@@ -137,6 +140,10 @@ struct NaverCustomerCatalogView: View {
                 }.map(\.id))
                 endMode = planner.plan.destination == nil ? "return" : "custom"
                 destinationID = planner.plan.destination?.customerID ?? ""
+            }
+            .sheet(item: $editingCoordinate) { record in
+                CoordinateEditorView(title: record.name, coordinate: record.effectiveCoordinate, original: record.capture?.coordinate ?? record.template.tmapCoordinate,
+                    onReset: { try customers.setCoordinate(record.id, coordinate: nil) }, onSave: { try customers.setCoordinate(record.id, coordinate: $0) })
             }
             .confirmationDialog("거래처 목록에서 삭제", isPresented: $confirmDelete, titleVisibility: .visible) {
                 if let record = deleting {

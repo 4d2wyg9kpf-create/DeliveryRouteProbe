@@ -35,7 +35,7 @@ concurrency:
 jobs:
   naver-checks:
     runs-on: macos-15
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -63,6 +63,8 @@ jobs:
         run: bash scripts/test_public_data_live_clock.sh
       - name: Verify selected place destinations, bulk import, deduplication and deletion persist independently
         run: bash scripts/test_place_destinations.sh
+      - name: Verify housing parsing, editable coordinates, source preservation and Kakao routing request gates
+        run: bash scripts/test_housing_kakao.sh
       - name: Upload native check log
         if: always()
         uses: actions/upload-artifact@v7

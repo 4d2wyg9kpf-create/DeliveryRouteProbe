@@ -7,6 +7,8 @@ struct NaverCustomerRecord: Codable, Identifiable {
     var capture: NaverPlaceCapture?
     var template: DeliveryVisit
     var folders: [String]
+    var coordinateOverride: TMapCoordinate? = nil
+    var effectiveCoordinate: TMapCoordinate? { coordinateOverride ?? template.tmapCoordinate ?? capture?.coordinate }
 }
 private struct NaverCustomerArchive: Codable {
     var version = 1
@@ -86,10 +88,15 @@ final class NaverCustomerStore: ObservableObject {
         var template = existing.map { next[$0].template } ?? DeliveryVisit()
         template.name = displayName; template.naverPlace = valid
         let newID = valid.kind == "address" && valid.sharedLinkURL != nil ? UUID().uuidString : valid.selectionKey
-        let record = NaverCustomerRecord(id: existing.map { next[$0].id } ?? newID, name: displayName, capture: valid, template: template, folders: folders)
+        let record = NaverCustomerRecord(id: existing.map { next[$0].id } ?? newID, name: displayName, capture: valid, template: template, folders: folders, coordinateOverride: existing.flatMap { next[$0].coordinateOverride })
         if let index = existing { next[index] = record } else { next.append(record) }
         try commit(next)
         return existing == nil
+    }
+    func setCoordinate(_ id: String, coordinate: TMapCoordinate?) throws {
+        guard coordinate.map({ $0.longitude.isFinite && $0.latitude.isFinite && (124...132).contains($0.longitude) && (32...40).contains($0.latitude) }) ?? true,
+              let index = records.firstIndex(where: { $0.id == id }) else { throw DeviceShareError.invalid }
+        var next = records; next[index].coordinateOverride = coordinate; try commit(next)
     }
     func remove(_ id: String) throws { try commit(records.filter { $0.id != id }) }
     // Keep registered customers apart from the visits for the current delivery.

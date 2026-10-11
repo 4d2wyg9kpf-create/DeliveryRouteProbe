@@ -24,6 +24,8 @@ struct DeliveryRootView: View {
     @StateObject private var customers = NaverCustomerStore.shared
     @StateObject private var tmap = TMapStore.shared
     @StateObject private var sites = SiteTargetStore()
+    @StateObject private var housing = HousingStore()
+    @StateObject private var kakao = KakaoRouteStore.shared
     @StateObject private var publicData = PublicDataStore.shared
     @StateObject private var inputs = NativeInputSession()
     @State private var selectedTab = 0
@@ -44,6 +46,7 @@ struct DeliveryRootView: View {
         .environmentObject(inputs)
         .environmentObject(customers)
         .environmentObject(sites)
+        .environmentObject(housing)
         .onAppear {
             do { if customers.needsPlanMigration { try customers.remember(planner.plan) } }
             catch { customers.errorMessage = error.localizedDescription }
@@ -52,6 +55,9 @@ struct DeliveryRootView: View {
                 result.append(try NaverAPIStore.shared.sharingSnapshot())
                 result.append(try publicData.sharingSnapshot())
                 result.append(try customers.sharingSnapshot())
+                result.append(try sites.sharingSnapshot())
+                result.append(try housing.sharingSnapshot())
+                result.append(try kakao.sharingSnapshot())
                 result.append(try LicenseExclusionStore.shared.sharingSnapshot())
                 return result
             }, apply: { replica in
@@ -59,8 +65,11 @@ struct DeliveryRootView: View {
                 try NaverAPIStore.shared.applySharing(replica)
                 try publicData.applySharing(replica)
                 try customers.applySharing(replica)
+                try sites.applySharing(replica)
+                try housing.applySharing(replica)
+                try kakao.applySharing(replica)
                 try LicenseExclusionStore.shared.applySharing(replica)
-            })
+            }, catalogSync: { folder in try await housing.synchronizeSources(folder) })
             InputDiagnostics.shared.start()
         }
         .onChange(of: selectedTab) { _, _ in inputs.finishEditing() }

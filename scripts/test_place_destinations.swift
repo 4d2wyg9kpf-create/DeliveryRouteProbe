@@ -112,7 +112,7 @@ private func sharedBusiness(_ longitude: String = "127.4000001") throws -> Naver
         let pinA = try sharedPoint(127.4, url: "https://naver.me/pointA"), pinB = try sharedPoint(127.4000002, url: "https://naver.me/pointB")
         try check("different shared points at the same address update one record in both destinations") {
             for pin in [pinA, pinB] { _ = try pinCustomers.save(pin); _ = try pinSites.save(pin) }
-            try require(pinCustomers.records.count == 1 && pinSites.records.count == 1 && pinCustomers.records[0].capture?.coordinate?.longitude == 127.4000002 && pinSites.records[0].capture.coordinate?.longitude == 127.4000002, "address duplicate added or incoming pin coordinate lost")
+            try require(pinCustomers.records.count == 1 && pinSites.records.count == 1 && pinCustomers.records[0].capture?.coordinate?.longitude == 127.4000002 && pinSites.records[0].capture?.coordinate?.longitude == 127.4000002, "address duplicate added or incoming pin coordinate lost")
         }
         try check("reimporting the same point updates its existing identity") {
             let customerID = pinCustomers.records[0].id, siteID = pinSites.records[0].id
@@ -127,7 +127,7 @@ private func sharedBusiness(_ longitude: String = "127.4000001") throws -> Naver
         try check("shared-point coordinates and identities survive file recreation") {
             let restoredCustomers = NaverCustomerStore(directory: pinFolder), restoredSites = SiteTargetStore(directory: pinFolder)
             try require(restoredCustomers.errorMessage == nil && restoredSites.errorMessage == nil && restoredCustomers.records.count == 1 && restoredSites.records.count == 1, "shared point archive corrupt")
-            try require(restoredCustomers.records[0].capture?.coordinate?.longitude == 127.4000002 && restoredSites.records[0].capture.coordinate?.longitude == 127.4000002, "selected coordinate lost")
+            try require(restoredCustomers.records[0].capture?.coordinate?.longitude == 127.4000002 && restoredSites.records[0].capture?.coordinate?.longitude == 127.4000002, "selected coordinate lost")
         }
         try check("remembering selected deliveries keeps the updated address record and original identity") {
             var plan = DeliveryPlan(); plan.visits = pinCustomers.records.map(\.template)
@@ -163,7 +163,7 @@ private func sharedBusiness(_ longitude: String = "127.4000001") throws -> Naver
             _ = try siteCustomers.save(pin); _ = try siteTargets.save(pin)
             let customerCopy = NaverCustomerStore(directory: siteFolder), siteCopy = SiteTargetStore(directory: siteFolder)
             try require(customerCopy.errorMessage == nil && siteCopy.errorMessage == nil && customerCopy.records.count == 1 && siteCopy.records.count == 1, "HTTP site archive")
-            for saved in [customerCopy.records[0].capture!, siteCopy.records[0].capture] {
+            for saved in [customerCopy.records[0].capture!, siteCopy.records[0].capture!] {
                 try require(saved.coordinate?.longitude == 127.4000001 && saved.coordinate?.latitude == 36.3000001 && saved.placeID == "101", "HTTP site coordinate changed")
                 try require(saved.address == "대전 유성구 가상로 11" && saved.sharedPinEvidence?.sharedAddress == saved.address && saved.method == "naver_shared_link_coordinate", "HTTP site proof lost")
             }
@@ -174,7 +174,23 @@ private func sharedBusiness(_ longitude: String = "127.4000001") throws -> Naver
             let customerAdded = try siteCustomers.save(updated), siteAdded = try siteTargets.save(updated)
             try require(!customerAdded && !siteAdded && siteCustomers.records.count == 1 && siteTargets.records.count == 1, "HTTP site duplicated")
             try require(siteCustomers.records[0].id == customerID && siteTargets.records[0].id == siteID, "HTTP site identity changed")
-            try require(NaverCustomerStore(directory: siteFolder).records[0].capture?.coordinate?.longitude == 127.4000002 && SiteTargetStore(directory: siteFolder).records[0].capture.coordinate?.longitude == 127.4000002, "HTTP site new coordinate not persisted")
+            try require(NaverCustomerStore(directory: siteFolder).records[0].capture?.coordinate?.longitude == 127.4000002 && SiteTargetStore(directory: siteFolder).records[0].capture?.coordinate?.longitude == 127.4000002, "HTTP site new coordinate not persisted")
+        }
+        try check("manual coordinate edits preserve raw shared proof and survive reload") {
+            let original = siteCustomers.records[0].capture!, siteOriginal = siteTargets.records[0].capture!
+            let edited = TMapCoordinate(longitude: 127.4009, latitude: 36.3008)
+            try siteCustomers.setCoordinate(siteCustomers.records[0].id, coordinate: edited)
+            try siteTargets.setCoordinate(siteTargets.records[0].id, coordinate: edited)
+            let customer = NaverCustomerStore(directory: siteFolder).records[0], target = SiteTargetStore(directory: siteFolder).records[0]
+            try require(customer.effectiveCoordinate?.longitude == edited.longitude && target.effectiveCoordinate.latitude == edited.latitude, "manual edit lost")
+            try require(customer.capture?.sharedLinkURL == original.sharedLinkURL && target.capture?.coordinate?.longitude == siteOriginal.coordinate?.longitude, "original proof rewritten")
+        }
+        try check("manual targets without Naver evidence persist and coordinate restore works") {
+            let id = try siteTargets.saveManual(name: "직접 지정 시설", address: "", coordinate: TMapCoordinate(longitude: 127.4, latitude: 36.3))
+            try siteTargets.setCoordinate(id, coordinate: TMapCoordinate(longitude: 127.5, latitude: 36.4))
+            try siteTargets.setCoordinate(id, coordinate: nil)
+            let copy = SiteTargetStore(directory: siteFolder)
+            try require(copy.records.first { $0.id == id }?.effectiveCoordinate.longitude == 127.4 && copy.records.first { $0.id == id }?.capture == nil, "manual target lost")
         }
         print("Place destination native checks: \(passed)/\(passed) passed")
     }

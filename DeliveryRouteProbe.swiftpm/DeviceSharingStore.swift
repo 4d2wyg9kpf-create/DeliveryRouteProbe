@@ -73,6 +73,7 @@ final class DeviceSharingStore: ObservableObject {
     private var connecting = false
     private var snapshot: (() throws -> DeviceShareSnapshot)?
     private var apply: ((DeviceShareReplica) throws -> Void)?
+    private var catalogSync: ((URL) async throws -> Void)?
     private var syncTask: Task<Void, Error>?
     private var saveTask: Task<Void, Never>?
     private var pollingTask: Task<Void, Never>?
@@ -107,8 +108,8 @@ final class DeviceSharingStore: ObservableObject {
             folder = url; folderName = url.lastPathComponent
         } catch { errorMessage = DeviceShareError.unavailable.localizedDescription }
     }
-    func bind(snapshot: @escaping () throws -> DeviceShareSnapshot, apply: @escaping (DeviceShareReplica) throws -> Void) {
-        self.snapshot = snapshot; self.apply = apply
+    func bind(snapshot: @escaping () throws -> DeviceShareSnapshot, apply: @escaping (DeviceShareReplica) throws -> Void, catalogSync: ((URL) async throws -> Void)? = nil) {
+        self.snapshot = snapshot; self.apply = apply; self.catalogSync = catalogSync
         DeviceShareHooks.didChange = { [weak self] reservations in try self?.capture(reservations: reservations) }
         DeviceShareHooks.beforeRequest = { [weak self] in
             guard let self else { return }
@@ -224,6 +225,7 @@ final class DeviceSharingStore: ObservableObject {
             }
             let outgoing = checkpoint.replica
             try await Task.detached(priority: .utility) { try DeviceShareFolderIO.write(outgoing, to: folder) }.value
+            try await catalogSync?(folder)
             lastSync = Date(); deviceCount = Set(replicas.map(\.deviceID) + [outgoing.deviceID]).count
             errorMessage = nil; message = "키·목록·사용량을 동기화했습니다."
         } catch {
