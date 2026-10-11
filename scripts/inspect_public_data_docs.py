@@ -13,9 +13,9 @@ URLS = {
     'bakery-alt': 'https://data.go.kr/data/15155252/openapi.do',
     'kapt-api': 'https://www.data.go.kr/data/15058453/openapi.do',
     'kapt-list-api': 'https://www.data.go.kr/data/15057332/openapi.do',
-    'kapt-basic-page': 'https://www.k-apt.go.kr/kaptinfo/openKaptInfo.do?aptCode=A30279105',
+    'kapt-basic-page': 'https://www.k-apt.go.kr/kaptinfo/openkaptinfo.do',
     'kapt-facility-page': 'https://www.k-apt.go.kr/kaptinfo/openKaptMng.do?aptCode=A30279105',
-    'juso-search-doc': 'https://business.juso.go.kr/addrlink/openApi/searchApi.do',
+    'juso-search-doc': 'https://business.juso.go.kr/jst/jstRoadNmAddrApiSearch',
 }
 
 for name, url in URLS.items():
@@ -63,3 +63,29 @@ for name, url in URLS.items():
                     print(json.dumps({'script': src, 'error': str(e)}))
     except Exception as error:
         print(json.dumps({'document': name, 'error': str(error)}, ensure_ascii=False))
+
+# Read a few ordinary anonymous website requests, using the site's own CSRF
+# token and cookie session. No credentials, login, CAPTCHA bypass or retries.
+import http.cookiejar
+from urllib.parse import urlencode
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+try:
+    with opener.open('https://www.k-apt.go.kr/kaptinfo/openkaptinfo.do', timeout=25) as response:
+        page = response.read(3_000_000).decode('utf-8')
+    csrf = re.search(r'name="_csrf"\s+content="([^"]+)"', page)
+    if not csrf:
+        csrf = re.search(r'var token\s*=\s*[\"\']([^\"\']+)',page)
+    if not csrf:
+        raise ValueError('No anonymous CSRF token')
+    for name,path,form in [
+        ('kapt-nuri-basic','/kaptinfo/getKaptInfo.do',{'kaptCode':'A30279105'}),
+        ('kapt-nuri-facility','/kaptinfo/getKaptInfo_detail.do',{'kaptCode':'A30279105'}),
+        ('kapt-wolpyeong-list','/kaptinfo/getKaptList.do',{'bjdCode':'3017011300','searchDate':'202608','kaptDuty':'ALL','kaptName':''})]:
+        form['_csrf'] = csrf.group(1)
+        request = urllib.request.Request('https://www.k-apt.go.kr'+path, data=urlencode(form).encode(), headers={'Content-Type':'application/x-www-form-urlencoded','Referer':'https://www.k-apt.go.kr/kaptinfo/openkaptinfo.do','X-Requested-With':'XMLHttpRequest'})
+        with opener.open(request,timeout=25) as response:
+            data=response.read(3_000_000)
+        (OUT/(name+'.json')).write_bytes(data)
+        print(json.dumps({'sample':name,'bytes':len(data)},ensure_ascii=False))
+except Exception as error:
+    print(json.dumps({'sample':'anonymous-kapt','error':str(error)}))
