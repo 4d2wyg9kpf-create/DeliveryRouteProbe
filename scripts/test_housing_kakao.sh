@@ -7,6 +7,7 @@ swiftc -parse-as-library \
   DeliveryRouteProbe.swiftpm/DeviceShareModels.swift \
   DeliveryRouteProbe.swiftpm/APICredentialArchive.swift \
   DeliveryRouteProbe.swiftpm/KakaoRouteModels.swift \
+  DeliveryRouteProbe.swiftpm/KakaoDistanceArchive.swift \
   DeliveryRouteProbe.swiftpm/KakaoRouteStore.swift \
   DeliveryRouteProbe.swiftpm/HousingModels.swift \
   DeliveryRouteProbe.swiftpm/HousingSeed.swift \

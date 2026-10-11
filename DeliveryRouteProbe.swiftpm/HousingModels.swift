@@ -31,12 +31,13 @@ struct HousingRegion: Codable, Identifiable {
     var generation: Double
     var sourceCount: Int
     var records: [HousingSource]
+    var listFetchedMillis: Double? = nil
     var id: String { code }
     var title: String { "\(sido.name) \(sigungu.name) \(dong.name)" }
     var detailCount: Int { records.filter { $0.detailAt != nil }.count }
     func validate() throws {
         guard version == 1, code.range(of: #"^\d{10}$"#, options: .regularExpression) != nil,
-              code == sido.code + sigungu.code + dong.code, generation.isFinite, generation > 0,
+              code == sido.code + sigungu.code + dong.code, listFetchedMillis.map({ $0.isFinite && $0 > 0 && $0 <= generation + 60_000 }) ?? true, generation.isFinite, generation > 0, generation <= 9_000_000_000_000_000,
               sourceCount == records.count, records.count <= 100_000, Set(records.map(\.id)).count == records.count,
               records.allSatisfy({ $0.id == "realty:" + code.prefix(5) + ":" + $0.aptCode && $0.regionCode == code && $0.fields.count <= 30 && $0.fields.values.allSatisfy({ $0.utf8.count <= 20_000 }) && ($0.coordinate.map(KakaoRouteAPI.valid) ?? true) }) else { throw PlannerFailure.message("공동주택 원본 자료의 지역·개수·식별자를 확인하세요.") }
     }
@@ -76,5 +77,23 @@ enum HousingCatalog {
             return HousingComplex(id: id, sourceIDs: edit?.sourceIDs ?? [id], regionCode: edit?.regionCode ?? source?.regionCode ?? "",
                 fields: fields, coordinate: edit?.coordinate ?? original?.coordinate, original: original, edited: edit != nil)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+}
+
+extension HousingRegion {
+    func merging(_ incoming: HousingRegion) throws -> HousingRegion {
+        try validate(); try incoming.validate(); guard code == incoming.code else { throw DeviceShareError.invalid }
+        let localList = listFetchedMillis ?? generation, remoteList = incoming.listFetchedMillis ?? incoming.generation
+        var latest = remoteList >= localList ? incoming : self
+        let local = Dictionary(records.map { ($0.id,$0) }, uniquingKeysWith: { _, new in new })
+        let remote = Dictionary(incoming.records.map { ($0.id,$0) }, uniquingKeysWith: { _, new in new })
+        latest.records = latest.records.map { row in
+            guard let a = local[row.id], let b = remote[row.id], a.noticeDate == b.noticeDate else { return row }
+            if let ad = a.detailAt, let bd = b.detailAt { return bd >= ad ? b : a }
+            if a.detailAt != nil { return a }; if b.detailAt != nil { return b }; return row
+        }
+        latest.listFetchedMillis = max(localList,remoteList)
+        latest.generation = max(generation,incoming.generation)
+        return latest
     }
 }

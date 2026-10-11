@@ -45,3 +45,21 @@ test('Delivery window violations remain visible while received provider route da
 const report={passed:checks.length,total:checks.length,checks,liveAPI:false};
 const evidence=path.join(__dirname,'../evidence');if(fs.existsSync(evidence))fs.writeFileSync(path.join(evidence,'delivery_flow_tests.json'),JSON.stringify(report,null,2)+'\n');
 console.log(JSON.stringify(report));
+// Explicit user correction wins over raw Naver proof without rewriting the proof.
+{
+  const fs = require('fs'), vm = require('vm');
+  const context = {Date, console}; vm.createContext(context);
+  vm.runInContext(fs.readFileSync(require('path').join(__dirname,'../scripts/naver_places.js'),'utf8'),context);
+  const core = context.DeliveryNaverPlaces;
+  const capture = core.sharedPin({resolvedURL:'https://map.naver.com/?pinId=900&pinType=site&menu=location&title=fixture&lng=127.4&lat=36.3',sharedURL:'https://naver.me/testFixture',sharedName:'fixture',sharedAddress:'대전 중구 가상로 1',now:1791734400000});
+  const plan={originName:'origin',visits:[],legs:[],returnToOrigin:true};
+  const record={id:'customer-test',name:'fixture',capture,coordinateOverride:{longitude:127.4009,latitude:36.3008},template:{id:'visit-test',name:'fixture'},folders:[]};
+  const selected=core.selectCustomers({plan,customers:[record],selectedIDs:['customer-test'],curbConfirmed:true});
+  if(selected.visits[0].tmapCoordinate.longitude!==127.4009 || selected.visits[0].naverPlace.coordinate.longitude!==127.4)throw Error('manual correction or source proof lost');
+  const endpoints=core.endpoints({plan:selected,customers:[record],originID:record.id,endMode:'custom',destinationID:record.id,curbConfirmed:true});
+  if(endpoints.tmapOrigin.latitude!==36.3008 || endpoints.destination.tmapCoordinate.longitude!==127.4009)throw Error('corrected endpoints not selected');
+  record.coordinateOverride=null;record.coordinateManaged=true;record.template=selected.visits[0];
+  const restored=core.selectCustomers({plan:selected,customers:[record],selectedIDs:[record.id],curbConfirmed:true});
+  if(restored.visits[0].tmapCoordinate.longitude!==127.4)throw Error('restoring raw coordinate kept a prior plan override');
+  console.log('PASS explicit manual coordinates apply to visit and endpoints while retaining original Naver coordinates');
+}

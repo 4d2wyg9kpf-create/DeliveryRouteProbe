@@ -41,7 +41,7 @@ struct RealtyHousingClient {
                 issues: Self.road(road) ? [] : ["도로명주소 미제공 · 변환 필요"])
         }
         let region = HousingRegion(code: code, sido: sido, sigungu: sigungu, dong: dong, generation: Date().timeIntervalSince1970 * 1000,
-            sourceCount: rows.count, records: records); try region.validate(); return region
+            sourceCount: rows.count, records: records, listFetchedMillis: Date().timeIntervalSince1970 * 1000); try region.validate(); return region
     }
     static func matches(_ html: String, _ pattern: String, group: Int = 1) -> [String] {
         guard let expression = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators, .caseInsensitive]) else { return [] }

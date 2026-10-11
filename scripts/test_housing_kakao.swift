@@ -131,6 +131,23 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
             var updated = a; updated.coordinate.longitude += 0.000001
             try require(api.results[0].matches([a,b]) && !api.results[0].matches([updated,b]), "stale distance not detected")
         }
+        try check("partial collection merges completed complex data from an older region snapshot") {
+            var left = region, right = region
+            left.records[0].detailAt = Date(timeIntervalSince1970: 100); left.generation = 1_900_000_000_004
+            right.records[0].detailAt = Date(timeIntervalSince1970: 200); right.records[0].fields["parking"] = "12"; right.generation = 1_900_000_000_003
+            let combined = try left.merging(right)
+            try require(combined.records[0].fields["parking"] == "12" && combined.generation == left.generation, "older region's newer complex lost")
+        }
+        try check("unbounded result archive retains earlier rows outside recent display window") {
+            let archive = try KakaoDistanceArchive(directory: folder.appendingPathComponent("large-results"))
+            var rows: [KakaoDistanceRecord] = []
+            for i in 0..<5001 { var r = api.results[0]; r.id = "result-\(i)"; r.queriedAt = Date(timeIntervalSince1970: Double(i)); rows.append(r) }
+            try archive.append(rows)
+            try require(archive.count == 5001 && archive.recent().count == 5000, "old distances discarded")
+            let csv = folder.appendingPathComponent("all-distances.csv"); try archive.exportCSV(to: csv)
+            let text = try String(contentsOf: csv,encoding: .utf8)
+            try require(text.components(separatedBy: "\r\n").count == 5003 && text.contains("result-0"), "full export omitted older records")
+        }
         print("Housing Kakao native checks: \(passed)/\(passed) passed")
     }
 }

@@ -15,6 +15,7 @@ struct KakaoRouteView: View {
     @State private var showSettings = false
     @State private var exporting = false
     @State private var document = DataTextDocument()
+    @State private var exportURL: URL?
     @State private var error: String?
     @State private var task: Task<Void, Never>?
     @State private var queried: [KakaoDistanceRecord] = []
@@ -50,10 +51,14 @@ struct KakaoRouteView: View {
                 if store.isBusy { ProgressView(); Button("조회 중단") { task?.cancel() } }
                 Button("카카오 API 키·사용량 설정") { showSettings = true }
                 if let error { Text(error).foregroundStyle(.red).font(.caption) }
-            }.disabled(store.isBusy)
-            Section("저장된 거리 · \(store.results.count)건") {
+            }
+            Section("저장된 거리 · \(store.resultCount)건") {
                 Text("좌표를 수정한 구간은 이전 결과로 표시됩니다. 거리·시간은 API 응답값이며 직선거리와 다릅니다.").font(.caption).foregroundStyle(.secondary)
-                Button("저장 결과 CSV 내보내기") { document = DataTextDocument(kakaoCSV(store.results)); exporting = true }
+                Button("전체 저장 결과 CSV 만들기") {
+                    Task { do { exportURL = try await store.exportCSV() } catch { self.error = error.localizedDescription } }
+                }
+                if let exportURL { ShareLink("CSV 파일 저장·공유", item: exportURL) }
+                Text("최근 300건을 표시합니다. CSV는 보관된 모든 결과를 내보냅니다.").font(.caption).foregroundStyle(.secondary)
                 ForEach(Array(store.results.reversed().prefix(300))) { result in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(result.origin.name + " → " + result.destination.name).bold()
@@ -86,6 +91,7 @@ struct KakaoRouteView: View {
     }
 }
 struct KakaoSettingsView: View {
+    @EnvironmentObject private var inputs: NativeInputSession
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: KakaoRouteStore
     @State private var key = ""
@@ -101,7 +107,7 @@ struct KakaoSettingsView: View {
                     NativeTextField(store.settings.key.isEmpty ? "REST API 키" : "새 키 입력 · 빈칸은 기존 키 유지", text: $key, secure: true)
                     Toggle("카카오맵 사용 ON · 무료 쿼터 앱 확인", isOn: $mapFree)
                     Toggle("카카오내비 길찾기 사용·무료 쿼터 확인", isOn: $naviFree)
-                    Button("키·설정 저장") { do { try store.saveSettings(key: key, mapFree: mapFree, naviFree: naviFree); key = ""; error = nil } catch { self.error = error.localizedDescription } }
+                    Button("키·설정 저장") { do { inputs.finishEditing(); try store.saveSettings(key: key, mapFree: mapFree, naviFree: naviFree); key = ""; error = nil } catch { self.error = error.localizedDescription } }
                     Text("설정은 저장 버튼을 누르면 적용되고, 연결한 iCloud 폴더에 자동 동기화됩니다. 카카오맵 무료 쿼터는 개발자 계정에서 첫 활성화 앱에 제공됩니다.").font(.caption).foregroundStyle(.secondary)
                     Link("카카오디벨로퍼스 앱 설정", destination: URL(string: "https://developers.kakao.com/console/app")!)
                     Link("무료 쿼터 안내", destination: URL(string: "https://developers.kakao.com/docs/ko/getting-started/quota")!)
@@ -121,11 +127,4 @@ struct KakaoSettingsView: View {
                 .onAppear { mapFree = store.settings.mapFreeConfirmed; naviFree = store.settings.naviFreeConfirmed }
         }
     }
-}
-func kakaoCSV(_ records: [KakaoDistanceRecord]) -> String {
-    func q(_ v: String) -> String { "\"" + v.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-    let header = ["ID", "출발ID", "출발지", "출발주소", "출발위도", "출발경도", "목적ID", "목적지", "목적주소", "목적위도", "목적경도", "API", "탐색기준", "출발시각", "조회시각", "거리m", "시간s", "대안", "오류"]
-    let f = ISO8601DateFormatter()
-    let rows = records.map { r in [r.id, r.origin.id, r.origin.name, r.origin.address, String(r.origin.coordinate.latitude), String(r.origin.coordinate.longitude), r.destination.id, r.destination.name, r.destination.address, String(r.destination.coordinate.latitude), String(r.destination.coordinate.longitude), r.mode.rawValue, r.priority, r.departureTime ?? "", f.string(from: r.queriedAt), r.distanceMeters.map(String.init) ?? "", r.durationSeconds.map(String.init) ?? "", r.alternative, r.issue ?? ""].map(q).joined(separator: ",") }
-    return "\u{FEFF}" + ([header.map(q).joined(separator: ",")] + rows).joined(separator: "\r\n")
 }

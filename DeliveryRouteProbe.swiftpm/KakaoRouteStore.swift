@@ -25,6 +25,7 @@ private final class KakaoNetworkDelegate: NSObject, URLSessionTaskDelegate {
 final class KakaoRouteStore: ObservableObject {
     static let shared = KakaoRouteStore()
     @Published private(set) var settings = KakaoSettings()
+    @Published private(set) var resultCount = 0
     @Published private(set) var results: [KakaoDistanceRecord] = []
     @Published private(set) var isBusy = false
     @Published var errorMessage: String?
@@ -36,6 +37,7 @@ final class KakaoRouteStore: ObservableObject {
     private let write: (Data) throws -> Void
     private let transport: ((URLRequest) async throws -> (Data, URLResponse))?
     private let resultURL: URL
+    private var resultArchive: KakaoDistanceArchive?
     private let delegate = KakaoNetworkDelegate()
     private lazy var session: URLSession = {
         let c = URLSessionConfiguration.ephemeral; c.urlCache = nil; c.httpCookieStorage = nil; c.httpShouldSetCookies = false
@@ -52,7 +54,9 @@ final class KakaoRouteStore: ObservableObject {
         resultURL = root.appendingPathComponent("kakao-distances.json")
         do {
             if let data = try read() { try Self.validateSavedState(data); state = try JSONDecoder().decode(KakaoSecureState.self, from: data) }
-            if FileManager.default.fileExists(atPath: resultURL.path) { results = try DeviceShareCodec.decode([KakaoDistanceRecord].self, Data(contentsOf: resultURL)); guard results.count <= 5_000 else { throw DeviceShareError.invalid } }
+            resultArchive = try KakaoDistanceArchive(directory: root)
+            if FileManager.default.fileExists(atPath: resultURL.path) { let legacy = try DeviceShareCodec.decode([KakaoDistanceRecord].self, Data(contentsOf: resultURL)); try resultArchive!.append(legacy) }
+            results = try resultArchive!.recent(); resultCount = try resultArchive!.count
             settings = state.settings
         } catch { blockedRecovery = true; errorMessage = "카카오 키·사용량·결과 기록을 확인하세요. 기존 파일은 보존했습니다." }
     }
@@ -102,8 +106,10 @@ final class KakaoRouteStore: ObservableObject {
         request.httpMethod = "HEAD"; request.setValue("no-cache, no-store", forHTTPHeaderField: "Cache-Control")
         let (_, response) = try await send(request)
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
-        guard let http = response as? HTTPURLResponse, (200...399).contains(http.statusCode), http.url?.host == "www.naver.com",
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode), http.url?.host == "www.naver.com",
               let header = http.value(forHTTPHeaderField: "Date"), let date = f.date(from: header), date.timeIntervalSince1970 * 1000 + 300_000 >= state.trustedMillis else { throw PlannerFailure.message("인터넷 시각을 확인하지 못했습니다. 사용량 초기화를 보류합니다.") }
+        let age = http.value(forHTTPHeaderField: "Age").flatMap(Double.init) ?? 0
+        guard age.isFinite, age <= 5, age >= 0 else { throw PlannerFailure.message("이전 인터넷 시각 응답입니다. 다시 확인하세요.") }
         var next = state; next.trustedMillis = max(next.trustedMillis, date.timeIntervalSince1970 * 1000); try commit(next)
         clock = Date(timeIntervalSince1970: next.trustedMillis / 1000); referenceUptime = ProcessInfo.processInfo.systemUptime
     }
@@ -112,6 +118,8 @@ final class KakaoRouteStore: ObservableObject {
         isBusy = true; defer { isBusy = false }
         try await DeviceShareHooks.prepareRequest(); try await ensureClock(); try Task.checkCancellation()
         guard let now, !state.settings.key.isEmpty, mode.isMap ? settings.mapFreeConfirmed : settings.naviFreeConfirmed else { throw PlannerFailure.message("카카오 키와 해당 API 사용 설정·무료 쿼터를 확인하세요.") }
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "Asia/Seoul")!
+        guard now.timeIntervalSince(calendar.startOfDay(for: now)) >= 300 else { throw PlannerFailure.message("일간 쿼터 초기화 확인을 위해 한국 시각 00:05 이후에 조회하세요.") }
         let request = try KakaoRouteAPI.request(mode: mode, origin: fixed, destinations: others, key: state.settings.key, priority: priority, radius: radius, departure: departure, now: now)
         var next = state; var reservations: [String] = []
         for (slot, period, limit) in [(mode.rawValue, Self.period(now), mode.dailyLimit), ("all", Self.period(now, monthly: true), 3_000_000)] {
@@ -127,19 +135,25 @@ final class KakaoRouteStore: ObservableObject {
         }
         guard http.statusCode == 200 else { throw PlannerFailure.message("카카오 API 오류 (HTTP \(http.statusCode)). 키·사용 설정·쿼터를 확인하세요.") }
         let records = try KakaoRouteAPI.parse(data, mode: mode, origin: fixed, destinations: others, priority: priority, departure: departure, now: now)
-        try saveResults(Array((results + records).suffix(5_000))); return records
+        try saveResults(records); return records
     }
     private func saveResults(_ records: [KakaoDistanceRecord]) throws {
         guard !blockedRecovery else { throw APICredentialStorageError.notLoaded }
-        try FileManager.default.createDirectory(at: resultURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try DeviceShareCodec.encode(records).write(to: resultURL, options: .atomic); results = records; try DeviceShareHooks.changed()
+        guard let resultArchive else { throw DeviceShareError.unavailable }
+        try resultArchive.append(records); results = try resultArchive.recent(); resultCount = try resultArchive.count
+    }
+    func exportCSV() async throws -> URL {
+        let directory = resultURL.deletingLastPathComponent()
+        let url = directory.appendingPathComponent("SiteDistances-" + UUID().uuidString + ".csv")
+        try await Task.detached(priority: .utility) { try KakaoDistanceArchive(directory: directory).exportCSV(to: url) }.value
+        return url
     }
     func sharingSnapshot() throws -> DeviceShareSnapshot {
         guard !blockedRecovery else { throw DeviceShareError.unavailable }
         var value = DeviceShareSnapshot(); value.values["setting/kakao"] = try DeviceShareCodec.encode(settings)
         for (id, bucket) in state.usage {
             let parts = id.split(separator: "|").map(String.init); guard parts.count == 3 else { throw DeviceShareError.invalid }
-            let limit = parts[2] == "all" ? 3_000_000 : KakaoRouteMode(rawValue: parts[2])?.dailyLimit ?? 1_000
+            let limit = parts[2] == "all" ? 3_000_000 : KakaoRouteMode(rawValue: parts[2])?.dailyLimit ?? (parts[2] == "address" ? 100_000 : 1_000)
             value.usage.append(DeviceShareUsageObservation(domain: "kakao", account: parts[0], period: parts[1], slot: parts[2], used: bucket.used, limit: limit, blocked: bucket.blocked, trustedMillis: state.trustedMillis))
         }
         return value

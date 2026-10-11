@@ -238,6 +238,10 @@ enum NaverPlaceEngineSource {
         if(id==='new'&&p.tmapBinding){p.tmapBinding=null;for(const leg of p.legs||[])if(leg.source==='tmap')leg.locationInvalidated=true;}
         return {plan:p,stopID,invalidated,coordinateChanged:!!changed};
       }
+      function manualPoint(name,coord){
+        const x=coord.longitude/180*20037508.342789244,y=6378137*Math.log(Math.tan(Math.PI/4+coord.latitude*Math.PI/360));
+        return {name,token:x+','+y+','+encodeURIComponent(name)+',,SIMPLE_POI'};
+      }
       function selectCustomers(input){
         let p=copy(input.plan);const customers=input.customers,selected=input.selectedIDs;
         if(!p||!Array.isArray(p.visits)||!Array.isArray(customers)||!Array.isArray(selected)||new Set(selected).size!==selected.length)fail('이번 배송 거래처 선택을 확인해 주세요.');
@@ -253,7 +257,7 @@ enum NaverPlaceEngineSource {
         let changed=removed.length>0;
         for(const customer of customers.filter(c=>wanted.has(c.id))){
           let existing=p.visits.find(v=>v.id===customer.template?.id||(customer.capture&&selectionMatches({first:v.naverPlace,second:customer.capture})));
-          if(existing&&previousCoordinate(p,existing.id)&&!customer.coordinateOverride)continue; // Preserve a separately confirmed vehicle position.
+          if(existing&&previousCoordinate(p,existing.id)&&!customer.coordinateOverride&&!customer.coordinateManaged)continue; // Preserve a separately confirmed vehicle position.
           const candidate=copy(customer.template);
           if(!candidate||!candidate.id||['depot','destination'].includes(candidate.id)||!text(candidate.name,500,'거래처 이름'))fail('거래처 저장 정보를 확인해 주세요.');
           if(customer.capture){
@@ -264,13 +268,17 @@ enum NaverPlaceEngineSource {
             if(p.visits.some(v=>v.id===candidate.id))fail('거래처 식별자가 중복됐습니다.');
             p.visits.push(candidate);
           }
-          if(customer.coordinateOverride){
-            const manual=coordinate(customer.coordinateOverride);if(!manual)fail('수정한 좌표 형식을 확인해 주세요.');
+          if(customer.coordinateOverride||customer.coordinateManaged){
+            const manual=copy(customer.coordinateOverride||customer.capture?.coordinate||customer.template?.tmapCoordinate);if(!coordinate(manual))fail('수정한 좌표 형식을 확인해 주세요.');
             const visit=p.visits.find(v=>v.id===(existing?existing.id:candidate.id));
             if(!visit)fail('수정할 배송지를 찾지 못했습니다.');
-            if(JSON.stringify(previousCoordinate(p,visit.id))!==JSON.stringify(manual))changed=true;
-            visit.tmapCoordinate={...manual,detailAddress:customer.capture?.requestAddress||customer.capture?.preferredAddress||''};
-            for(const leg of p.legs||[])if(leg.fromID===visit.id||leg.toID===visit.id)leg.locationInvalidated=true;
+            const moved=JSON.stringify(previousCoordinate(p,visit.id))!==JSON.stringify({longitude:manual.longitude,latitude:manual.latitude});if(moved)changed=true;
+            visit.tmapCoordinate={longitude:manual.longitude,latitude:manual.latitude,detailAddress:customer.capture?.requestAddress||customer.capture?.roadAddress||customer.capture?.address||''};
+            if(moved){
+              visit.roadAccess={...(visit.roadAccess||{}),curbConfirmed:true,curbPoint:manualPoint(customer.name,manual),curbEntranceToken:null};
+              if(visit.roadAccess.bikeEntrance)visit.roadAccess.bikeEntrance.entranceConfirmed=false;
+              for(const leg of p.legs||[])if(leg.fromID===visit.id||leg.toID===visit.id)leg.locationInvalidated=true;
+            }
           }
           if(!existing)changed=true;
         }
@@ -285,10 +293,11 @@ enum NaverPlaceEngineSource {
         const signature=JSON.stringify([p.originName,p.tmapOrigin,p.originAccess,p.destination,p.returnToOrigin]);
         function selected(id){
           const record=customers.find(c=>c.id===id);if(!record?.template)fail('선택한 출발지·도착지가 목록에 없습니다.');
-          const v=record.template,actual=coordinate(record.coordinateOverride)||previousCoordinate({visits:[v]},v.id),capture=record.capture?copy(validate(record.capture)):null;
+          const v=record.template,actual=(coordinate(record.coordinateOverride)?copy(record.coordinateOverride):record.coordinateManaged&&coordinate(record.capture?.coordinate)?copy(record.capture.coordinate):null)||previousCoordinate({visits:[v]},v.id),capture=record.capture?copy(validate(record.capture)):null;
           if(!actual&&(!capture?.coordinate||input.curbConfirmed!==true))fail('출발지·도착지의 좌표와 실제 정차 위치를 확인해 주세요.');
           const coord=actual||capture.coordinate,requestAddress=v.tmapCoordinate?.detailAddress||capture?.requestAddress||capture?.roadAddress||capture?.address||'';
           const access=copy(v.roadAccess||{roadType:'',curbConfirmed:false,note:''});
+          if(record.coordinateOverride||record.coordinateManaged){access.curbPoint=manualPoint(record.name,coord);access.curbConfirmed=true;access.curbEntranceToken=null;if(access.bikeEntrance)access.bikeEntrance.entranceConfirmed=false;}
           if(!actual){access.curbPoint=copy(capture.point);access.curbConfirmed=true;access.curbEntranceToken=null;if(access.bikeEntrance)access.bikeEntrance.entranceConfirmed=false;}
           return {name:text(record.name,500,'출발지·도착지 이름'),tmapCoordinate:{...coord,detailAddress:requestAddress,poiID:v.tmapCoordinate?.poiID||null},roadAccess:access,naverPlace:capture,customerID:id};
         }

@@ -72,7 +72,7 @@ final class HousingIndex {
         } catch { try? run("ROLLBACK"); throw error }
     }
     func search(region: String, keyword: String, sourceIDs: Set<String>) throws -> [HousingSource] {
-        let s = try statement("SELECT data FROM sources WHERE (?='' OR region=?) AND (?='' OR instr(name,?)>0 OR instr(address,?)>0) ORDER BY name LIMIT 2000")
+        let s = try statement("SELECT data FROM sources WHERE (?='' OR region=?) AND (?='' OR instr(lower(name),lower(?))>0 OR instr(lower(address),lower(?))>0) ORDER BY name LIMIT 2000")
         defer { sqlite3_finalize(s) }
         for (i,value) in [region,region,keyword,keyword,keyword].enumerated() { try bind(value,at: Int32(i+1),to: s) }
         var records: [String: HousingSource] = [:]; var status = sqlite3_step(s)

@@ -14,7 +14,10 @@ struct HousingCatalogView: View {
     @State private var sidos: [HousingArea] = []
     @State private var districts: [HousingArea] = []
     @State private var dongs: [HousingArea] = []
-    @State private var sido = "", district = "", dong = "", keyword = ""
+    @State private var sido = ""
+    @State private var district = ""
+    @State private var dong = ""
+    @State private var keyword = ""
     @State private var selected = Set<String>()
     @State private var merging = false
     @State private var mergeName = ""
@@ -60,6 +63,13 @@ struct HousingCatalogView: View {
                 Section("수집 현황") {
                     ForEach(store.regions.filter { sido.isEmpty || $0.sido.code == sido }) { region in
                         Text("\(region.title) · 목록 \(region.sourceCount) / 상세 \(region.detailCount)").font(.caption)
+                    }
+                }
+            }
+            if store.edits.contains(where: \.hidden) {
+                Section("숨긴 단지 · 복원") {
+                    ForEach(store.edits.filter(\.hidden)) { edit in
+                        Button((edit.fields["name"] ?? edit.id) + " · 다시 표시") { do { try store.restore(edit.id) } catch { self.error = error.localizedDescription } }
                     }
                 }
             }
@@ -120,7 +130,7 @@ struct HousingCatalogView: View {
     }
     private func collect(details: Bool) {
         guard let s = sidos.first(where: { $0.code == sido }), let g = districts.first(where: { $0.code == district }), let d = dongs.first(where: { $0.code == dong }) else { return }
-        start { try await collectRegion(s, g, d, details: details, refresh: !details) }
+        start { try await DeviceShareHooks.prepareRequest(); try await collectRegion(s, g, d, details: details, refresh: !details) }
     }
     private func start(_ operation: @escaping () async throws -> Void) {
         store.isBusy = true; error = nil
@@ -138,10 +148,15 @@ struct HousingCatalogView: View {
         else { store.progress = "\(s.name) \(g.name) \(d.name) 목록 수집"; region = try await client.list(sido: s, sigungu: g, dong: d); try store.importRegion(region) }
         guard details else { return }
         defer { try? store.shareRegion(code) }
-        for index in region.records.indices where region.records[index].detailAt == nil {
-            try Task.checkCancellation(); store.progress = "\(region.title) · 상세 \(index+1)/\(region.records.count)"
+        let missingIDs = region.records.filter { $0.detailAt == nil || ($0.fields["roadAddress", default: ""].isEmpty && KakaoRouteStore.shared.settings.mapFreeConfirmed) }.map(\.id)
+        for id in missingIDs {
+            try Task.checkCancellation()
+            region = try store.originalRegion(code)
+            guard let index = region.records.firstIndex(where: { $0.id == id }) else { continue }
+            if region.records[index].detailAt != nil && !region.records[index].fields["roadAddress", default: ""].isEmpty { continue }
+            store.progress = "\(region.title) · 상세 \(index+1)/\(region.records.count)"
             do {
-                region.records[index] = try await client.detail(region.records[index])
+                if region.records[index].detailAt == nil { region.records[index] = try await client.detail(region.records[index]) }
                 if region.records[index].fields["roadAddress", default: ""].isEmpty, KakaoRouteStore.shared.settings.mapFreeConfirmed, !KakaoRouteStore.shared.settings.key.isEmpty {
                     do { if let road = try await KakaoRouteStore.shared.roadAddress(for: region.records[index]) { region.records[index].fields["roadAddress"] = road; region.records[index].issues.removeAll { $0.contains("도로명주소") } } } catch is CancellationError { throw CancellationError() } catch { region.records[index].issues.append("주소 변환: " + error.localizedDescription) }
                 }
@@ -152,6 +167,7 @@ struct HousingCatalogView: View {
     }
     private func collectNational() {
         start {
+            try await DeviceShareHooks.prepareRequest()
             for s in try await client.areas() {
                 for g in try await client.areas(sido: s.code) {
                     for d in try await client.areas(sido: s.code, sigungu: g.code) {
@@ -167,6 +183,7 @@ struct HousingCatalogView: View {
 }
 struct HousingExport: Codable { var version = 1; var regions: [HousingRegion]; var edits: [HousingEdit] }
 struct HousingComplexView: View {
+    @EnvironmentObject private var inputs: NativeInputSession
     @EnvironmentObject private var store: HousingStore
     @EnvironmentObject private var sites: SiteTargetStore
     let complexID: String
@@ -184,7 +201,7 @@ struct HousingComplexView: View {
                         }
                     }
                     Button("변경한 항목 저장") {
-                        do { let changed = fields.filter { complex.fields[$0.key, default: ""] != $0.value }; try store.edit(complex, fields: changed) } catch { self.error = error.localizedDescription }
+                        do { inputs.finishEditing(); let changed = fields.filter { complex.fields[$0.key, default: ""] != $0.value }; try store.edit(complex, fields: changed) } catch { self.error = error.localizedDescription }
                     }
                     Button("지도에서 좌표 지정·수정") { showMap = true }
                     if let c = complex.coordinate { Text("\(c.latitude, specifier: "%.8f"), \(c.longitude, specifier: "%.8f")").font(.caption) }
@@ -223,7 +240,11 @@ func housingCSV(_ complexes: [HousingComplex], regions: [HousingRegionSummary]) 
     let areas = Dictionary(regions.map { ($0.code, $0) }, uniquingKeysWith: { _, new in new })
     let rows = complexes.map { c -> String in
         let region = areas[c.regionCode]
-        let values = [c.id, c.sourceIDs.joined(separator: ";"), c.regionCode, region?.sido.name ?? "", region?.sigungu.name ?? "", region?.dong.name ?? ""] + HousingField.allCases.map { c.fields[$0.rawValue] ?? "" } + [c.coordinate.map { String($0.latitude) } ?? "", c.coordinate.map { String($0.longitude) } ?? ""]
+        var values: [String] = [c.id, c.sourceIDs.joined(separator: ";"), c.regionCode]
+        values.append(contentsOf: [region?.sido.name ?? "", region?.sigungu.name ?? "", region?.dong.name ?? ""])
+        values.append(contentsOf: HousingField.allCases.map { c.fields[$0.rawValue] ?? "" })
+        values.append(c.coordinate.map { String($0.latitude) } ?? "")
+        values.append(c.coordinate.map { String($0.longitude) } ?? "")
         return values.map(quote).joined(separator: ",")
     }
     return "\u{FEFF}" + ([headings.map(quote).joined(separator: ",")] + rows).joined(separator: "\r\n")

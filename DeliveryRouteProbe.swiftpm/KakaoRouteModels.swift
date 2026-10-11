@@ -31,7 +31,7 @@ struct KakaoDistanceRecord: Codable, Identifiable {
     var issue: String?
     var landingURL: String?
     func matches(_ endpoints: [RouteEndpoint]) -> Bool {
-        endpoints.contains { $0.id == origin.id && $0.coordinate == origin.coordinate } && endpoints.contains { $0.id == destination.id && $0.coordinate == destination.coordinate }
+        endpoints.contains { $0.id == origin.id && $0.coordinate.longitude == origin.coordinate.longitude && $0.coordinate.latitude == origin.coordinate.latitude } && endpoints.contains { $0.id == destination.id && $0.coordinate.longitude == destination.coordinate.longitude && $0.coordinate.latitude == destination.coordinate.latitude }
     }
 }
 enum KakaoRouteAPI {
@@ -96,7 +96,7 @@ enum KakaoRouteAPI {
             guard issue != nil || (distance != nil && duration != nil) else { throw PlannerFailure.message("거리·시간이 없는 경로 응답입니다.") }
             let a = mode == .origins ? end : origin, b = mode == .origins ? origin : end
             let url = summary["landingUrl"] as? String ?? summary["landingURL"] as? String ?? (object["properties"] as? [String: Any])?["landingURL"] as? String
-            return KakaoDistanceRecord(origin: a, destination: b, mode: mode, priority: mode == .walk ? "SHORTEST" : priority,
+            return KakaoDistanceRecord(origin: a, destination: b, mode: mode, priority: mode == .walk ? "SHORTEST" : mode == .transit ? "ALL_ALTERNATIVES" : priority,
                 departureTime: mode == .future ? departure.map(self.departure) : nil, queriedAt: now, distanceMeters: issue == nil ? distance : nil,
                 durationSeconds: issue == nil ? duration : nil, alternative: alternative, issue: issue, landingURL: url)
         }
@@ -122,4 +122,20 @@ enum KakaoRouteAPI {
         }
         return try rows.enumerated().map { i, row in try record(row, end: destinations[0], alternative: mode == .transit ? (row["properties"] as? [String: Any])?["type"] as? String ?? "경로 \(i+1)" : "경로 \(i+1)", map: mode == .transit) }
     }
+}
+
+private func kakaoCSVQuote(_ value: String) -> String {
+    let safe = value.first.map { "=+-@".contains($0) } == true ? "'" + value : value
+    return "\"" + safe.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+}
+let kakaoCSVHeader = ["ID", "출발ID", "출발지", "출발주소", "출발위도", "출발경도", "목적ID", "목적지", "목적주소", "목적위도", "목적경도", "API", "탐색기준", "출발시각", "조회시각", "거리m", "시간s", "대안", "오류"].map(kakaoCSVQuote).joined(separator: ",")
+func kakaoCSVRow(_ r: KakaoDistanceRecord) -> String {
+    let f = ISO8601DateFormatter()
+    var fields: [String] = [r.id, r.origin.id, r.origin.name, r.origin.address]
+    fields.append(contentsOf: [String(r.origin.coordinate.latitude), String(r.origin.coordinate.longitude)])
+    fields.append(contentsOf: [r.destination.id, r.destination.name, r.destination.address])
+    fields.append(contentsOf: [String(r.destination.coordinate.latitude), String(r.destination.coordinate.longitude)])
+    fields.append(contentsOf: [r.mode.rawValue, r.priority, r.departureTime ?? "", f.string(from: r.queriedAt)])
+    fields.append(contentsOf: [r.distanceMeters.map { String($0) } ?? "", r.durationSeconds.map { String($0) } ?? "", r.alternative, r.issue ?? ""])
+    return fields.map(kakaoCSVQuote).joined(separator: ",")
 }

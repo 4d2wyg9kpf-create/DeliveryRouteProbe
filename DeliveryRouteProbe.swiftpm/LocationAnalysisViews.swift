@@ -310,7 +310,7 @@ private func publicDay(_ date: Date) -> String {
     let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Asia/Seoul"); f.dateFormat = "yyyy-MM-dd"
     return f.string(from: date)
 }
-private func publicTimestamp(_ date: Date) -> String {
+func publicTimestamp(_ date: Date) -> String {
     let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR"); f.timeZone = TimeZone(identifier: "Asia/Seoul"); f.dateFormat = "yyyy-MM-dd HH:mm"
     return f.string(from: date)
 }

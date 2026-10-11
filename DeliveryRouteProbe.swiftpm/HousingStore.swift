@@ -66,10 +66,16 @@ final class HousingStore: ObservableObject {
         guard edits.count <= 5_000, Set(edits.map(\.id)).count == edits.count,
               edits.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 200 && $0.sourceIDs.count <= 500 && $0.fields.count <= 30 && $0.fields.values.allSatisfy({ $0.utf8.count <= 20_000 }) && ($0.coordinate.map(KakaoRouteAPI.valid) ?? true) }) else { throw DeviceShareError.invalid }
     }
-    func importRegion(_ region: HousingRegion, share: Bool = true) throws {
+    func importRegion(_ incoming: HousingRegion, share: Bool = true) throws {
+        var region = incoming
         guard writable else { throw DeviceShareError.unavailable }; try region.validate()
         let existing = regions.first { $0.code == region.code }
-        if let existing, existing.generation > region.generation { return }
+        if existing != nil {
+            let local = try originalRegion(region.code), merged = try local.merging(region)
+            if try DeviceShareCodec.encode(merged) == DeviceShareCodec.encode(local) { return }
+            region = merged
+            if merged.generation <= local.generation { region.generation = max(Date().timeIntervalSince1970 * 1000, local.generation + 1) }
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try DeviceShareCodec.encode(region).write(to: directory.appendingPathComponent("region-" + region.code + ".json"), options: .atomic)
         try index?.replace(region)
@@ -89,6 +95,9 @@ final class HousingStore: ObservableObject {
         for edit in incoming { next[edit.id] = edit }; try commit(next.values.sorted { $0.id < $1.id })
     }
     func reset(_ id: String) throws { try commit(edits.filter { $0.id != id }) }
+    func restore(_ id: String) throws {
+        var next = edits; guard let index = next.firstIndex(where: { $0.id == id }) else { return }; next[index].hidden = false; try commit(next)
+    }
     func hide(_ complex: HousingComplex) throws {
         var next = edits; next.removeAll { $0.id == complex.id }
         next.append(HousingEdit(id: complex.id, sourceIDs: complex.sourceIDs, regionCode: complex.regionCode, fields: complex.fields, coordinate: complex.coordinate, hidden: true)); try commit(next)
@@ -101,14 +110,14 @@ final class HousingStore: ObservableObject {
         try commit(edits + [HousingEdit(id: id, sourceIDs: sourceIDs, regionCode: regionCode, fields: fields, coordinate: coordinate)]); return id
     }
     func merge(_ ids: Set<String>, name: String) throws {
-        let selected = complexes.filter { ids.contains($0.id) }; guard selected.count == ids.count, selected.count > 1, Set(selected.map(\.regionCode)).count == 1 else { throw PlannerFailure.message("같은 법정동의 단지를 2개 이상 선택하세요.") }
+        let selected = complexes.filter { ids.contains($0.id) }; guard selected.count == ids.count, selected.count > 1, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PlannerFailure.message("단지를 2개 이상 선택하고 합칠 이름을 입력하세요.") }
         var next = edits
         for complex in selected {
             next.removeAll { $0.id == complex.id }
             next.append(HousingEdit(id: complex.id, sourceIDs: complex.sourceIDs, regionCode: complex.regionCode, fields: complex.fields, coordinate: complex.coordinate, hidden: true))
         }
         next.append(HousingEdit(id: "user:" + UUID().uuidString, sourceIDs: Array(Set(selected.flatMap(\.sourceIDs))).sorted(), regionCode: selected[0].regionCode,
-            fields: [HousingField.name.rawValue: name], coordinate: selected[0].coordinate))
+            fields: Dictionary(uniqueKeysWithValues: HousingField.allCases.map { ($0.rawValue, $0 == .name ? name : "") }), coordinate: selected[0].coordinate))
         try commit(next)
     }
     private func commit(_ next: [HousingEdit]) throws {
@@ -136,39 +145,56 @@ final class HousingStore: ObservableObject {
         if syncFolderIdentity != folder.absoluteString { published.removeAll(); ready.formUnion(regions.map(\.code)); syncFolderIdentity = folder.absoluteString }
         let current = Dictionary(regions.map { ($0.code, $0.generation) }, uniquingKeysWith: max)
         let incoming = try await Task.detached(priority: .utility) { try HousingFolderIO.read(folder, current: current) }.value
-        for region in incoming { try importRegion(region, share: false) }
-        let outgoing = try regions.compactMap { summary -> (String, Data)? in
-            guard ready.contains(summary.code) else { return nil }
-            let data = try DeviceShareCodec.encode(originalRegion(summary.code)); let key = summary.code + "-" + String(Int(summary.generation)) + "-" + DeviceShareCodec.digest(data).prefix(12)
-            return published.contains(key) ? nil : (key, data)
+        for name in incoming {
+            let region = try await Task.detached(priority: .utility) { try HousingFolderIO.readFile(name, folder: folder) }.value
+            try importRegion(region, share: false)
         }
-        try await Task.detached(priority: .utility) { try HousingFolderIO.write(outgoing, folder: folder) }.value
-        published.formUnion(outgoing.map(\.0))
+        for summary in regions where ready.contains(summary.code) {
+            let data = try DeviceShareCodec.encode(originalRegion(summary.code))
+            let key = summary.code + "-" + String(Int(summary.generation)) + "-" + DeviceShareCodec.digest(data).prefix(12)
+            guard !published.contains(key) else { continue }
+            try await Task.detached(priority: .utility) { try HousingFolderIO.write([(key, data)], folder: folder) }.value
+            published.insert(key)
+            if regions.first(where: { $0.code == summary.code })?.generation == summary.generation { ready.remove(summary.code) }
+        }
     }
 }
 enum HousingFolderIO {
-    static func read(_ folder: URL, current: [String: Double]) throws -> [HousingRegion] {
+    static func read(_ folder: URL, current: [String: Double]) throws -> [String] {
         let access = folder.startAccessingSecurityScopedResource(); defer { if access { folder.stopAccessingSecurityScopedResource() } }
         let directory = folder.appendingPathComponent("DeliveryRouteShare/housing-originals", isDirectory: true)
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
-        var error: NSError?; var result: [HousingRegion] = []; var failure: Error?
-        NSFileCoordinator().coordinate(readingItemAt: directory, options: [], error: &error) { root in
+        var coordinationError: NSError?; var result: [String] = []; var failure: Error?
+        NSFileCoordinator().coordinate(readingItemAt: directory, options: [], error: &coordinationError) { root in
             do {
-                let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey], options: [.skipsHiddenFiles]); guard files.count <= 100_000 else { throw DeviceShareError.invalid }
-                var latest: [String: HousingRegion] = [:]
+                let files = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]); guard files.count <= 100_000 else { throw DeviceShareError.invalid }
+                var latest: [String: (Double, String)] = [:]
                 for file in files where file.pathExtension == "json" {
-                    let parts = file.deletingPathExtension().lastPathComponent.split(separator: "-")
-                    guard parts.count == 3, let generation = Double(parts[1]), generation > (current[String(parts[0])] ?? 0) else { continue }
-                    let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
-                    guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? Int.max) <= 50_000_000 else { throw DeviceShareError.invalid }
-                    let data = try Data(contentsOf: file), region = try HousingStore.decode(data)
-                    guard region.code == String(parts[0]), Int(region.generation) == Int(generation), DeviceShareCodec.digest(data).hasPrefix(String(parts[2])) else { throw DeviceShareError.invalid }
-                    if latest[region.code] == nil || latest[region.code]!.generation < region.generation { latest[region.code] = region }
+                    let name = file.deletingPathExtension().lastPathComponent, parts = name.split(separator: "-")
+                    guard parts.count == 3, parts[0].count == 10, parts[2].count == 12, let generation = Double(parts[1]), generation > (current[String(parts[0])] ?? 0) else { continue }
+                    let code = String(parts[0])
+                    if latest[code] == nil || latest[code]!.0 < generation { latest[code] = (generation, name) }
                 }
-                result = Array(latest.values)
+                result = latest.values.map(\.1).sorted()
             } catch { failure = error }
         }
-        if let failure { throw failure }; if error != nil { throw DeviceShareError.unavailable }; return result
+        if let failure { throw failure }; if coordinationError != nil { throw DeviceShareError.unavailable }; return result
+    }
+    static func readFile(_ name: String, folder: URL) throws -> HousingRegion {
+        guard name.range(of: #"^\d{10}-\d{1,16}-[a-f0-9]{12}$"#, options: .regularExpression) != nil else { throw DeviceShareError.invalid }
+        let access = folder.startAccessingSecurityScopedResource(); defer { if access { folder.stopAccessingSecurityScopedResource() } }
+        let file = folder.appendingPathComponent("DeliveryRouteShare/housing-originals/" + name + ".json")
+        var coordinationError: NSError?; var result: Result<HousingRegion, Error>?
+        NSFileCoordinator().coordinate(readingItemAt: file, options: [], error: &coordinationError) { url in
+            result = Result {
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+                guard values.isRegularFile == true, values.isSymbolicLink != true, (values.fileSize ?? Int.max) <= 50_000_000 else { throw DeviceShareError.invalid }
+                let data = try Data(contentsOf: url), region = try HousingStore.decode(data), parts = name.split(separator: "-")
+                guard region.code == String(parts[0]), Int(region.generation) == Int(parts[1]), DeviceShareCodec.digest(data).hasPrefix(String(parts[2])) else { throw DeviceShareError.invalid }
+                return region
+            }
+        }
+        if coordinationError != nil { throw DeviceShareError.unavailable }; guard let result else { throw DeviceShareError.unavailable }; return try result.get()
     }
     static func write(_ values: [(String, Data)], folder: URL) throws {
         guard !values.isEmpty else { return }

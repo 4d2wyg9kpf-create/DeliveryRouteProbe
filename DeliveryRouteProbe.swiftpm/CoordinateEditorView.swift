@@ -2,6 +2,7 @@ import SwiftUI
 import MapKit
 
 struct CoordinateEditorView: View {
+    @EnvironmentObject private var inputs: NativeInputSession
     @Environment(\.dismiss) private var dismiss
     let title: String
     let original: TMapCoordinate?
@@ -43,7 +44,7 @@ struct CoordinateEditorView: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("취소") { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) { Button("이 좌표 저장") {
-                        do { guard SiteTargetStore.valid(coordinate) else { throw DeviceShareError.invalid }; try onSave(coordinate); dismiss() } catch { self.error = error.localizedDescription }
+                        do { inputs.finishEditing(); guard let lat = Double(latitude), let lon = Double(longitude) else { throw DeviceShareError.invalid }; let value = TMapCoordinate(longitude: lon, latitude: lat); guard SiteTargetStore.valid(value) else { throw DeviceShareError.invalid }; try onSave(value); dismiss() } catch { self.error = error.localizedDescription }
                     } }
                 }
                 .onChange(of: coordinate) { _, value in
@@ -93,6 +94,7 @@ private struct EditableCoordinateMap: UIViewRepresentable {
 }
 
 struct ManualSiteView: View {
+    @EnvironmentObject private var inputs: NativeInputSession
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var sites: SiteTargetStore
     @State private var name = ""
@@ -108,7 +110,7 @@ struct ManualSiteView: View {
                 Button("지도에서 좌표 지정") { showMap = true }
                 if let coordinate { Text("\(coordinate.latitude, specifier: "%.8f"), \(coordinate.longitude, specifier: "%.8f")") }
                 Button("평가대상지·시설 목록에 저장") {
-                    do { guard let coordinate else { throw PlannerFailure.message("지도에서 좌표를 지정하세요.") }; _ = try sites.saveManual(name: name, address: address, coordinate: coordinate); dismiss() } catch { self.error = error.localizedDescription }
+                    do { inputs.finishEditing(); guard let coordinate else { throw PlannerFailure.message("지도에서 좌표를 지정하세요.") }; _ = try sites.saveManual(name: name, address: address, coordinate: coordinate); dismiss() } catch { self.error = error.localizedDescription }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
             }.navigationTitle("지도에서 장소 추가").navigationBarTitleDisplayMode(.inline)
