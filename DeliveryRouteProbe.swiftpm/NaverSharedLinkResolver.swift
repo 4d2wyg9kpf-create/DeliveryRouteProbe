@@ -24,12 +24,15 @@ struct NaverSharedLinkResolver {
             switch parsed.kind {
             case .place, .folder: return .web(parsed)
             case .mapSelection:
-                // Only NAVER's location-share envelope identifies a selected
-                // address pin. c=, search centers and arbitrary lat/lng do not.
-                let capture = try NaverPlaceBridge.call("sharedPin", [
+                // Address pins and registered businesses have different
+                // envelopes. Both retain the response's exact selected point.
+                var input: [String: Any] = [
                     "resolvedURL": current.absoluteString, "sharedURL": original,
                     "now": Date().timeIntervalSince1970 * 1_000
-                ], as: NaverPlaceCapture.self)
+                ]
+                if let name = target.sharedName { input["sharedName"] = name }
+                if let address = target.sharedAddress { input["sharedAddress"] = address }
+                let capture = try NaverPlaceBridge.call("sharedPin", input, as: NaverPlaceCapture.self)
                 return .pin(capture)
             case .short: break
             }

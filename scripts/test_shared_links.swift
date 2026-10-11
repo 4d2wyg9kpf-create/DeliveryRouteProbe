@@ -19,6 +19,14 @@ private func pinURL(_ longitude: String = "127.4000001") -> URL {
         URLQueryItem(name: "title", value: "대전 중구 가상로 1")]
     return parts.url!
 }
+private func siteURL(_ longitude: String = "127.4000001") -> URL {
+    var parts = URLComponents(string: "https://map.naver.com/")!
+    parts.queryItems = [URLQueryItem(name: "pinId", value: "101"), URLQueryItem(name: "pinType", value: "site"),
+        URLQueryItem(name: "menu", value: "location"), URLQueryItem(name: "appMenu", value: "location"),
+        URLQueryItem(name: "title", value: "가상식당 가상점"), URLQueryItem(name: "lat", value: "36.3000001"),
+        URLQueryItem(name: "lng", value: longitude)]
+    return parts.url!
+}
 @MainActor private final class Fixture {
     var requests: [URLRequest] = []
     var status = 307
@@ -127,6 +135,50 @@ private func pinURL(_ longitude: String = "127.4000001") -> URL {
             let object = try JSONSerialization.jsonObject(with: data)
             let checked = try NaverPlaceBridge.call("validate", ["capture": object], as: NaverPlaceCapture.self)
             try require(checked.coordinate?.longitude == c.coordinate?.longitude, "persisted validation")
+        }
+        await test("business full share keeps pasted road address and exact HTTP site coordinate") {
+            let f = Fixture(); f.location = siteURL().absoluteString
+            let c = try await f.pin("[네이버지도]\n가상식당 가상점\n대전 유성구 가상로 11 \nhttps://naver.me/fixtureSite ")
+            try require(c.kind == "place" && c.placeID == "101" && c.name == "가상식당 가상점", "site identity")
+            try require(c.address == "대전 유성구 가상로 11" && c.coordinate?.longitude == 127.4000001, "share metadata altered coordinate")
+            try require(f.requests.count == 1 && c.sharedPinEvidence?.sharedAddress == c.address, "site loaded browser or lost provenance")
+        }
+        await test("inline and multiline business shares preserve the same metadata") {
+            let f = Fixture(); f.location = siteURL().absoluteString
+            let c = try await f.pin("[네이버 지도] 가상식당 가상점 대전 유성구 가상로 11 https://naver.me/fixtureSite")
+            try require(c.address == "대전 유성구 가상로 11" && c.sharedPinEvidence?.sharedName == c.name, "inline share")
+        }
+        await test("bare business short link is readable with missing address made explicit") {
+            let f = Fixture(); f.location = siteURL().absoluteString
+            let c = try await f.pin(); try require(c.kind == "place" && c.address.isEmpty && c.coordinate != nil, "address incorrectly required")
+        }
+        await test("pasted business label from another site is rejected") {
+            let f = Fixture(); f.location = siteURL().absoluteString
+            try await rejects(f, "[네이버지도]\n다른식당\n대전 유성구 가상로 11\nhttps://naver.me/fixtureSite")
+        }
+        await test("business HTTP evidence and metadata survive Codable round trip") {
+            let f = Fixture(); f.location = siteURL().absoluteString
+            let c = try await f.pin("[네이버지도]\n가상식당 가상점\n대전 유성구 가상로 11\nhttps://naver.me/fixtureSite")
+            let data = try JSONEncoder().encode(c), copy = try JSONDecoder().decode(NaverPlaceCapture.self, from: data)
+            try require(copy.sharedPinEvidence?.sharedAddress == c.address && copy.matchesSelection(c), "business evidence lost")
+        }
+        await test("same business ID with a changed selected point fails native selection check") {
+            let f = Fixture(); f.location = siteURL().absoluteString; let a = try await f.pin()
+            f.location = siteURL("127.4000002").absoluteString; let b = try await f.pin()
+            try require(a.placeID == b.placeID && !a.matchesSelection(b) && a.id != b.id, "place ID hid a coordinate change")
+        }
+        await test("revalidation reuses retained share metadata while refetching only the pin response") {
+            let f = Fixture(); f.location = siteURL().absoluteString
+            let c = try await f.pin("[네이버지도]\n가상식당 가상점\n대전 유성구 가상로 11\nhttps://naver.me/fixtureSite")
+            var target = try NaverSharedLink.parse(c.sharedLinkURL!)
+            target.sharedAddress = c.sharedPinEvidence?.sharedAddress; target.sharedName = c.sharedPinEvidence?.sharedName
+            let resolver = NaverSharedLinkResolver { request in
+                (Data(), HTTPURLResponse(url: request.url!, statusCode: 307, httpVersion: "HTTP/1.1", headerFields: ["Location": siteURL().absoluteString])!)
+            }
+            guard case .pin(let fresh) = try await resolver.resolve(target) else { throw PlannerFailure.message("expected pin") }
+            let first = try JSONSerialization.jsonObject(with: JSONEncoder().encode(c)), second = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fresh))
+            let check = try NaverPlaceBridge.call("sameSelection", ["capture": first, "fresh": second, "useCoordinate": true], as: NaverPlaceSelectionCheck.self)
+            try require(check.same, "retained address prevented HTTP revalidation")
         }
         print(String(decoding: try! JSONSerialization.data(withJSONObject: ["passed": checks.filter { $0["passed"] as? Bool == true }.count, "total": checks.count, "checks": checks], options: [.sortedKeys]), as: UTF8.self))
         if checks.contains(where: { $0["passed"] as? Bool != true }) { exit(1) }

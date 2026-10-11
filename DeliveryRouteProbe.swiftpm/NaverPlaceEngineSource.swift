@@ -8,14 +8,14 @@ enum NaverPlaceEngineSource {
       const fail=m=>{throw Error(m);},sameName=(a,b)=>tidy(a).replace(/\s/g,'')===tidy(b).replace(/\s/g,'');
       const coordinate=c=>c&&typeof c.longitude==='number'&&typeof c.latitude==='number'&&Number.isFinite(c.longitude)&&Number.isFinite(c.latitude)&&c.longitude>=124&&c.longitude<=132&&c.latitude>=32&&c.latitude<=40;
       function text(value,max,label){if(typeof value!=='string'||value.length>max||/[\x00-\x1f\x7f]/.test(value))fail(label+' 형식을 확인해 주세요.');return tidy(value);}
-      function sharedPinFields(value){
+      function sharedPinFields(value,metadata={}){
         const url=text(value,8000,'선택 지점 링크'),match=/^https:\/\/map\.naver\.com\/(?:p\/?|v5\/?|index\.nhn)?\?([^#]+)(?:#.*)?$/.exec(url);
         if(!match)fail('공유 링크 응답에서 선택 지점 좌표를 찾지 못했습니다. 주소의 대표 좌표로 대신 저장하지 않습니다.');
         const fields={};
         for(const part of match[1].split('&')){
           const pair=part.split('='),decode=s=>decodeURIComponent(s.replace(/\+/g,' '));let key,val;
           try{key=decode(pair.shift());val=decode(pair.join('='));}catch(_){fail('공유 링크의 인코딩을 확인해 주세요.');}
-          if(['appMenu','menu','lat','lng','address','title','query'].includes(key)){
+          if(['appMenu','menu','lat','lng','address','title','query','pinType','pinId'].includes(key)){
             if(Object.prototype.hasOwnProperty.call(fields,key))fail('공유 링크의 선택 지점 정보가 중복됐습니다.');
             fields[key]=val;
           }
@@ -23,25 +23,48 @@ enum NaverPlaceEngineSource {
         if(!(fields.appMenu==='location'||fields.menu==='location')||[fields.appMenu,fields.menu].some(x=>x!=null&&x!=='location'))fail('공유 링크의 선택 지점 종류를 확인하지 못했습니다. 지도 중심 좌표는 사용하지 않습니다.');
         const decimal=/^\d{2,3}(?:\.\d{1,15})?$/;
         if(!decimal.test(fields.lng||'')||!decimal.test(fields.lat||'')||!coordinate({longitude:+fields.lng,latitude:+fields.lat}))fail('공유 링크의 선택 좌표가 올바르지 않습니다.');
-        const address=text(fields.address,1000,'공유 주소'),name=text(fields.title||address,500,'공유 이름');
-        if(!address||!name||!addressMatches(address,address))fail('공유 링크에 지점의 전체 주소가 없습니다.');
-        if(fields.query&& !addressMatches(address,fields.query))fail('공유 링크의 주소 정보가 서로 다릅니다.');
-        return {name,address,longitude:fields.lng,latitude:fields.lat};
+        const site=fields.pinType==='site';
+        if(site&&!/^\d{1,20}$/.test(fields.pinId||''))fail('공유 링크의 업체 식별자를 확인하지 못했습니다.');
+        const name=text(fields.title||fields.address||'',500,'공유 이름');
+        if(!name)fail('공유 링크에 선택 지점 이름이 없습니다.');
+        let address='',sharedName,sharedAddress;
+        if(fields.address!=null){
+          address=text(fields.address,1000,'공유 주소');
+          if(!address||!addressMatches(address,address))fail('공유 링크에 지점의 전체 주소가 없습니다.');
+        }else if(site){
+          // NAVER site shares omit address. A pasted label may fill metadata, but
+          // never chooses, geocodes or changes the response's selected coordinate.
+          if(metadata.sharedAddress!=null){
+            sharedAddress=text(metadata.sharedAddress,1000,'공유문 주소');
+            if(!addressMatches(sharedAddress,sharedAddress))fail('공유문에 전체 주소를 포함해 주세요.');
+            if(metadata.sharedName!=null){
+              sharedName=text(metadata.sharedName,500,'공유문 이름');
+              if(!sameName(sharedName,name))fail('공유문의 업체 이름과 링크의 업체가 다릅니다.');
+            }
+            address=sharedAddress;
+          }
+        }else fail('공유 링크에 지점의 전체 주소가 없습니다.');
+        if(!site&&fields.query&&!addressMatches(address,fields.query))fail('공유 링크의 주소 정보가 서로 다릅니다.');
+        return {kind:site?'place':'address',placeID:site?fields.pinId:'',name,address,longitude:fields.lng,latitude:fields.lat,sharedName,sharedAddress};
       }
       function sharedPin(input){
-        const fields=sharedPinFields(input.resolvedURL),now=input.now,lon=+fields.longitude,lat=+fields.latitude;
+        const fields=sharedPinFields(input.resolvedURL,input),now=input.now,lon=+fields.longitude,lat=+fields.latitude;
         if(!Number.isFinite(now)||now<1577836800000||now>4102444800000)fail('판독 시각을 확인해 주세요.');
-        const c={version:1,kind:'address',selectionKey:'address:'+fields.name.replace(/\s/g,'')+':'+fields.address.replace(/\s/g,''),placeID:'',
-          name:fields.name,address:fields.address,roadAddress:fields.address,jibunAddress:'',sourceURL:input.resolvedURL,
+        const c={version:1,kind:fields.kind,selectionKey:fields.kind==='place'?'place:'+fields.placeID:'address:'+fields.name.replace(/\s/g,'')+':'+fields.address.replace(/\s/g,''),placeID:fields.placeID,
+          name:fields.name,address:fields.address,roadAddress:fields.address,jibunAddress:'',sourceURL:fields.kind==='place'?'https://map.naver.com/p/entry/place/'+fields.placeID:input.resolvedURL,
           coordinate:{longitude:lon,latitude:lat},point:{name:fields.name,token:[(lon/180*20037508.342789244).toFixed(3),(6378137*Math.log(Math.tan(Math.PI/4+lat*Math.PI/360))).toFixed(3),encodeURIComponent(fields.name),'','SIMPLE_POI'].join(',')},
           tileZoom:null,screenResolutionMeters:null,coordinateIssue:'',capturedAt:new Date(now).toISOString(),method:'naver_shared_link_coordinate',
           geocodeProvider:'NAVER 공유 링크',sharedLinkURL:text(input.sharedURL,4000,'공유 링크'),
           sharedPinEvidence:{resolvedURL:input.resolvedURL,longitude:fields.longitude,latitude:fields.latitude}};
+        if(fields.sharedAddress!=null)c.sharedPinEvidence.sharedAddress=fields.sharedAddress;
+        if(fields.sharedName!=null)c.sharedPinEvidence.sharedName=fields.sharedName;
         return validate(c);
       }
       function validate(c){
         if(!c||c.version!==1||!['place','address'].includes(c.kind)||!['rendered_selected_marker_and_tiles','rendered_selected_place_detail','rendered_selected_address_panel','apple_address_geocoding','naver_local_search','naver_hub_local_search','naver_maps_geocoding','naver_shared_link_coordinate'].includes(c.method)||!tidy(c.name)||!Number.isFinite(Date.parse(c.capturedAt)))fail('네이버 장소 판독을 다시 실행해 주세요.');
         text(c.name,500,'장소 이름');for(const key of ['address','roadAddress','jibunAddress'])text(c[key],1000,'주소');
+        if(c.method==='naver_shared_link_coordinate'&&(!c.coordinate||!c.sharedPinEvidence))fail('공유 링크의 선택 좌표와 판독 근거가 없습니다.');
+        if(c.sharedPinEvidence!=null&&c.method!=='naver_shared_link_coordinate')fail('공유 링크의 선택 좌표를 주소 변환 결과로 대체할 수 없습니다.');
         if(c.sharedLinkURL!=null){
           text(c.sharedLinkURL,4000,'공유 링크');
           if(!/^https:\/\/(?:naver\.me\/|map\.naver\.com\/)/.test(c.sharedLinkURL))fail('공유 링크의 출처를 확인해 주세요.');
@@ -55,8 +78,8 @@ enum NaverPlaceEngineSource {
           if(c.method==='rendered_selected_marker_and_tiles'){
             if(!Number.isFinite(c.screenResolutionMeters)||c.screenResolutionMeters<=0||c.screenResolutionMeters>5||!Number.isSafeInteger(c.tileZoom)||c.tileZoom<0||c.tileZoom>23)fail('네이버 표식 좌표를 다시 읽어 주세요.');
           }else if(c.method==='naver_shared_link_coordinate'){
-            const e=c.sharedPinEvidence,f=sharedPinFields(e?.resolvedURL);
-            if(c.kind!=='address'||!c.sharedLinkURL||c.geocodeProvider!=='NAVER 공유 링크'||e.longitude!==f.longitude||e.latitude!==f.latitude||!sameName(c.name,f.name)||c.address!==f.address||c.roadAddress!==f.address||+e.longitude!==c.coordinate.longitude||+e.latitude!==c.coordinate.latitude)fail('공유 링크 응답과 선택 좌표가 다릅니다.');
+            const e=c.sharedPinEvidence,f=sharedPinFields(e?.resolvedURL,e||{});
+            if(c.kind!==f.kind||c.placeID!==f.placeID||!c.sharedLinkURL||c.geocodeProvider!=='NAVER 공유 링크'||e.longitude!==f.longitude||e.latitude!==f.latitude||!sameName(c.name,f.name)||c.address!==f.address||c.roadAddress!==f.address||+e.longitude!==c.coordinate.longitude||+e.latitude!==c.coordinate.latitude)fail('공유 링크 응답과 선택 좌표가 다릅니다.');
           }else if(c.method==='apple_address_geocoding'){
             if(c.geocodeProvider!=='Apple'||!addressMatches(c.roadAddress||c.address,c.geocodedAddress))fail('변환한 좌표의 주소가 선택한 장소 주소와 다릅니다.');
           }else if(['naver_local_search','naver_hub_local_search','naver_maps_geocoding'].includes(c.method)){
@@ -130,7 +153,7 @@ enum NaverPlaceEngineSource {
       function selectionMatches(input){
         const a=input.first,b=input.second;
         if(!a||!b||a.selectionKey!==b.selectionKey)return false;
-        if((a.kind==='address'&&a.sharedLinkURL)||(b.kind==='address'&&b.sharedLinkURL)){
+        if(((a.kind==='address'||a.method==='naver_shared_link_coordinate')&&a.sharedLinkURL)||((b.kind==='address'||b.method==='naver_shared_link_coordinate')&&b.sharedLinkURL)){
           return coordinate(a.coordinate)&&coordinate(b.coordinate)&&a.coordinate.longitude.toFixed(7)===b.coordinate.longitude.toFixed(7)&&a.coordinate.latitude.toFixed(7)===b.coordinate.latitude.toFixed(7);
         }
         return true;

@@ -44,7 +44,7 @@ struct NaverSearchScreen: View {
                     } else {
                         NativeTextField("네이버지도 장소·목록 공유 링크", text: $sharedLink, keyboard: .URL).frame(minHeight: 44)
                         PasteButton(payloadType: String.self) { values in sharedLink = values.first ?? "" }
-                        Text("네이버지도의 공유문 전체를 붙여넣으세요. 주소 핀은 지도 화면을 열지 않고 링크 응답의 선택 좌표를 읽습니다. 장소·저장 목록은 웹 화면을 열어 확인합니다.").font(.caption).foregroundStyle(.secondary)
+                        Text("네이버지도의 공유문 전체를 붙여넣으세요. 주소·업체 핀은 링크 응답의 선택 좌표를 읽습니다. 업체 주소가 응답에 없으면 공유문에 적힌 주소를 함께 보관합니다. 좌표 없는 장소 링크·저장 목록은 웹 화면을 열어 확인합니다.").font(.caption).foregroundStyle(.secondary)
                     }
                     Button(api.isBusy || importing ? "처리 중…" : mode == 0 ? "네이버 검색" : mode == 1 ? "주소 → 좌표 변환" : "공유 링크 가져오기") { search() }
                         .buttonStyle(.borderedProminent)
@@ -203,9 +203,14 @@ private struct NaverAPISelectionView: View {
                     Text(capture.preferredAddress)
                     if !capture.jibunAddress.isEmpty { Text("지번: \(capture.jibunAddress)").font(.caption) }
                     NaverCoordinateLabel(capture: capture)
+                    if capture.method == "naver_shared_link_coordinate" && capture.preferredAddress.isEmpty {
+                        Text("링크 응답에는 주소가 없습니다. 공유문 전체를 붙여넣으면 주소도 함께 보관됩니다.").font(.caption).foregroundStyle(.secondary)
+                    } else if capture.sharedPinEvidence?.sharedAddress != nil {
+                        Text("공유문에 적힌 주소를 함께 보관했습니다.").font(.caption).foregroundStyle(.secondary)
+                    }
                     if capture.coordinate == nil {
                         Text(capture.coordinateIssue.isEmpty ? "주소에서 좌표를 변환해 주세요." : capture.coordinateIssue).font(.caption).foregroundStyle(.orange)
-                        if capture.kind == "address" && capture.sharedLinkURL != nil {
+                        if capture.isSharedPoint {
                             Text("공유 링크의 선택 좌표가 필요합니다. 주소의 건물 대표 좌표로 대체하지 않습니다.").font(.caption).foregroundStyle(.orange)
                         } else {
                         Button(resolving ? "좌표 변환 중…" : "읽은 주소로 좌표 변환") {

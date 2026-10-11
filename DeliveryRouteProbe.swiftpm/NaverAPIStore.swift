@@ -356,7 +356,7 @@ final class NaverAPIStore: ObservableObject {
     func resolve(_ capture: NaverPlaceCapture) async throws -> NaverPlaceCapture {
         try await DeviceShareHooks.prepareRequest()
         _ = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self)
-        guard !capture.isSharedAddress else { throw PlannerFailure.message("공유한 주소 지점은 선택 핀의 좌표를 읽어야 합니다. 건물 대표 좌표로 변환하지 않습니다.") }
+        guard !capture.isSharedPoint else { throw PlannerFailure.message("공유한 지점은 링크의 선택 좌표를 읽어야 합니다. 건물 대표 좌표로 변환하지 않습니다.") }
         let cacheKey = SHA256.hash(data: try JSONEncoder().encode([capture.selectionKey, capture.name, capture.address, capture.roadAddress, capture.jibunAddress])).map { String(format: "%02x", $0) }.joined()
         if let cached = resolved[cacheKey], ProcessInfo.processInfo.systemUptime - cached.uptime < 3600 {
             var value = cached.capture; value.sourceURL = capture.sourceURL; value.capturedAt = capture.capturedAt

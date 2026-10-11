@@ -47,6 +47,15 @@ private func sharedPoint(_ longitude: Double, url: String) throws -> NaverPlaceC
     value.point = MapRoutePoint(token: "\(x),\(y),\(name),,SIMPLE_POI", name: value.name)
     return try NaverPlaceBridge.call("shared", ["capture": try TMapBridge.object(value), "url": url], as: NaverPlaceCapture.self)
 }
+private func sharedBusiness(_ longitude: String = "127.4000001") throws -> NaverPlaceCapture {
+    var parts = URLComponents(string: "https://map.naver.com/")!
+    parts.queryItems = [URLQueryItem(name: "pinId", value: "101"), URLQueryItem(name: "pinType", value: "site"),
+        URLQueryItem(name: "menu", value: "location"), URLQueryItem(name: "title", value: "가상식당 가상점"),
+        URLQueryItem(name: "lng", value: longitude), URLQueryItem(name: "lat", value: "36.3000001")]
+    return try NaverPlaceBridge.call("sharedPin", ["resolvedURL": parts.url!.absoluteString,
+        "sharedURL": "https://naver.me/fixtureSite", "sharedName": "가상식당 가상점", "sharedAddress": "대전 유성구 가상로 11",
+        "now": 1_791_602_000_000], as: NaverPlaceCapture.self)
+}
 
 @main struct DestinationNativeChecks {
     @MainActor static func main() throws {
@@ -146,6 +155,26 @@ private func sharedPoint(_ longitude: Double, url: String) throws -> NaverPlaceC
             try ca.remove(ca.records[0].id); try a.capture(ca.sharingSnapshot(), observed: &oa)
             try cb.applySharing(a); try cb.remember(stale)
             try require(cb.records.isEmpty, "stale delivery plan resurrected a remotely deleted customer")
+        }
+        let siteFolder = folder.appendingPathComponent("http-sites", isDirectory: true)
+        let siteCustomers = NaverCustomerStore(directory: siteFolder), siteTargets = SiteTargetStore(directory: siteFolder)
+        try check("HTTP business share saves and reloads exact coordinates, metadata and evidence in both destinations") {
+            let pin = try sharedBusiness()
+            _ = try siteCustomers.save(pin); _ = try siteTargets.save(pin)
+            let customerCopy = NaverCustomerStore(directory: siteFolder), siteCopy = SiteTargetStore(directory: siteFolder)
+            try require(customerCopy.errorMessage == nil && siteCopy.errorMessage == nil && customerCopy.records.count == 1 && siteCopy.records.count == 1, "HTTP site archive")
+            for saved in [customerCopy.records[0].capture!, siteCopy.records[0].capture] {
+                try require(saved.coordinate?.longitude == 127.4000001 && saved.coordinate?.latitude == 36.3000001 && saved.placeID == "101", "HTTP site coordinate changed")
+                try require(saved.address == "대전 유성구 가상로 11" && saved.sharedPinEvidence?.sharedAddress == saved.address && saved.method == "naver_shared_link_coordinate", "HTTP site proof lost")
+            }
+        }
+        try check("new selected point for the same business updates one stored record while preserving identity") {
+            let customerID = siteCustomers.records[0].id, siteID = siteTargets.records[0].id
+            let updated = try sharedBusiness("127.4000002")
+            let customerAdded = try siteCustomers.save(updated), siteAdded = try siteTargets.save(updated)
+            try require(!customerAdded && !siteAdded && siteCustomers.records.count == 1 && siteTargets.records.count == 1, "HTTP site duplicated")
+            try require(siteCustomers.records[0].id == customerID && siteTargets.records[0].id == siteID, "HTTP site identity changed")
+            try require(NaverCustomerStore(directory: siteFolder).records[0].capture?.coordinate?.longitude == 127.4000002 && SiteTargetStore(directory: siteFolder).records[0].capture.coordinate?.longitude == 127.4000002, "HTTP site new coordinate not persisted")
         }
         print("Place destination native checks: \(passed)/\(passed) passed")
     }

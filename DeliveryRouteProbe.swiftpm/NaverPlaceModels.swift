@@ -3,7 +3,7 @@ import JavaScriptCore
 
 struct NaverPlaceCapture: Codable, Identifiable {
     var id: String {
-        guard isSharedAddress, let point = coordinate else { return selectionKey }
+        guard isSharedPoint, let point = coordinate else { return selectionKey }
         return selectionKey + ":\(Int64((point.longitude * 10_000_000).rounded())):\(Int64((point.latitude * 10_000_000).rounded()))"
     }
     var version: Int
@@ -30,9 +30,10 @@ struct NaverPlaceCapture: Codable, Identifiable {
     var sharedPinEvidence: NaverSharedPinEvidence?
     var preferredAddress: String { !roadAddress.isEmpty ? roadAddress : address }
     var isSharedAddress: Bool { kind == "address" && sharedLinkURL != nil }
+    var isSharedPoint: Bool { sharedLinkURL != nil && (kind == "address" || method == "naver_shared_link_coordinate") }
     func matchesSelection(_ other: NaverPlaceCapture?) -> Bool {
         guard let other, selectionKey == other.selectionKey else { return false }
-        guard isSharedAddress || other.isSharedAddress else { return true }
+        guard isSharedPoint || other.isSharedPoint else { return true }
         guard let first = coordinate, let second = other.coordinate else { return false }
         return (first.longitude * 10_000_000).rounded() == (second.longitude * 10_000_000).rounded()
             && (first.latitude * 10_000_000).rounded() == (second.latitude * 10_000_000).rounded()
@@ -43,6 +44,8 @@ struct NaverSharedPinEvidence: Codable {
     var resolvedURL: String
     var longitude: String
     var latitude: String
+    var sharedName: String?
+    var sharedAddress: String?
 }
 
 struct NaverAPIEvidence: Codable {

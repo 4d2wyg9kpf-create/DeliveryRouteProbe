@@ -2,7 +2,12 @@ import Foundation
 
 enum NaverSharedLink {
     enum Kind: Equatable { case place(String), folder(String), mapSelection, short }
-    struct Target: Equatable { let kind: Kind; let url: URL }
+    struct Target: Equatable {
+        let kind: Kind
+        let url: URL
+        var sharedName: String?
+        var sharedAddress: String?
+    }
     enum Failure: LocalizedError {
         case missing, multiple
         var errorDescription: String? {
@@ -20,7 +25,27 @@ enum NaverSharedLink {
         let accepted = values.compactMap(target)
         guard !accepted.isEmpty else { throw Failure.missing }
         guard accepted.count == 1 else { throw Failure.multiple }
-        return accepted[0]
+        var chosen = accepted[0]
+        if let link = matches.first(where: { $0.url.flatMap(target) != nil }),
+           let range = Range(link.range, in: text) {
+            let prefix = String(text[..<range.lowerBound])
+                .replacingOccurrences(of: #"^\s*\[네이버\s*지도\]\s*"#, with: "", options: .regularExpression)
+                .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            // Preserve the share's label as metadata only. Coordinates always
+            // come from the link response, including for a named business.
+            let regionPattern = #"(?:^|\s)(서울(?:특별시)?|부산(?:광역시)?|대구(?:광역시)?|인천(?:광역시)?|광주(?:광역시)?|대전(?:광역시)?|울산(?:광역시)?|세종(?:특별자치시)?|경기(?:도)?|강원(?:도|특별자치도)?|충북|충청북도|충남|충청남도|전북|전라북도|전북특별자치도|전남|전라남도|경북|경상북도|경남|경상남도|제주(?:도|특별자치도)?)(?=\s)"#
+            if let expression = try? NSRegularExpression(pattern: regionPattern) {
+                for match in expression.matches(in: prefix, range: NSRange(prefix.startIndex..., in: prefix)) {
+                    guard let region = Range(match.range(at: 1), in: prefix),
+                          let address = roadAddress(String(prefix[region.lowerBound...])) else { continue }
+                    chosen.sharedAddress = address
+                    let name = String(prefix[..<region.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    chosen.sharedName = name.isEmpty ? nil : name
+                    break
+                }
+            }
+        }
+        return chosen
     }
     // Do not treat arbitrary URL coordinates or a broad search as a place.
     // This helper checks a rendered address label only; it does not

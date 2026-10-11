@@ -32,6 +32,13 @@ struct NaverPlaceReadPanel: View {
             Label("읽은 네이버 장소", systemImage: "mappin.and.ellipse").font(.headline)
             Text(capture.name).bold()
             if !capture.preferredAddress.isEmpty { Text(capture.preferredAddress).font(.caption) }
+            if capture.method == "naver_shared_link_coordinate" {
+                if capture.preferredAddress.isEmpty {
+                    Text("링크 응답에 주소가 없습니다. 주소도 보관하려면 네이버 공유문 전체를 붙여넣어 주세요.").font(.caption).foregroundColor(.secondary)
+                } else if capture.sharedPinEvidence?.sharedAddress != nil {
+                    Text("공유문에 적힌 주소를 함께 보관했습니다.").font(.caption2).foregroundColor(.secondary)
+                }
+            }
             if !capture.jibunAddress.isEmpty { Text("지번 \(capture.jibunAddress)").font(.caption) }
             if let point = capture.coordinate {
                 Text("경도 \(point.longitude, specifier: "%.6f") · 위도 \(point.latitude, specifier: "%.6f")").font(.caption)
@@ -41,7 +48,7 @@ struct NaverPlaceReadPanel: View {
                 }
             } else {
                 Text(capture.coordinateIssue).font(.caption).foregroundColor(.orange)
-                if capture.isSharedAddress {
+                if capture.isSharedPoint {
                     Text("공유 링크의 선택 핀 좌표가 필요합니다. 주소의 대표 좌표로 대체하지 않습니다.").font(.caption).foregroundColor(.orange)
                 } else {
                 Button(resolving ? "좌표 조회 중…" : "네이버 API로 좌표 조회") {
@@ -143,7 +150,7 @@ private struct NaverPlaceImportView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { inputs.finishEditing(); dismiss() }.disabled(isConnecting) } }
             .interactiveDismissDisabled(isConnecting)
             .onAppear {
-                if capture.matchesSelection(planner.plan.naverOrigin) || (!capture.isSharedAddress && planner.plan.originName.replacingOccurrences(of: " ", with: "") == capture.name.replacingOccurrences(of: " ", with: "")) { targetID = "depot" }
+                if capture.matchesSelection(planner.plan.naverOrigin) || (!capture.isSharedPoint && planner.plan.originName.replacingOccurrences(of: " ", with: "") == capture.name.replacingOccurrences(of: " ", with: "")) { targetID = "depot" }
                 else if let matched = planner.plan.visits.first(where: { capture.matchesSelection($0.naverPlace) }) { targetID = matched.id }
                 else if planner.plan.visits.count >= 30 { targetID = planner.plan.visits.first?.id ?? "depot" }
             }

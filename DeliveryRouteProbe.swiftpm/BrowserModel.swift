@@ -350,7 +350,9 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         if candidate.method == "naver_shared_link_coordinate", let original = candidate.sharedLinkURL {
             Task { [weak self] in
                 do {
-                    let target = try NaverSharedLink.parse(original)
+                    var target = try NaverSharedLink.parse(original)
+                    target.sharedName = candidate.sharedPinEvidence?.sharedName
+                    target.sharedAddress = candidate.sharedPinEvidence?.sharedAddress
                     guard case .pin(let fresh) = try await NaverSharedLinkResolver().resolve(target) else {
                         throw PlannerFailure.message("공유한 지점의 선택 좌표를 다시 확인하지 못했습니다.")
                     }
