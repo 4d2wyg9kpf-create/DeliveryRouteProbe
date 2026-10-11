@@ -163,7 +163,7 @@ struct HousingCatalogView: View {
                     do { if let road = try await KakaoRouteStore.shared.roadAddress(for: region.records[index]) { region.records[index].fields["roadAddress"] = road; region.records[index].issues.removeAll { $0.contains("도로명주소") } } } catch is CancellationError { throw CancellationError() } catch { region.records[index].issues.append("주소 변환: " + error.localizedDescription) }
                 }
             } catch is CancellationError { throw CancellationError() } catch { region.records[index].issues = [error.localizedDescription] }
-            region.generation = Date().timeIntervalSince1970 * 1000; try store.importRegion(region, share: false)
+            region.generation = max(Date().timeIntervalSince1970 * 1000,region.generation + 1); try store.importRegion(region, share: false)
             try await Task.sleep(nanoseconds: 500_000_000)
         }
     }
@@ -280,7 +280,7 @@ struct HousingComplexView: View {
                 }
                 var region = try store.originalRegion(source.regionCode)
                 guard let index = region.records.firstIndex(where: { $0.id == source.id }) else { throw DeviceShareError.invalid }
-                region.records[index] = updated; region.generation = Date().timeIntervalSince1970 * 1000
+                region.records[index] = updated; region.generation = max(Date().timeIntervalSince1970 * 1000,region.generation + 1)
                 try store.importRegion(region)
                 }
                 if let value = self.complex { fields = value.fields }

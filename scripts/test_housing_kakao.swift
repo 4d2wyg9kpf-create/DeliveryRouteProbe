@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct TMapCoordinate: Codable, Equatable { var longitude: Double; var latitude: Double; var poiID: String?; var detailAddress: String? }
 enum PlannerFailure: LocalizedError { case message(String); var errorDescription: String? { if case .message(let value) = self { return value }; return nil } }
@@ -8,7 +9,7 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
 @main struct HousingKakaoChecks {
     @MainActor static func main() async throws {
         var passed = 0
-        func check(_ name: String, _ test: () throws -> Void) throws { try test(); passed += 1; print("PASS \(name)") }
+        func check(_ name: String, _ test: () throws -> Void) throws { try test(); passed += 1; print("PASS \(name)"); fflush(stdout) }
         let a = RouteEndpoint(id: "a", name: "단지", address: "주소", coordinate: TMapCoordinate(longitude: 127.1, latitude: 36.3))
         let b = RouteEndpoint(id: "b", name: "초등학교", address: "주소", coordinate: TMapCoordinate(longitude: 127.2, latitude: 36.4))
         let c = RouteEndpoint(id: "c", name: "공원", address: "주소", coordinate: TMapCoordinate(longitude: 127.3, latitude: 36.5))

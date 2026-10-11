@@ -227,7 +227,7 @@ final class HousingStore: ObservableObject {
                 let result = try KaptHousingClient.list(await api.kaptData(.list,parameters:["bjdCode":code,"pageNo":String(page)]),region:code,page:page)
                 if let total, total != result.total { throw PlannerFailure.message("K-apt 전체 건수가 변경되어 수집을 보류했습니다.") }; total = result.total
                 for source in result.records { guard seen.insert(source.id).inserted else { throw DeviceShareError.invalid }; if existing[source.id] == nil { existing[source.id] = source } }
-                region.kaptRecords = existing.values.sorted { $0.id < $1.id }; region.generation = Date().timeIntervalSince1970 * 1000
+                region.kaptRecords = existing.values.sorted { $0.id < $1.id }; region.generation = max(Date().timeIntervalSince1970 * 1000,region.generation + 1)
                 if seen.count == result.total { region.kaptListAt = Date() }
                 try importRegion(region,share:false)
                 if seen.count == result.total { break }
@@ -251,7 +251,7 @@ final class HousingStore: ObservableObject {
             }
             region = try originalRegion(code)
             guard let i = region.kaptRecords?.firstIndex(where:{ $0.id == id }) else { continue }
-            region.kaptRecords?[i] = updated; region.generation = Date().timeIntervalSince1970 * 1000; try importRegion(region,share:false)
+            region.kaptRecords?[i] = updated; region.generation = max(Date().timeIntervalSince1970 * 1000,region.generation + 1); try importRegion(region,share:false)
             try await Task.sleep(nanoseconds:300_000_000)
         }
         progress = "\(region.title) · K-apt 원본 수집 완료. 연결과 통합은 직접 확인하세요."
@@ -267,7 +267,7 @@ final class HousingStore: ObservableObject {
             region = try originalRegion(code)
             if let i = region.records.firstIndex(where:{ $0.id == id }) { region.records[i] = next }
             else if let i = region.kaptRecords?.firstIndex(where:{ $0.id == id }) { region.kaptRecords?[i] = next }
-            region.generation = Date().timeIntervalSince1970 * 1000; try importRegion(region,share:false)
+            region.generation = max(Date().timeIntervalSince1970 * 1000,region.generation + 1); try importRegion(region,share:false)
             try await Task.sleep(nanoseconds:300_000_000)
         }
     }
