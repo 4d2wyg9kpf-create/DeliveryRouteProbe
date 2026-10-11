@@ -87,7 +87,8 @@ enum HousingAggregation {
         return !flags.isEmpty && flags.allSatisfy { $0 == false } ? "없음" : "미확인"
     }
     static func derive(_ fields: inout [String: String]) {
-        fields["elevatorPresent"] = integer(fields["elevators"]).map { $0 > 0 ? "있음" : "없음" } ?? "미확인"
+        let positiveElevatorEvidence = yesNo(fields["elevatorPresent"]) == true
+        fields["elevatorPresent"] = integer(fields["elevators"]).map { $0 > 0 ? "있음" : "없음" } ?? (positiveElevatorEvidence ? "있음" : "미확인")
         fields["chargerPresent"] = presence([fields["chargerGround"], fields["chargerUnderground"]])
         if let parking = integer(fields["parking"]), let households = integer(fields["households"]), households > 0 {
             fields["parkingPerHousehold"] = String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), Double(parking) / Double(households))
@@ -147,9 +148,9 @@ enum HousingAggregation {
         if !areas.isEmpty { result["areas"] = Set(areas).sorted().map(String.init).joined(separator: ", ") }
         result["dongNames"] = union(records.flatMap(HousingIdentity.dongLabels))
         for key in ["chargerGround", "chargerUnderground"] {
-            if let preferred { result[key] = preferred.fields[key] ?? "미확인" }
-            else if !kapt.isEmpty { result[key] = presence(kapt.map { $0.fields[key] }) }
+            if !kapt.isEmpty { result[key] = presence(kapt.map { $0.fields[key] }) }
         }
+        result["elevatorPresent"] = presence(kapt.map { row in integer(row.fields["elevators"]).map { $0 > 0 ? "있음" : "없음" } })
         derive(&result)
         return result
     }

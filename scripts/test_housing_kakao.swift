@@ -189,6 +189,12 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
             let f = HousingAggregation.fields([p1,p2,full])
             try require(f["households"] == "300" && f["parking"] == "360" && f["parkingPerHousehold"] == "1.2000","whole added to parts")
         }
+        try check("positive part facility evidence survives an unknown whole registration without inventing totals") {
+            var whole = p1; whole.id = "kapt:1168010300:WHOLE"; whole.fields["elevators"] = ""; whole.fields["chargerGround"] = "미확인"; whole.fields["chargerUnderground"] = "미확인"
+            var part = p2; part.id = "kapt:1168010300:PART"; part.dongScopeConfirmed = false; part.fields["elevators"] = "2"; part.fields["chargerUnderground"] = "있음"
+            let result = HousingAggregation.fields([p1,p2,whole,part],preferredKaptID:whole.id)
+            try require(result["elevatorPresent"] == "있음" && result["chargerPresent"] == "있음" && result["elevators"] == "","positive evidence lost or unconfirmed count guessed")
+        }
         try check("different categorical dates addresses and areas survive a lossless merge") {
             var other = p2; other.fields["heating"] = "개별난방"; other.fields["approvalDate"] = "1995-01-01"; other.fields["roadAddress"] = "서울특별시 강남구 개포로 266"; other.fields["highestFloor"] = "25"; other.fields["lowestFloor"] = "3"; other.fields["areas"] = "59.2, 99.1"
             var first = p1; first.fields["heating"] = "지역난방"
@@ -328,6 +334,33 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
             wide.records = (0..<2005).map { n in var row = notice("wide-\(n)","101동",households:"10",parking:"12"); row.fields["name"] = "단지 \(String(format:"%04d",n))"; return row }
             wide.sourceCount = wide.records.count; try many.importRegion(wide)
             try require(try many.originalRegion(wide.code).records.count == 2005 && many.complexes.count == 2000,"display cap truncated stored catalog")
+        }
+        var collectionState: Data?, collectionRequests = 0, listHasNew = false
+        let collectionAPI = PublicDataStore(read:{ collectionState },write:{ collectionState = $0 },transport:{ request in
+            if request.httpMethod == "HEAD" { return (Data(),HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:["Date":"Sun, 11 Oct 2026 10:00:00 GMT"])!) }
+            collectionRequests += 1
+            let path = request.url!.path, query = URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!
+            let code = query.first { $0.name == "kaptCode" }?.value ?? "A30279105"
+            let data: Data
+            if path.contains("getLegaldong") {
+                var rows = [["kaptCode":"A30279105","kaptName":"시험 등록","bjdCode":"1168010300"]]
+                if listHasNew { rows.append(["kaptCode":"NEW2","kaptName":"추가 등록","bjdCode":"1168010300"]) }
+                data = try json(["response":["header":["resultCode":"00"],"body":["items":rows,"pageNo":1,"totalCount":rows.count]]])
+            } else {
+                let template = path.contains("getAphusBass") ? basic : facilities
+                data = Data(String(decoding:template,as:UTF8.self).replacingOccurrences(of:"A30279105",with:code).utf8)
+            }
+            return (data,HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:[:])!)
+        })
+        try require(collectionAPI.saveSettings(key:"fixture-key",approved:["kaptList","kaptBasis"],limits:["kaptList":20,"kaptBasis":20]),"collector settings")
+        let collector = HousingStore(directory:folder.appendingPathComponent("incremental-kapt"),seedIfEmpty:false)
+        var collectionRegion = manual; collectionRegion.kaptRecords = nil; collectionRegion.kaptListAt = nil; try collector.importRegion(collectionRegion)
+        try await collector.collectKapt(manual.code,refresh:false,api:collectionAPI)
+        try await collector.collectKapt(manual.code,refresh:false,api:collectionAPI)
+        listHasNew = true; try await collector.collectKapt(manual.code,refresh:false,api:collectionAPI)
+        try check("repeated K-apt collection queries only missing detail while retaining originals and explicit grouping") {
+            let stored = try collector.originalRegion(manual.code)
+            try require(collectionRequests == 7 && stored.kaptRecords?.count == 2 && stored.kaptRecords?.allSatisfy { $0.detailAt != nil } == true && collector.complexes.count == 2,"existing K-apt details fetched again or sources duplicated")
         }
         var publicState: Data?, publicRequests = 0
         let gateway = PublicDataStore(read:{ publicState },write:{ publicState = $0 },transport:{ request in
