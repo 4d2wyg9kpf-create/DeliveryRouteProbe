@@ -28,6 +28,7 @@ struct HousingSource: Codable, Identifiable {
     var id: String
     var aptCode: String
     var noticeDate: String
+    var latestNoticeDate: String? = nil
     var regionCode: String
     var fields: [String: String]
     var coordinate: TMapCoordinate?
@@ -56,6 +57,7 @@ struct HousingRegion: Codable, Identifiable {
     var id: String { code }
     var title: String { "\(sido.name) \(sigungu.name) \(dong.name)" }
     var detailCount: Int { records.filter { $0.detailAt != nil }.count }
+    var missingDetailIDs: [String] { records.filter { $0.detailAt == nil }.map(\.id) }
     func validate() throws {
         guard version == 1, code.range(of: #"^\d{10}$"#, options: .regularExpression) != nil,
               code == sido.code + sigungu.code + dong.code, listFetchedMillis.map({ $0.isFinite && $0 > 0 && $0 <= generation + 60_000 }) ?? true, generation.isFinite, generation > 0, generation <= 9_000_000_000_000_000,
@@ -83,6 +85,8 @@ struct HousingEdit: Codable, Identifiable {
     var preferredKaptID: String? = nil
     var note: String? = nil
     var dongScopeConfirmed: Bool? = nil
+    var mergedIDs: [String]? = nil
+    var sourceExcluded: Bool? = nil
 }
 struct HousingComplex: Identifiable {
     var id: String
@@ -93,13 +97,14 @@ struct HousingComplex: Identifiable {
     var original: HousingSource?
     var edited: Bool
     var originals: [HousingSource] = []
+    var priorEdits: [HousingEdit] = []
     var name: String { fields[HousingField.name.rawValue] ?? "이름 없음" }
     var address: String { let road = fields[HousingField.roadAddress.rawValue] ?? ""; return (road.isEmpty ? fields[HousingField.jibunAddress.rawValue] ?? "" : road).components(separatedBy: "\n").first ?? "" }
     var searchText: String { fields.values.joined(separator: " ") }
 }
 enum HousingCatalog {
     static func effective(regions: [HousingRegion], edits: [HousingEdit]) -> [HousingComplex] {
-        effective(sources: regions.flatMap(HousingConsolidator.sources), edits: edits)
+        effective(sources: regions.flatMap { HousingConsolidator.sources($0) + ($0.kaptRecords ?? []) }, edits: edits)
     }
     static func effective(sources incoming: [HousingSource], edits: [HousingEdit]) -> [HousingComplex] {
         let roots = incoming.filter { !$0.isKapt }
@@ -107,25 +112,54 @@ enum HousingCatalog {
         let overrides = Dictionary(edits.map { ($0.id, $0) }, uniquingKeysWith: { _, newer in newer })
         let owners = Dictionary(roots.flatMap { root in (root.members ?? []).filter { $0.id != root.id }.map { ($0.id, root.id) } }, uniquingKeysWith: { first, _ in first })
         let covered = Set(edits.filter { !$0.hidden && $0.id.hasPrefix("user:") && $0.sourceIDs.count > 1 }.flatMap(\.sourceIDs))
+        let coveredGroups = Set(edits.filter { !$0.hidden }.flatMap { $0.mergedIDs ?? [] })
         let rootMap = Dictionary(roots.filter { owners[$0.id] == nil || $0.members != nil }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let ids = Set(rootMap.keys).union(overrides.keys.filter { $0.hasPrefix("user:") })
+        func history(_ id: String, seen: Set<String> = []) -> [HousingEdit] {
+            guard seen.count < 64, !seen.contains(id), let edit = overrides[id] else { return [] }
+            let visited = seen.union([id])
+            return (edit.mergedIDs ?? []).compactMap { overrides[$0] }.flatMap { [$0] + history($0.id,seen:visited) }
+        }
+        func adjusted(_ rows: [HousingSource]) -> [HousingSource] {
+            rows.compactMap { row in
+                let edit = overrides[row.id]
+                if edit?.sourceExcluded == true { return nil }
+                var next = row; next.fields.merge(edit?.fields ?? [:]) { _,user in user }
+                if let scope = edit?.dongScopeConfirmed { next.dongScopeConfirmed = scope }; return next
+            }
+        }
+        func fieldsFor(_ edit: HousingEdit, rows: [HousingSource], seen: Set<String> = []) -> [String:String] {
+            var fields = HousingAggregation.fields(rows,preferredKaptID:edit.preferredKaptID)
+            if seen.count < 64, !seen.contains(edit.id), let children = edit.mergedIDs, !children.isEmpty {
+                let previous = children.compactMap { overrides[$0] }
+                let parts = previous.map { child -> HousingSource in
+                    let memberRows = adjusted(child.sourceIDs.compactMap { sources[$0] })
+                    let summary = fieldsFor(child,rows:memberRows,seen:seen.union([edit.id]))
+                    return HousingSource(id:child.id,aptCode:child.id,noticeDate:"",regionCode:child.regionCode,fields:summary,
+                        dongScopeConfirmed:!memberRows.filter { !$0.isKapt }.isEmpty && memberRows.filter { !$0.isKapt }.allSatisfy { HousingIdentity.numbers($0) != nil })
+                }
+                let inherited = Set((previous + history(edit.id)).flatMap { $0.fields.keys }).subtracting(["name","elevatorPresent","parkingPerHousehold","chargerPresent"])
+                for key in inherited {
+                    if ["buildings","households","parking","elevators"].contains(key) {
+                        if edit.preferredKaptID == nil || !["parking","elevators"].contains(key) { fields[key] = HousingAggregation.summed(key,parts) }
+                    } else if ["highestFloor","lowestFloor","areas"].contains(key) {
+                        fields[key] = HousingAggregation.fields(parts)[key]
+                    } else { fields[key] = HousingAggregation.union(parts.compactMap { $0.fields[key] }) }
+                }
+            }
+            fields.merge(edit.fields) { _,user in user }; HousingAggregation.derive(&fields); return fields
+        }
         return ids.compactMap { id in
             let source = rootMap[id], edit = overrides[id]
-            guard edit?.hidden != true else { return nil }
+            guard edit?.hidden != true, !coveredGroups.contains(id) else { return nil }
             var originals = edit?.sourceIDs.compactMap { sources[$0] } ?? source?.originals ?? []
             if !id.hasPrefix("user:") { originals.removeAll { covered.contains($0.id) }; guard originals.contains(where: { !$0.isKapt }) else { return nil } }
             let rawOriginals = originals
-            for i in originals.indices {
-                if let memberEdit = overrides[originals[i].id] {
-                    originals[i].fields.merge(memberEdit.fields) { _, user in user }
-                    if let scope = memberEdit.dongScopeConfirmed { originals[i].dongScopeConfirmed = scope }
-                }
-            }
+            originals = adjusted(originals)
             let original = rawOriginals.first { !$0.isKapt } ?? rawOriginals.first
-            var fields = HousingAggregation.fields(originals, preferredKaptID: edit?.preferredKaptID)
-            fields.merge(edit?.fields ?? [:]) { _, user in user }; HousingAggregation.derive(&fields)
+            let fields = edit.map { fieldsFor($0,rows:originals) } ?? HousingAggregation.fields(originals)
             return HousingComplex(id: id, sourceIDs: edit?.sourceIDs ?? rawOriginals.map(\.id), regionCode: edit?.regionCode ?? source?.regionCode ?? "",
-                fields: fields, coordinate: edit?.coordinate ?? original?.coordinate, original: original, edited: edit != nil, originals: rawOriginals)
+                fields: fields, coordinate: edit?.coordinate ?? original?.coordinate, original: original, edited: edit != nil, originals: rawOriginals,priorEdits:history(id))
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
@@ -138,9 +172,16 @@ extension HousingRegion {
         let local = Dictionary(records.map { ($0.id,$0) }, uniquingKeysWith: { _, new in new })
         let remote = Dictionary(incoming.records.map { ($0.id,$0) }, uniquingKeysWith: { _, new in new })
         latest.records = latest.records.map { row in
-            guard let a = local[row.id], let b = remote[row.id], a.noticeDate == b.noticeDate else { return row }
-            if a.detailAt != nil || b.detailAt != nil || a.addresses != nil || b.addresses != nil { return Self.newerSource(a,b) }; return row
+            guard let a = local[row.id], let b = remote[row.id] else { return row }
+            return Self.newerSource(a,b)
         }
+        // A new announcement refreshes list identity, not every saved detail.
+        // Missing old rows are retained for review rather than silently removed.
+        let listed = Set(latest.records.map(\.id))
+        latest.records.append(contentsOf:(records + incoming.records).filter { !listed.contains($0.id) }.reduce(into:[String:HousingSource]()) { result,row in
+            result[row.id] = result[row.id].map { Self.newerSource($0,row) } ?? row
+        }.values)
+        latest.records.sort { $0.id < $1.id }; latest.sourceCount = latest.records.count
         latest.listFetchedMillis = max(localList,remoteList)
         let supplements = (kaptRecords ?? []) + (incoming.kaptRecords ?? [])
         latest.kaptRecords = Dictionary(supplements.map { ($0.id, $0) }, uniquingKeysWith: Self.newerSource).values.sorted { $0.id < $1.id }
@@ -151,6 +192,7 @@ extension HousingRegion {
     static func newerSource(_ a: HousingSource, _ b: HousingSource) -> HousingSource {
         let chosen = (b.detailAt ?? .distantPast) >= (a.detailAt ?? .distantPast) ? b : a
         var next = chosen
+        next.latestNoticeDate = [a.latestNoticeDate,a.noticeDate,b.latestNoticeDate,b.noticeDate].compactMap { $0 }.filter { !$0.isEmpty }.max()
         let addresses = (a.addresses ?? []) + (b.addresses ?? [])
         next.addresses = Dictionary(addresses.map { ($0.buildingID + $0.roadKey, $0) }, uniquingKeysWith: { x,y in y.fetchedAt >= x.fetchedAt ? y : x }).values.sorted { $0.roadKey < $1.roadKey }
         return next

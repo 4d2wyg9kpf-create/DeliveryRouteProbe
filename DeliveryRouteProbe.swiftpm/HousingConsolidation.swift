@@ -158,49 +158,14 @@ enum HousingAggregation {
 enum HousingConsolidator {
     static func sources(_ region: HousingRegion) -> [HousingSource] { sources(region, overrides: []) }
     static func sources(_ region: HousingRegion, overrides: [HousingEdit]) -> [HousingSource] {
-        let allRaw = Dictionary((region.records + (region.kaptRecords ?? [])).map { ($0.id,$0) }, uniquingKeysWith: { _, newer in newer })
-        let changes = Dictionary(overrides.map { ($0.id,$0) }, uniquingKeysWith: { _, newer in newer })
-        func adjusted(_ source: HousingSource) -> HousingSource? {
-            guard changes[source.id]?.hidden != true else { return nil }
-            var next = source
-            if let edit = changes[source.id] { next.fields.merge(edit.fields) { _,user in user }; if let confirmed = edit.dongScopeConfirmed { next.dongScopeConfirmed = confirmed } }
-            return next
-        }
-        let realty = region.records.compactMap(adjusted).sorted { $0.id < $1.id }, kapt = (region.kaptRecords ?? []).compactMap(adjusted)
-        var attached: [String: [HousingSource]] = [:]
-        for r in realty {
-            attached[r.id] = kapt.filter { HousingIdentity.certainMatch(r, $0, realtyPeers: realty, kaptPeers: kapt) }
-        }
-        var groups: [[HousingSource]] = []
-        // Index per address/office rather than comparing all national records.
-        var buckets: [String: [Int]] = [:]
-        for r in realty {
-            let road = DeviceShareCodec.addressIdentity(r.fields["roadAddress"] ?? "")
-            let phones = (attached[r.id] ?? []).map(HousingIdentity.office).filter { !$0.isEmpty }
-            var keys = phones.map { "office:" + $0 }
-            if RealtyHousingClient.road(r.fields["roadAddress"] ?? "") { keys.append("road:" + road) }
-            let candidates = Set(keys.flatMap { buckets[$0] ?? [] }).sorted()
-            let matching = candidates.filter { index in groups[index].contains { HousingIdentity.connected($0, r) } }
-            let target: Int
-            if let first = matching.first {
-                target = first; groups[first].append(r)
-                for i in matching.dropFirst() { groups[first].append(contentsOf: groups[i]); groups[i] = [] }
-                // Repoint stale bucket indexes after joining three adjacent parts.
-                for key in Array(buckets.keys) { buckets[key] = Array(Set((buckets[key] ?? []).map { matching.contains($0) ? first : $0 })) }
-            } else { target = groups.count; groups.append([r]) }
-            for key in keys { buckets[key, default: []].append(target) }
-        }
-        return groups.filter { !$0.isEmpty }.map { group in
-            let primary = group.sorted { $0.id < $1.id }[0]
-            let additions = group.flatMap { attached[$0.id] ?? [] }
-            let members = Dictionary((group + additions).map { ($0.id, $0) }, uniquingKeysWith: { _, newer in newer }).values.sorted { $0.id < $1.id }
-            if members.count == 1, changes[primary.id] == nil { return primary }
-            var merged = primary; merged.members = members.compactMap { allRaw[$0.id] }; merged.fields = HousingAggregation.fields(members)
-            merged.issues = Array(Set(members.flatMap(\.issues))).sorted()
-            for key in ["households", "parking", "elevators"] where members.contains(where: { !($0.fields[key] ?? "").isEmpty }) && (merged.fields[key] ?? "").isEmpty {
-                merged.issues.append("\(key) · 범위 중복·누락 또는 값 충돌 확인 필요")
-            }
-            return merged
+        // An address or connected dong sequence suggests a review candidate,
+        // never a merge. Only explicit HousingEdit links define a complex.
+        let changes = Dictionary(overrides.map { ($0.id,$0) }, uniquingKeysWith: { _,newer in newer })
+        return region.records.map { raw in
+            var indexed = raw
+            indexed.fields.merge(changes[raw.id]?.fields ?? [:]) { _,user in user }
+            indexed.members = [raw]
+            return indexed
         }
     }
 }

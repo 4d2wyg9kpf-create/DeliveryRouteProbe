@@ -87,7 +87,7 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("housing-test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let catalog = HousingStore(directory: folder)
+        let catalog = HousingStore(directory: folder,seedIfEmpty:false)
         var region = HousingRegion(code: "1168010300", sido: HousingArea(code: "11", name: "서울특별시"), sigungu: HousingArea(code: "680", name: "강남구"), dong: HousingArea(code: "10300", name: "개포동"), generation: 1_900_000_000_000, sourceCount: 1, records: [parsed])
         try catalog.importRegion(region)
         try check("recollection refreshes original while preserving only user edited fields") {
@@ -99,12 +99,12 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
             let original = catalog.complexes[0]; _ = try catalog.add(name: "분리 단지", regionCode: region.code, coordinate: b.coordinate, sourceIDs: original.sourceIDs)
             try require(catalog.complexes.count == 2 && catalog.complexes.allSatisfy { $0.sourceIDs == [parsed.id] }, "N-to-N source mapping")
             try catalog.hide(original); region.generation = 1_900_000_000_002; try catalog.importRegion(region)
-            try require(catalog.complexes.count == 1 && HousingStore(directory: folder).complexes.count == 1, "hide resurrected")
+            try require(catalog.complexes.count == 1 && HousingStore(directory: folder,seedIfEmpty:false).complexes.count == 1, "hide resurrected")
         }
         try check("shared edits transfer without requiring source recollection") {
             var replica = DeviceShareReplica(deviceID: UUID().uuidString), observed: [String: Data] = [:]
             try replica.capture(catalog.sharingSnapshot(), observed: &observed)
-            let copy = HousingStore(directory: folder.appendingPathComponent("device-b")); try copy.importRegion(region); try copy.applySharing(replica)
+            let copy = HousingStore(directory: folder.appendingPathComponent("device-b"),seedIfEmpty:false); try copy.importRegion(region); try copy.applySharing(replica)
             try require(copy.complexes.count == 1 && copy.complexes[0].name == "분리 단지", "shared edits lost")
         }
         try check("source count mismatch and unsupported catalog version reject") {
@@ -174,10 +174,10 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         let p2 = notice("p2","103동, 104동",households:"200",parking:"240")
         let p3 = notice("p3","201동, 202동",households:"80",parking:"90")
         var joined = region; joined.records = [p1,p2,p3]; joined.sourceCount = 3; joined.generation += 10
-        try check("adjacent dong sequences merge but different prefixes remain separate") {
+        try check("connected dong numbers remain review candidates until the user merges") {
             try require(HousingIdentity.connected(p1,p2) && !HousingIdentity.connected(p1,p3),"dong prefix rule")
             let values = HousingCatalog.effective(regions:[joined],edits:[])
-            try require(values.count == 2 && values.first { $0.sourceIDs.contains(p1.id) }?.fields["households"] == "300","canonical grouping or sum")
+            try require(values.count == 3 && values.first { $0.sourceIDs.contains(p1.id) }?.fields["households"] == "100","unapproved automatic grouping")
         }
         try check("missing dong membership and a gap never imply a connected complex") {
             var missing = p2; missing.dongScopeConfirmed = false
@@ -247,36 +247,87 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
             matching.fields["approvalDate"] = "2020-01-01"
             try require(!HousingIdentity.certainMatch(matching,nuri,realtyPeers:[matching],kaptPeers:[nuri]),"old K-apt applied to redevelopment")
         }
-        let mergeStore = HousingStore(directory:folder.appendingPathComponent("kapt-integration"))
+        let mergeStore = HousingStore(directory:folder.appendingPathComponent("kapt-integration"),seedIfEmpty:false)
         var manual = joined; manual.records = [p1,p3]; manual.sourceCount = 2
         var fullKapt = nuri; fullKapt.fields["name"] = "둔산이편한세상"; fullKapt.fields["parking"] = "700"; fullKapt.fields["households"] = "180"; fullKapt.fields["buildings"] = "4"
         var partKapt = fullKapt; partKapt.aptCode = "PART1"; partKapt.id = "kapt:1168010300:PART1"; partKapt.fields["name"] = "둔산이편한세상1단지"; partKapt.fields["parking"] = "120"
         manual.kaptRecords = [fullKapt,partKapt]; try mergeStore.importRegion(manual)
+        try check("collecting matching K-apt originals never attaches or merges without confirmation") {
+            try require(mergeStore.complexes.count == 2 && mergeStore.complexes.allSatisfy { $0.originals.allSatisfy { !$0.isKapt } },"automatic K-apt attachment")
+            var matching = fullKapt; matching.fields["roadAddress"] = p1.fields["roadAddress"]; matching.fields["jibunAddress"] = p1.fields["jibunAddress"]; matching.fields["buildings"] = p1.fields["buildings"]; matching.fields["households"] = p1.fields["households"]
+            var exact = manual; exact.records = [p1]; exact.sourceCount = 1; exact.kaptRecords = [matching]
+            try require(HousingCatalog.effective(regions:[exact],edits:[])[0].originals.count == 1,"even exact match attached without consent")
+            let candidates = try mergeStore.reviewCandidates(mergeStore.complexes[0])
+            try require(candidates.count == 2,"same-address review candidates missing")
+        }
         try check("manual merging keeps every original instead of blanking fields and can be undone") {
             try mergeStore.merge(Set(mergeStore.complexes.map(\.id)),name:"통합 단지")
             let combined = mergeStore.complexes[0]
             try require(mergeStore.complexes.count == 1 && combined.originals.count == 2 && combined.fields["areas"] == "59, 84" && combined.fields["approvalDate"] == "1994-10-31","manual merge lost details")
             try mergeStore.reset(combined.id); try require(mergeStore.complexes.count == 2,"undo failed")
         }
+        try mergeStore.merge(Set(mergeStore.complexes.map(\.id)),name:"전체 평가 단지")
         let selectedComplex = mergeStore.complexes[0]
-        try mergeStore.attachKapt(selectedComplex,sourceIDs:[fullKapt.id,partKapt.id],wholeID:fullKapt.id)
+        try mergeStore.attachKapt(selectedComplex,sourceIDs:[fullKapt.id,partKapt.id],wholeID:fullKapt.id,useWholeName:true)
         try check("explicit whole K-apt selection retains partial provenance without summing duplicate totals") {
             let value = mergeStore.complexes.first { $0.id == selectedComplex.id }!
-            try require(value.name == "둔산이편한세상" && value.fields["parking"] == "700" && value.originals.count == 3 && mergeStore.complexes.count == 2,"whole-plus-part doubled or provenance lost")
+            try require(value.name == "둔산이편한세상" && value.fields["parking"] == "700" && value.originals.count == 4 && mergeStore.complexes.count == 1,"whole-plus-part doubled or provenance lost")
         }
         try mergeStore.saveSourceOverride(fullKapt,fields:["heating":"사용자 보정"],confirmedDongs:false)
         fullKapt.fields["heating"] = "새 수집값"; fullKapt.detailAt = Date().addingTimeInterval(60); manual.kaptRecords = [fullKapt,partKapt]; manual.generation += 20; try mergeStore.importRegion(manual)
         try check("source-specific corrections survive new K-apt data and a reload") {
-            let reload = HousingStore(directory:folder.appendingPathComponent("kapt-integration"))
+            let reload = HousingStore(directory:folder.appendingPathComponent("kapt-integration"),seedIfEmpty:false)
             try require(reload.complexes.first { $0.id == selectedComplex.id }?.fields["heating"]?.contains("사용자 보정") == true,"correction overwritten")
         }
         try mergeStore.saveAddressKey("fixture_address_key")
         var housingReplica = DeviceShareReplica(deviceID:UUID().uuidString), housingObserved:[String:Data] = [:]
         try housingReplica.capture(mergeStore.sharingSnapshot(),observed:&housingObserved)
-        let receiving = HousingStore(directory:folder.appendingPathComponent("kapt-receiver")); try receiving.importRegion(manual); try receiving.applySharing(housingReplica)
+        let receiving = HousingStore(directory:folder.appendingPathComponent("kapt-receiver"),seedIfEmpty:false); try receiving.importRegion(manual); try receiving.applySharing(housingReplica)
         try check("K-apt links source corrections and address keys share while blank devices export no key deletion") {
             try require(receiving.hasAddressKey && receiving.complexes.first { $0.id == selectedComplex.id }?.fields["parking"] == "700","shared integration lost")
-            let blank = HousingStore(directory:folder.appendingPathComponent("blank-housing")); try require(try blank.sharingSnapshot().values["setting/housing-address"] == nil,"empty key deletion")
+            let blank = HousingStore(directory:folder.appendingPathComponent("blank-housing"),seedIfEmpty:false); try require(try blank.sharingSnapshot().values["setting/housing-address"] == nil,"empty key deletion")
+        }
+        try check("next-year list refresh preserves old detail and manual links while only new IDs need details") {
+            let before = mergeStore.complexes.first { $0.id == selectedComplex.id }!
+            try mergeStore.edit(before,fields:["name":"내가 수정한 단지명"])
+            var annual = manual
+            annual.records = manual.records.map { row in
+                var listed = row; listed.noticeDate = "20270101"; listed.detailAt = nil
+                listed.fields = ["name":"내년도 목록명","roadAddress":row.fields["roadAddress"] ?? "","jibunAddress":row.fields["jibunAddress"] ?? ""]
+                return listed
+            }
+            var new = notice("new-2027","301동",households:"10",parking:"12"); new.noticeDate = "20270101"; new.detailAt = nil
+            annual.records.append(new); annual.sourceCount = 3; annual.generation += 100; annual.listFetchedMillis = annual.generation
+            try mergeStore.importRegion(annual)
+            let saved = try mergeStore.originalRegion(annual.code)
+            let value = mergeStore.complexes.first { $0.id == selectedComplex.id }!
+            try require(saved.missingDetailIDs == [new.id] && saved.records.first { $0.id == p1.id }?.latestNoticeDate == "20270101","old records scheduled again")
+            try require(value.name == "내가 수정한 단지명" && value.fields["parking"] == "700" && value.originals.count == 4 && mergeStore.complexes.count == 2,"recollection duplicated or changed group")
+            annual = saved; let position = annual.records.firstIndex { $0.id == p1.id }!
+            annual.records[position].fields["school"] = "새 초등학교"; annual.records[position].noticeDate = "20270101"; annual.records[position].detailAt = Date().addingTimeInterval(120); annual.generation += 100
+            try mergeStore.importRegion(annual); try mergeStore.importRegion(annual)
+            let reload = HousingStore(directory:folder.appendingPathComponent("kapt-integration"),seedIfEmpty:false)
+            let refreshed = reload.complexes.first { $0.id == selectedComplex.id }!
+            try require(reload.complexes.count == 2 && refreshed.name == "내가 수정한 단지명" && refreshed.fields["school"] == "새 초등학교","explicit refresh duplicated or erased edits")
+        }
+        try check("nested merges retain earlier manual values and restore the previous grouping") {
+            let nested = HousingStore(directory:folder.appendingPathComponent("nested-merges"),seedIfEmpty:false)
+            try nested.importRegion(joined); try nested.merge([p1.id,p2.id],name:"처음 통합명")
+            let first = nested.complexes.first { $0.id.hasPrefix("user:") }!
+            try nested.edit(first,fields:["heating":"직접 보정한 난방","parking":"390"])
+            try nested.merge(Set(nested.complexes.map(\.id)),name:"최종 통합명")
+            let final = nested.complexes[0]
+            try require(nested.complexes.count == 1 && final.originals.count == 3 && final.fields["heating"] == "직접 보정한 난방" && final.fields["parking"] == "480","earlier group overrides lost")
+            try require(final.priorEdits.contains { $0.fields["name"] == "처음 통합명" },"previous names not retained")
+            try nested.reset(final.id)
+            try require(nested.complexes.count == 2 && nested.complexes.first { $0.id == first.id }?.fields["parking"] == "390","nested undo lost edits")
+        }
+        try check("regional storage keeps all rows while bounded display reads only the search window") {
+            let many = HousingStore(directory:folder.appendingPathComponent("more-than-2000"),seedIfEmpty:false)
+            var wide = joined
+            wide.records = (0..<2005).map { n in var row = notice("wide-\(n)","101동",households:"10",parking:"12"); row.fields["name"] = "단지 \(String(format:"%04d",n))"; return row }
+            wide.sourceCount = wide.records.count; try many.importRegion(wide)
+            try require(try many.originalRegion(wide.code).records.count == 2005 && many.complexes.count == 2000,"display cap truncated stored catalog")
         }
         var publicState: Data?, publicRequests = 0
         let gateway = PublicDataStore(read:{ publicState },write:{ publicState = $0 },transport:{ request in

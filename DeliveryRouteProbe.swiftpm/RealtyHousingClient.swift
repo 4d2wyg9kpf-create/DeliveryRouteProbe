@@ -89,14 +89,16 @@ struct RealtyHousingClient {
         return next
     }
     func detail(_ source: HousingSource) async throws -> HousingSource {
-        let params = ["notice_date": source.noticeDate, "apt_code": source.aptCode, "tiles": "false"]
+        let notice = source.latestNoticeDate ?? source.noticeDate
+        let params = ["notice_date": notice, "apt_code": source.aptCode, "tiles": "false"]
         let html = String(decoding: try await post("m/town/detail.do", params), as: UTF8.self)
         var next = try Self.parseDetail(html, source: source)
+        next.noticeDate = notice
         let select = Self.matches(html, #"<select[^>]*id=['\"]sel_dong['\"][^>]*>(.*?)</select>"#).first ?? ""
         let dongs = Self.matches(select, #"<option[^>]*value=['\"]([^'\"]+)['\"]"#)
         var found = false
         for dong in dongs {
-            var form = ["notice_date": source.noticeDate, "apt_code": source.aptCode, "dong_code": dong]
+            var form = ["notice_date": notice, "apt_code": source.aptCode, "dong_code": dong]
             let hos = try Self.rows(await post("m/town/getHo.do", form))
             guard let ho = hos.first else { continue }; form["ho_code"] = Self.text(ho, "CODE")
             let prices = try Self.rows(await post("m/town/getPriceYear.do", form))

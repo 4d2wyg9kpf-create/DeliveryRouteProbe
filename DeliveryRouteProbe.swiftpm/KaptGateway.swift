@@ -13,7 +13,7 @@ enum KaptRequest {
 }
 enum KaptGateway {
     static func request(_ action: KaptRequest, key: String, parameters: [String: String]) throws -> URLRequest {
-        guard !key.isEmpty else { throw PlannerFailure.message("공공데이터 인증키와 K-apt API 활용승인을 먼저 설정하세요.") }
+        guard !key.isEmpty else { throw PublicDataFailure.message("공공데이터 인증키와 K-apt API 활용승인을 먼저 설정하세요.") }
         var values = parameters
         if action == .list {
             guard values["bjdCode"]?.range(of: #"^\d{10}$"#, options: .regularExpression) != nil, let page = Int(values["pageNo"] ?? ""), (1...100_000).contains(page) else { throw DeviceShareError.invalid }
@@ -33,7 +33,7 @@ enum KaptGateway {
         if let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { return result }
         let parser = XMLParser(data: data), delegate = HousingXMLReader(); parser.delegate = delegate
         parser.shouldResolveExternalEntities = false
-        guard parser.parse(), let result = delegate.result else { throw PlannerFailure.message("K-apt 응답 형식이 달라졌습니다.") }; return result
+        guard parser.parse(), let result = delegate.result else { throw PublicDataFailure.message("K-apt 응답 형식이 달라졌습니다.") }; return result
     }
     static func body(_ data: Data) throws -> [String: Any] {
         let root = try object(data), response = root["response"] as? [String: Any] ?? root["OpenAPI_ServiceResponse"] as? [String:Any] ?? root
@@ -41,7 +41,7 @@ enum KaptGateway {
         let code = text(header, "resultCode").isEmpty ? text(header, "returnReasonCode") : text(header, "resultCode")
         guard ["0", "00", "0000"].contains(code) else {
             if code.range(of: #"^-?\d{1,4}$"#, options: .regularExpression) != nil { throw PublicDataFailure.provider(code) }
-            throw PlannerFailure.message("K-apt 결과코드를 확인하지 못했습니다. 활용승인·응답을 확인하세요.")
+            throw PublicDataFailure.message("K-apt 결과코드를 확인하지 못했습니다. 활용승인·응답을 확인하세요.")
         }
         guard let body = response["body"] as? [String: Any] else { throw DeviceShareError.invalid }; return body
     }

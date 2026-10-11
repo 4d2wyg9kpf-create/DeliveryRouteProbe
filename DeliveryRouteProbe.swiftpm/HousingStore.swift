@@ -19,7 +19,7 @@ final class HousingStore: ObservableObject {
     private var writable = true
     private var published = Set<String>()
     private var ready = Set<String>()
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, seedIfEmpty: Bool = true) {
         self.directory = directory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("RouteProbe/Housing", isDirectory: true)
         do {
             index = try HousingIndex(directory: self.directory)
@@ -32,15 +32,15 @@ final class HousingStore: ObservableObject {
                 let file = self.directory.appendingPathComponent("edits.json")
                 if FileManager.default.fileExists(atPath: file.path) { edits = try DeviceShareCodec.decode([HousingEdit].self, Data(contentsOf: file)); try Self.validate(edits) }
                 // Migrate the previous raw-only index. Raw files and edits are
-                // retained; groups are rebuilt deterministically from them.
-                for summary in regions where summary.complexCount == nil || edits.contains(where: { $0.regionCode == summary.code }) {
+                // retained; explicit user links are the only grouping decisions.
+                for summary in regions where summary.manualReview != true || edits.contains(where: { $0.regionCode == summary.code }) {
                     let region = try originalRegion(summary.code); try index!.replace(region, edits: edits)
                 }
                 regions = try index!.summaries()
             }
             let secure = try APIProtectedStateFile(.housingAddress,directory:self.directory.appendingPathComponent("secure"))
             if let data = try secure.read() { let key = try DeviceShareCodec.decode(String.self,data); try Self.validateAddressKey(key); addressKey = key; hasAddressKey = !key.isEmpty }
-            if !regions.contains(where: { $0.code == "1168010300" }) {
+            if seedIfEmpty, !regions.contains(where: { $0.code == "1168010300" }) {
                 let seed = try Self.decode(Data(HousingSeed.source.utf8)); try importRegion(seed, share: false)
             }
             ready = Set(regions.map(\.code)); publish()
@@ -50,7 +50,7 @@ final class HousingStore: ObservableObject {
         regions.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         do {
             let sources = try index?.search(region: searchRegion, keyword: searchKeyword, sourceIDs: Set(edits.flatMap(\.sourceIDs))) ?? []
-            complexes = HousingCatalog.effective(sources: sources, edits: edits).filter { (searchRegion.isEmpty || $0.regionCode == searchRegion) && (searchKeyword.isEmpty || $0.searchText.localizedCaseInsensitiveContains(searchKeyword)) }
+            complexes = HousingCatalog.effective(sources: sources, edits: edits).filter { (searchRegion.isEmpty || $0.regionCode == searchRegion || $0.originals.contains { $0.regionCode == searchRegion }) && (searchKeyword.isEmpty || $0.searchText.localizedCaseInsensitiveContains(searchKeyword)) }
         } catch { errorMessage = error.localizedDescription }
     }
     func search(region: String, keyword: String) async {
@@ -74,7 +74,7 @@ final class HousingStore: ObservableObject {
     }
     nonisolated static func validate(_ edits: [HousingEdit]) throws {
         guard edits.count <= 5_000, Set(edits.map(\.id)).count == edits.count,
-              edits.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 200 && $0.sourceIDs.count <= 500 && $0.fields.count <= 100 && ($0.note?.utf8.count ?? 0) <= 20_000 && $0.fields.values.allSatisfy({ $0.utf8.count <= 20_000 }) && ($0.coordinate.map(KakaoRouteAPI.valid) ?? true) }) else { throw DeviceShareError.invalid }
+              edits.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 200 && $0.sourceIDs.count <= 500 && ($0.mergedIDs?.count ?? 0) <= 500 && !($0.mergedIDs ?? []).contains($0.id) && $0.fields.count <= 100 && ($0.note?.utf8.count ?? 0) <= 20_000 && $0.fields.values.allSatisfy({ $0.utf8.count <= 20_000 }) && ($0.coordinate.map(KakaoRouteAPI.valid) ?? true) }) else { throw DeviceShareError.invalid }
     }
     func importRegion(_ incoming: HousingRegion, share: Bool = true) throws {
         var region = incoming
@@ -113,8 +113,9 @@ final class HousingStore: ObservableObject {
         var next = edits; guard let index = next.firstIndex(where: { $0.id == id }) else { return }; next[index].hidden = false; try commit(next)
     }
     func hide(_ complex: HousingComplex) throws {
-        var next = edits; next.removeAll { $0.id == complex.id }
-        next.append(HousingEdit(id: complex.id, sourceIDs: complex.sourceIDs, regionCode: complex.regionCode, fields: complex.fields, coordinate: complex.coordinate, hidden: true)); try commit(next)
+        var next = edits
+        var value = next.first { $0.id == complex.id } ?? HousingEdit(id:complex.id,sourceIDs:complex.sourceIDs,regionCode:complex.regionCode)
+        value.hidden = true; next.removeAll { $0.id == complex.id }; next.append(value); try commit(next)
     }
     @discardableResult
     func add(name: String, regionCode: String, fields: [String: String] = [:], coordinate: TMapCoordinate? = nil, sourceIDs: [String] = []) throws -> String {
@@ -123,8 +124,8 @@ final class HousingStore: ObservableObject {
         let id = "user:" + UUID().uuidString
         try commit(edits + [HousingEdit(id: id, sourceIDs: sourceIDs, regionCode: regionCode, fields: fields, coordinate: coordinate)]); return id
     }
-    func merge(_ ids: Set<String>, name: String) throws {
-        let selected = complexes.filter { ids.contains($0.id) }; guard selected.count == ids.count, selected.count > 1, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PlannerFailure.message("단지를 2개 이상 선택하고 합칠 이름을 입력하세요.") }
+    func merge(_ ids: Set<String>, name: String, reviewed: [HousingComplex]? = nil) throws {
+        let selected = (reviewed ?? complexes).filter { ids.contains($0.id) }; guard selected.count == ids.count, selected.count > 1, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PlannerFailure.message("단지를 2개 이상 선택하고 합칠 이름을 입력하세요.") }
         var next = edits
         let mergedID = "user:" + UUID().uuidString
         for complex in selected {
@@ -133,8 +134,18 @@ final class HousingStore: ObservableObject {
             next.removeAll { $0.id == complex.id }; next.append(previous)
         }
         next.append(HousingEdit(id: mergedID, sourceIDs: Array(Set(selected.flatMap(\.sourceIDs))).sorted(), regionCode: selected[0].regionCode,
-            fields: ["name":name], coordinate: selected[0].coordinate))
+            fields: ["name":name], coordinate: selected[0].coordinate,mergedIDs:selected.map(\.id)))
         try commit(next)
+    }
+    func reviewCandidates(_ complex: HousingComplex) throws -> [HousingComplex] {
+        let codes = Set(complex.originals.map(\.regionCode)).union([complex.regionCode]).filter { !$0.isEmpty }
+        let raw = try codes.map { try originalRegion($0) }
+        let candidates = HousingCatalog.effective(regions:raw,edits:edits)
+        return candidates.filter { other in
+            other.id == complex.id || (complex.originals + [HousingSource(id:complex.id,aptCode:complex.id,noticeDate:"",regionCode:complex.regionCode,fields:complex.fields)]).contains { a in (other.originals + [HousingSource(id:other.id,aptCode:other.id,noticeDate:"",regionCode:other.regionCode,fields:other.fields)]).contains { b in
+                HousingIdentity.sameRoad(a,b) || (!HousingIdentity.parcel(a).isEmpty && HousingIdentity.parcel(a) == HousingIdentity.parcel(b)) || (!HousingIdentity.office(a).isEmpty && HousingIdentity.office(a) == HousingIdentity.office(b))
+            } }
+        }
     }
     private func commit(_ next: [HousingEdit]) throws {
         guard writable else { throw DeviceShareError.unavailable }; try Self.validate(next)
@@ -147,8 +158,7 @@ final class HousingStore: ObservableObject {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try DeviceShareCodec.encode(next).write(to: directory.appendingPathComponent("edits.json"), options: .atomic)
         edits = next
-        // User exclusions, source-specific dong corrections and office
-        // corrections must affect the next automatic grouping immediately.
+        // Source corrections update search text; grouping stays explicitly chosen.
         for summary in regions where codes.contains(summary.code) { try index?.replace(originalRegion(summary.code), edits: edits) }
         regions = try index?.summaries() ?? regions; publish(); try DeviceShareHooks.changed()
     }
@@ -194,22 +204,22 @@ final class HousingStore: ObservableObject {
     }
     func saveSourceOverride(_ source: HousingSource, fields: [String:String], confirmedDongs: Bool, excluded: Bool = false) throws {
         var next = edits; var value = next.first { $0.id == source.id } ?? HousingEdit(id:source.id,sourceIDs:[source.id],regionCode:source.regionCode)
-        value.fields.merge(fields) { _, user in user }; value.dongScopeConfirmed = confirmedDongs; value.hidden = excluded
+        value.fields.merge(fields) { _, user in user }; value.dongScopeConfirmed = confirmedDongs; value.hidden = excluded; value.sourceExcluded = excluded
         next.removeAll { $0.id == source.id }; next.append(value); try commit(next)
     }
-    func attachKapt(_ complex: HousingComplex, sourceIDs: Set<String>, wholeID: String?) throws {
+    func attachKapt(_ complex: HousingComplex, sourceIDs: Set<String>, wholeID: String?, useWholeName: Bool = false) throws {
         guard sourceIDs.allSatisfy({ $0.hasPrefix("kapt:") }), wholeID == nil || sourceIDs.contains(wholeID!) else { throw DeviceShareError.invalid }
         let sources = try sourceIDs.compactMap { try rawSource($0) }; guard sources.count == sourceIDs.count else { throw DeviceShareError.invalid }
         var next = edits; var value = next.first { $0.id == complex.id } ?? HousingEdit(id:complex.id,sourceIDs:complex.sourceIDs,regionCode:complex.regionCode)
         value.sourceIDs = (complex.sourceIDs.filter { !$0.hasPrefix("kapt:") } + Array(sourceIDs)).sorted()
         value.preferredKaptID = wholeID
-        if let whole = sources.first(where: { $0.id == wholeID }) { value.fields["name"] = whole.fields["name"] }
+        if useWholeName, let whole = sources.first(where: { $0.id == wholeID }) { value.fields["name"] = whole.fields["name"] }
         next.removeAll { $0.id == complex.id }; next.append(value); try commit(next)
     }
     func collectKapt(_ code: String, refresh: Bool, api: PublicDataStore) async throws {
         var region = try originalRegion(code)
         defer { try? shareRegion(code) }
-        if refresh || region.kaptListAt == nil {
+        do {
             var existing = Dictionary((region.kaptRecords ?? []).map { ($0.id,$0) },uniquingKeysWith:HousingRegion.newerSource)
             var seen = Set<String>(), total: Int?
             for page in 1...1000 {
@@ -244,26 +254,7 @@ final class HousingStore: ObservableObject {
             region.kaptRecords?[i] = updated; region.generation = Date().timeIntervalSince1970 * 1000; try importRegion(region,share:false)
             try await Task.sleep(nanoseconds:300_000_000)
         }
-        // Older catalogs did not store actual dong labels. Read the matching
-        // notice records so existing saved data can use the same merge rules.
-        region = try originalRegion(code)
-        let oldNoticeIDs = region.records.filter { r in
-            (r.detailAt == nil || r.fields["dongNames"] == nil) && (region.kaptRecords ?? []).contains { k in
-                HousingIdentity.sameRoad(r,k) || (!HousingIdentity.parcel(r).isEmpty && HousingIdentity.parcel(r) == HousingIdentity.parcel(k))
-            }
-        }.map(\.id)
-        let client = RealtyHousingClient()
-        for (number,id) in oldNoticeIDs.enumerated() {
-            try Task.checkCancellation(); region = try originalRegion(code)
-            guard let i = region.records.firstIndex(where:{ $0.id == id }) else { continue }
-            progress = "\(region.title) · 기존 공시가격 동 번호 보완 \(number+1)/\(oldNoticeIDs.count)"
-            do { region.records[i] = try await client.detail(region.records[i]) }
-            catch is CancellationError { throw CancellationError() }
-            catch { region.records[i].issues.append("동 번호 보완: " + error.localizedDescription) }
-            region.generation = Date().timeIntervalSince1970 * 1000; try importRegion(region,share:false)
-            try await Task.sleep(nanoseconds:500_000_000)
-        }
-        progress = "\(region.title) · K-apt 수집·통합 완료. 미확정 연결은 검토하세요."
+        progress = "\(region.title) · K-apt 원본 수집 완료. 연결과 통합은 직접 확인하세요."
     }
     func collectAddresses(_ code: String) async throws {
         var region = try originalRegion(code); defer { try? shareRegion(code) }
