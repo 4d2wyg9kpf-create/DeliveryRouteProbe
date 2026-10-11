@@ -21,7 +21,6 @@ struct NaverSearchScreen: View {
     @State private var message = ""
     @State private var error: String?
     private var importing: Bool { browser.isOpeningSharedLink || browser.isImportingSavedList || browser.waitingForSavedFolder || browser.isReadingPlace }
-    private var importingWeb: Bool { browser.isImportingSavedList || browser.waitingForSavedFolder || browser.isReadingPlace || (browser.isOpeningSharedLink && browser.sharedLinkUsesWeb) }
     var body: some View {
         NavigationStack {
             Form {
@@ -45,7 +44,7 @@ struct NaverSearchScreen: View {
                     } else {
                         NativeTextField("네이버지도 장소·목록 공유 링크", text: $sharedLink, keyboard: .URL).frame(minHeight: 44)
                         PasteButton(payloadType: String.self) { values in sharedLink = values.first ?? "" }
-                        Text("네이버지도의 공유문 전체를 붙여넣으세요. 링크에서 선택 지점을 확인합니다. 공유문 앞의 주소로 좌표를 대신 변환하지 않습니다. 목록은 모든 장소를 가져옵니다.").font(.caption).foregroundStyle(.secondary)
+                        Text("네이버지도의 공유문 전체를 붙여넣으세요. 주소 핀은 지도 화면을 열지 않고 링크 응답의 선택 좌표를 읽습니다. 장소·저장 목록은 웹 화면을 열어 확인합니다.").font(.caption).foregroundStyle(.secondary)
                     }
                     Button(api.isBusy || importing ? "처리 중…" : mode == 0 ? "네이버 검색" : mode == 1 ? "주소 → 좌표 변환" : "공유 링크 가져오기") { search() }
                         .buttonStyle(.borderedProminent)
@@ -99,11 +98,6 @@ struct NaverSearchScreen: View {
                 }
                 NaverQuotaSection(api: api)
             }
-            .background {
-                // A wide, invisible document viewport lets shared links resolve
-                // without making the user fit a desktop map onto an iPhone.
-                if !showWeb && importingWeb { MapWebView(webView: browser.webView).frame(width: 1400, height: 900).opacity(0).allowsHitTesting(false).accessibilityHidden(true) }
-            }.clipped()
             .navigationTitle("네이버검색")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button { inputs.finishEditing(); showSettings = true } label: { Image(systemName: "gearshape") }.accessibilityLabel("네이버 API 설정") } }
@@ -114,6 +108,9 @@ struct NaverSearchScreen: View {
             .task { await api.refreshQuotas() }
             .onChange(of: browser.placeCapture?.capturedAt) { _, _ in
                 if let capture = browser.placeCapture { selection = capture }
+            }
+            .onChange(of: browser.sharedLinkUsesWeb) { _, usesWeb in
+                if usesWeb { inputs.finishEditing(); showWeb = true }
             }
             .onChange(of: mode) { _, _ in results = []; error = nil; message = "" }
         }
@@ -165,6 +162,11 @@ struct NaverLinkWebView: View {
             }.buttonStyle(.bordered)
             MapWebView(webView: browser.webView)
         }.navigationTitle("네이버 목록 · 로그인 확인").navigationBarTitleDisplayMode(.inline)
+            .onDisappear {
+                if browser.isOpeningSharedLink || browser.isImportingSavedList || browser.waitingForSavedFolder {
+                    browser.cancelLinkImport()
+                }
+            }
     }
 }
 

@@ -25,5 +25,26 @@ function deliveries(selectedIDs=['customer-0','customer-1'],plan={visits:[],legs
 test('different share labels at the same address still count as duplicates',()=>{const b=point(127.4001,'https://naver.me/pointB');b.name='다른 공유 이름';assert(places.customerMatches({first:point(),second:b}));});
 test('different building numbers do not count as duplicate addresses',()=>{const b=point();b.address=b.roadAddress='대전 중구 가상로 1-1';assert(!places.customerMatches({first:point(),second:b}));});
 test('replacing a selected pin does not retain another nearby point coordinate',()=>{const c=point(127.4000002,'https://naver.me/pointB'),r=places.attach({plan:deliveries(['customer-0']),capture:c,targetID:'visit-0',useCoordinate:true,curbConfirmed:true,requestAddress:c.address});assert.equal(r.plan.visits[0].tmapCoordinate.longitude,127.4000002);});
+// Synthetic HTTP redirect fixtures. Never commit a user's share token/address.
+function redirectPin(changes={},extra=''){
+  const fields={appMenu:'location',menu:'location',address:'대전 중구 가상로 1',title:'대전 중구 가상로 1',query:'대전 중구 가상로 1',lng:'127.4000001',lat:'36.3000001',...changes};
+  const resolvedURL='https://map.naver.com/?'+Object.entries(fields).filter(([,v])=>v!=null).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&')+extra;
+  return places.sharedPin({resolvedURL,sharedURL:'https://naver.me/fixture1',now});
+}
+test('HTTP location redirect preserves full precision coordinates',()=>{const c=redirectPin();assert.equal(c.coordinate.longitude,127.4000001);assert.equal(c.coordinate.latitude,36.3000001);assert.equal(c.method,'naver_shared_link_coordinate');});
+test('HTTP location redirect retains original token and resolved evidence',()=>{const c=redirectPin();assert.equal(c.sharedLinkURL,'https://naver.me/fixture1');assert.equal(c.sharedPinEvidence.longitude,'127.4000001');assert.equal(c.sourceURL,c.sharedPinEvidence.resolvedURL);});
+test('HTTP pin address comes from its response rather than the pasted title',()=>{assert.equal(redirectPin().address,'대전 중구 가상로 1');});
+test('map center parameter never overrides explicit shared pin',()=>{assert.equal(redirectPin({},'&c=0,0,0,0,dh').coordinate.longitude,127.4000001);});
+test('same building retains each HTTP pin and fails selection verification after a change',()=>{const a=redirectPin(),b=redirectPin({lng:'127.4000002'});assert(places.customerMatches({first:a,second:b}));assert(!places.sameSelection({capture:a,fresh:b,useCoordinate:false}).same);assert.equal(b.coordinate.longitude,127.4000002);});
+test('HTTP pins cannot be replaced by API building coordinates',()=>{assert.throws(()=>api.geocode({capture:redirectPin(),response:{status:'OK',addresses:[{roadAddress:'대전 중구 가상로 1',jibunAddress:'',x:'127.4',y:'36.3'}]}}));});
+test('HTTP coordinates without explicit location share are rejected',()=>{assert.throws(()=>redirectPin({appMenu:null,menu:null}));});
+test('conflicting share menus are rejected',()=>{assert.throws(()=>redirectPin({menu:'search'}));});
+test('duplicate longitude and encoded duplicate latitude are rejected',()=>{assert.throws(()=>redirectPin({},'&lng=127.5'));assert.throws(()=>redirectPin({},'&%6cat=36.4'));});
+test('nonfinite, scientific, out of country and missing coordinates are rejected',()=>{for(const lng of ['NaN','1.274e2','200','',null])assert.throws(()=>redirectPin({lng}));});
+test('ambiguous or missing address labels are rejected',()=>{assert.throws(()=>redirectPin({address:null}));assert.throws(()=>redirectPin({query:'대전 중구 가상로 2'}));assert.throws(()=>redirectPin({},'&address=other'));});
+test('malformed escaped query content is rejected',()=>{assert.throws(()=>redirectPin({},'&title=%ZZ'));});
+test('HTTP source must be the exact HTTPS NAVER map location URL',()=>{const c=redirectPin();for(const bad of ['https://map.naver.com.evil.test/?','http://map.naver.com/?','https://user@map.naver.com/?','https://map.naver.com:443/?'])assert.throws(()=>places.sharedPin({resolvedURL:c.sourceURL.replace('https://map.naver.com/?',bad),sharedURL:c.sharedLinkURL,now}));});
+test('mutating HTTP evidence or coordinate invalidates a saved capture',()=>{for(const mutate of [c=>c.coordinate.longitude+=.00001,c=>c.sharedPinEvidence.longitude='127.5',c=>c.sourceURL='https://map.naver.com/p/search/other',c=>c.address='대전 중구 가상로 2',c=>delete c.sharedPinEvidence,c=>delete c.sharedLinkURL]){const c=redirectPin();mutate(c);assert.throws(()=>places.validate(c));}});
+test('HTTP bridge produces a native JSON-compatible capture',()=>{const c=redirectPin(),r=JSON.parse(places.sharedPinJSON(JSON.stringify({resolvedURL:c.sourceURL,sharedURL:c.sharedLinkURL,now})));assert(r.ok);assert.equal(r.value.coordinate.longitude,c.coordinate.longitude);});
 console.log(JSON.stringify({passed:checks.filter(c=>c.passed).length,total:checks.length,checks}));
 if(checks.some(c=>!c.passed))process.exitCode=1;

@@ -31,6 +31,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     @Published var isOpeningSharedLink = false
     @Published private(set) var sharedLinkUsesWeb = false
     private var sharedLinkTimer: Timer?
+    private var sharedLinkTask: Task<Void, Never>?
     private var sharedLinkChecking = false
     private var sharedLinkID: UUID?
     @Published var bikeCapture: BikeEntranceCapture?
@@ -109,6 +110,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
     private func open(_ value: String) {
         guard let url = URL(string: value) else { return }
+        sharedLinkTask?.cancel(); sharedLinkTask = nil
         sharedLinkID = nil; sharedLinkTimer?.invalidate(); sharedLinkTimer = nil; isOpeningSharedLink = false
         sharedLinkUsesWeb = false
         cancelSavedListImport()
@@ -125,10 +127,39 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
     func openSharedLink(_ text: String, customers: NaverCustomerStore, sites: SiteTargetStore? = nil, destination: NaverImportDestination = .customers) throws {
         let target = try NaverSharedLink.parse(text)
+        cancelLinkImport()
+        let requestID = UUID(); sharedLinkID = requestID; isOpeningSharedLink = true
+        placeCapture = nil; errorMessage = nil; savedListProgress = ""; savedListReport = nil
+        status = "공유 링크의 응답에서 선택 지점 좌표를 읽고 있습니다."
+        sharedLinkTask = Task { [weak self, weak customers] in
+            do {
+                let result = try await NaverSharedLinkResolver().resolve(target)
+                guard let self, let customers, self.sharedLinkID == requestID, !Task.isCancelled else { return }
+                self.sharedLinkTask = nil
+                switch result {
+                case .pin(let capture):
+                    self.sharedLinkID = nil; self.isOpeningSharedLink = false
+                    self.placeCapture = capture
+                    self.status = "공유한 선택 지점의 좌표·주소를 읽었습니다. 저장할 목록을 선택해 주세요."
+                case .web(let destinationURL):
+                    self.openSharedWebTarget(destinationURL, originalURL: target.url.absoluteString,
+                                             customers: customers, sites: sites, destination: destination)
+                }
+            } catch {
+                guard let self, self.sharedLinkID == requestID else { return }
+                self.sharedLinkTask = nil; self.sharedLinkID = nil; self.isOpeningSharedLink = false
+                self.errorMessage = error.localizedDescription
+                self.status = "공유 링크의 선택 좌표를 가져오지 못했습니다."
+            }
+        }
+    }
+
+    private func openSharedWebTarget(_ target: NaverSharedLink.Target, originalURL: String,
+                                    customers: NaverCustomerStore, sites: SiteTargetStore?, destination: NaverImportDestination) {
         open(target.url.absoluteString)
         let requestID = UUID(); sharedLinkID = requestID; isOpeningSharedLink = true
         sharedLinkUsesWeb = true
-        status = "공유 링크의 장소·저장 목록을 열고 있습니다."
+        status = "장소·저장 목록을 웹 화면에서 열고 있습니다."
         let deadline = Date().addingTimeInterval(35)
         sharedLinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self, weak customers] timer in
             Task { @MainActor in
@@ -152,7 +183,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                           NaverSharedLink.roadAddress(address) != nil,
                           self.sharedLinkID == requestID else { return }
                     timer.invalidate(); self.sharedLinkID = nil; self.isOpeningSharedLink = false; self.sharedLinkUsesWeb = false
-                    self.readSelectedPlace(sharedURL: target.url.absoluteString)
+                    self.readSelectedPlace(sharedURL: originalURL)
                     return
                 }
                 switch current.kind {
@@ -162,7 +193,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                           ["address", "place"].contains(read["kind"] as? String ?? ""),
                           self.sharedLinkID == requestID else { return }
                     timer.invalidate(); self.sharedLinkID = nil; self.isOpeningSharedLink = false; self.sharedLinkUsesWeb = false
-                    self.readSelectedPlace(sharedURL: target.url.absoluteString)
+                    self.readSelectedPlace(sharedURL: originalURL)
                 case .place(let id):
                     // Normalize mobile/short-link destinations to the desktop
                     // map used by the place reader; keep the exact place ID.
@@ -172,7 +203,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     guard let read = try? await NaverWebReader.root(self.webView), read["placeID"] as? String == id,
                           self.sharedLinkID == requestID else { return }
                     timer.invalidate(); self.sharedLinkID = nil; self.isOpeningSharedLink = false; self.sharedLinkUsesWeb = false
-                    self.readSelectedPlace(sharedURL: target.url.absoluteString)
+                    self.readSelectedPlace(sharedURL: originalURL)
                 case .folder:
                     if url.host != "map.naver.com" || !url.path.contains("/favorite/myPlace/folder/") {
                         self.webView.load(URLRequest(url: current.url)); return
@@ -233,6 +264,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     }
 
     func cancelLinkImport() {
+        sharedLinkTask?.cancel(); sharedLinkTask = nil
         sharedLinkID = nil; sharedLinkTimer?.invalidate(); sharedLinkTimer = nil
         sharedLinkUsesWeb = false
         isOpeningSharedLink = false; placeReadID = nil; isReadingPlace = false
@@ -315,6 +347,26 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     func verifySelectedPlace(_ candidate: NaverPlaceCapture, useCoordinate: Bool, completion: @escaping (Bool) -> Void) {
         guard !isReading, !isReadingBike, !isReadingPlace, !isImportingSavedList else { completion(false); return }
         let readID = UUID(); placeReadID = readID; isReadingPlace = true
+        if candidate.method == "naver_shared_link_coordinate", let original = candidate.sharedLinkURL {
+            Task { [weak self] in
+                do {
+                    let target = try NaverSharedLink.parse(original)
+                    guard case .pin(let fresh) = try await NaverSharedLinkResolver().resolve(target) else {
+                        throw PlannerFailure.message("공유한 지점의 선택 좌표를 다시 확인하지 못했습니다.")
+                    }
+                    guard let self, self.placeReadID == readID else { completion(false); return }
+                    let check = try NaverPlaceBridge.call("sameSelection", ["capture": try TMapBridge.object(candidate), "fresh": try TMapBridge.object(fresh), "useCoordinate": useCoordinate], as: NaverPlaceSelectionCheck.self)
+                    self.isReadingPlace = false; self.placeReadID = nil
+                    if !check.same { self.placeCapture = fresh }
+                    completion(check.same)
+                } catch {
+                    guard let self, self.placeReadID == readID else { completion(false); return }
+                    self.isReadingPlace = false; self.placeReadID = nil
+                    self.errorMessage = error.localizedDescription; completion(false)
+                }
+            }
+            return
+        }
         loadSelectedPlace { [weak self] result in
             guard let self = self, self.placeReadID == readID else { completion(false); return }
             self.isReadingPlace = false; self.placeReadID = nil

@@ -27,6 +27,7 @@ struct NaverPlaceCapture: Codable, Identifiable {
     var geocodedAddress: String?
     var apiEvidence: NaverAPIEvidence?
     var sharedLinkURL: String?
+    var sharedPinEvidence: NaverSharedPinEvidence?
     var preferredAddress: String { !roadAddress.isEmpty ? roadAddress : address }
     var isSharedAddress: Bool { kind == "address" && sharedLinkURL != nil }
     func matchesSelection(_ other: NaverPlaceCapture?) -> Bool {
@@ -36,6 +37,12 @@ struct NaverPlaceCapture: Codable, Identifiable {
         return (first.longitude * 10_000_000).rounded() == (second.longitude * 10_000_000).rounded()
             && (first.latitude * 10_000_000).rounded() == (second.latitude * 10_000_000).rounded()
     }
+}
+
+struct NaverSharedPinEvidence: Codable {
+    var resolvedURL: String
+    var longitude: String
+    var latitude: String
 }
 
 struct NaverAPIEvidence: Codable {

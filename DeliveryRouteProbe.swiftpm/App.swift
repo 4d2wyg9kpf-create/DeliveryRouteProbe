@@ -212,7 +212,7 @@ struct NaverSharedLinkView: View {
                     }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 Section {
-                    Text("장소 링크는 해당 장소를 열고 주소·좌표를 읽습니다. 확인한 장소 정보에서 거래처로 저장하세요. 저장 목록 링크는 접근 가능한 폴더의 장소를 모두 거래처 목록에 저장합니다.").font(.caption)
+                    Text("주소 핀은 웹 화면 없이 공유 링크 응답의 선택 좌표를 읽습니다. 장소·저장 목록은 웹 화면에서 확인합니다. 확인한 장소 정보에서 거래처로 저장하세요. 저장 목록은 접근 가능한 폴더의 장소를 모두 거래처 목록에 저장합니다.").font(.caption)
                     Text("지도 중심 좌표는 장소 좌표로 사용하지 않습니다. 저장 목록은 네이버의 공유 설정과 로그인 상태에 따라 접근할 수 있습니다.").font(.caption).foregroundColor(.secondary)
                 }
             }

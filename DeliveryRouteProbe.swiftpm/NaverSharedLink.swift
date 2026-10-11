@@ -22,7 +22,7 @@ enum NaverSharedLink {
         guard accepted.count == 1 else { throw Failure.multiple }
         return accepted[0]
     }
-    // Do not take coordinates from a URL or treat a broad search as a place.
+    // Do not treat arbitrary URL coordinates or a broad search as a place.
     // This helper checks a rendered address label only; it does not
     // geocode a share title or choose the selected point.
     static func roadAddress(_ value: String) -> String? {
@@ -73,8 +73,8 @@ enum NaverSharedLink {
             if let parts = URLComponents(url: url, resolvingAgainstBaseURL: false), ["/", "/p", "/p/", "/v5", "/v5/", "/index.nhn", "/local/siteview.nhn"].contains(url.path) {
                 let items = parts.queryItems ?? []
                 let ids = items.filter { $0.name == "pinId" || $0.name == "code" }.compactMap(\.value)
-                // Coordinates alone do not identify a POI. Keep a selected-pin
-                // URL intact and verify its rendered marker in the map reader.
+                // Keep the complete URL. The HTTP share resolver separately
+                // validates NAVER's explicit location-share envelope.
                 if items.contains(where: { $0.name == "lat" }) && items.contains(where: { $0.name == "lng" }) {
                     var components = parts; components.scheme = "https"
                     if let secure = components.url { return Target(kind: .mapSelection, url: secure) }
