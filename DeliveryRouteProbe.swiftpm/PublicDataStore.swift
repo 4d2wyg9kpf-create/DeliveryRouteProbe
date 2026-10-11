@@ -126,7 +126,7 @@ final class PublicDataStore: ObservableObject {
               value.accounts.count <= 1_000, value.lastTrustedMillis.isFinite, value.lastTrustedMillis >= 0,
               value.accounts.values.allSatisfy({ (0...10_000_000).contains($0.used) && PublicDataParser.date($0.period) == $0.period }) else { throw APICredentialStorageError.invalid }
     }
-    func limit(_ service: PublicDataService) -> Int { state.limits[service.rawValue] ?? 10_000 }
+    func limit(_ service: PublicDataService) -> Int { state.limits[service.rawValue] ?? (service == .kaptBasis || service == .kaptList ? 5_000 : 10_000) }
     @discardableResult
     func saveSettings(key: String, approved: Set<String>, limits: [String: Int]) -> Bool {
         guard !isBusy else { return false }
@@ -304,6 +304,27 @@ final class PublicDataStore: ObservableObject {
         }
         return PublicFetchedRows(rows: rows, total: total ?? rows.count, month: month, complete: false, issues: ["10,000건 조회 범위에 도달했습니다. 반경·기간을 줄여 다시 조회하세요."])
     }
+    func kaptData(_ action: KaptRequest, parameters: [String: String]) async throws -> Data {
+        try await DeviceShareHooks.prepareRequest()
+        guard !isBusy else { throw PublicDataFailure.message("다른 공공데이터 조회가 진행 중입니다.") }
+        isBusy = true; defer { isBusy = false }
+        try await ensureClock(); try Task.checkCancellation()
+        let request = try KaptGateway.request(action, key: state.serviceKey, parameters: parameters)
+        try reserve(action.service)
+        let (data, response) = try await send(request); try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse, http.url?.host == "apis.data.go.kr", http.url?.scheme == "https", data.count <= 8_000_000 else { throw PublicDataFailure.message("K-apt 응답 출처·크기를 확인하지 못했습니다.") }
+        do {
+            _ = try KaptGateway.body(data)
+            guard http.statusCode == 200 else { throw PublicDataFailure.message("K-apt HTTP 오류 \(http.statusCode)") }
+            return data
+        } catch PublicDataFailure.provider(let code) {
+            if ["22", "-10"].contains(code), let now {
+                var next = state; var entry = account(action.service, at: now); entry.blocked = true
+                next.accounts[accountKey(action.service)] = entry; try commit(next)
+            } else if code == "23" { cooldownUntil = uptime() + 10 }
+            throw PublicDataFailure.provider(code)
+        }
+    }
     func nearby(center: TMapCoordinate, radius: Int) async throws -> PublicNearbyResult {
         try await DeviceShareHooks.prepareRequest()
         guard !isBusy else { throw PublicDataFailure.message("다른 공공데이터 조회가 진행 중입니다.") }
@@ -327,7 +348,7 @@ final class PublicDataStore: ObservableObject {
         guard !isBusy else { throw PublicDataFailure.message("다른 공공데이터 조회가 진행 중입니다.") }
         guard !blockedRecovery else { throw PublicDataFailure.message(errorMessage ?? "공공데이터 보관함 오류로 조회를 차단했습니다.") }
         guard PublicDataParser.date(from) == from, PublicDataParser.date(through) == through, from <= through,
-              !services.isEmpty, services.allSatisfy({ $0 != .stores }), Set(services).count == services.count else { throw PublicDataFailure.message("인허가일자 범위와 업종을 확인하세요.") }
+              !services.isEmpty, services.allSatisfy({ PublicDataService.licenses.contains($0) }), Set(services).count == services.count else { throw PublicDataFailure.message("인허가일자 범위와 업종을 확인하세요.") }
         let format = DateFormatter(); format.locale = Locale(identifier: "en_US_POSIX"); format.timeZone = TimeZone(identifier: "Asia/Seoul"); format.dateFormat = "yyyy-MM-dd"
         guard let end = format.date(from: through), let start = format.date(from: from), end.timeIntervalSince(start) <= 366 * 86_400 else { throw PublicDataFailure.message("한 번에 최대 1년의 인허가일자를 조회합니다.") }
         guard hasKey, services.contains(where: { approved.contains($0.rawValue) }) else { throw PublicDataFailure.message("공공데이터 인증키를 저장하고 선택한 인허가 API의 활용승인을 확인하세요.") }

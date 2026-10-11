@@ -279,10 +279,10 @@ struct PublicDataSettingsView: View {
                     Text("기관이 같아도 API 서비스별로 활용신청합니다. 같은 서비스의 여러 조회 기능은 해당 신청에 포함됩니다. 동일한 개인·프로젝트 서비스키로 승인받은 항목은 아래 키를 함께 사용합니다. 빈 칸으로 저장하면 기존 키를 유지합니다.").font(.caption)
                 }
                 ForEach(PublicDataService.allCases) { service in
-                    Section(service == .stores ? "소상공인시장진흥공단 · 주변 업체" : "행정안전부 · \(service.title)") {
+                    Section(service == .stores ? "소상공인시장진흥공단 · 주변 업체" : (service == .kaptList || service == .kaptBasis ? "국토교통부 · \(service.title)" : "행정안전부 · \(service.title)")) {
                         Link("\(service.title) 활용신청", destination: service.portalURL)
                         Toggle("이 서비스의 활용승인·무료 제공 확인", isOn: Binding(get: { approved.contains(service.rawValue) }, set: { if $0 { approved.insert(service.rawValue) } else { approved.remove(service.rawValue) } }))
-                        NumberRow(title: "포털에 승인된 일일 한도", value: Binding(get: { limits[service.rawValue] ?? 10_000 }, set: { limits[service.rawValue] = $0 }))
+                        NumberRow(title: "포털에 승인된 일일 한도", value: Binding(get: { limits[service.rawValue] ?? store.limit(service) }, set: { limits[service.rawValue] = $0 }))
                         if let quota = store.quotas.first(where: { $0.id == service }) {
                             Text("사용 기록 \(quota.used.formatted())회 · 잔여 \(quota.remaining.formatted())회").font(.caption)
                             if let reset = quota.resetAt { Text("앱 초기화 대기 종료 \(publicTimestamp(reset))").font(.caption2) }

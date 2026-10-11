@@ -64,6 +64,10 @@ struct RealtyHousingClient {
         next.fields["approvalDate"] = field("date01"); next.fields["use"] = field("purpose01")
         next.fields["buildings"] = matches(field("dangi01"), #"([0-9,]+)"#).first?.replacingOccurrences(of: ",", with: "") ?? ""
         next.fields["households"] = matches(html, #"<p[^>]*>\s*([0-9,]+)세대\s*</p>"#).first?.replacingOccurrences(of: ",", with: "") ?? ""
+        let select = matches(html, #"<select[^>]*id=['\"]sel_dong['\"][^>]*>(.*?)</select>"#).first ?? ""
+        let names = matches(select, #"<option[^>]*value=['\"][^'\"]+['\"][^>]*>(.*?)</option>"#).map(clean).filter { !$0.isEmpty }
+        var seenNames = Set<String>(); next.fields["dongNames"] = names.filter { seenNames.insert($0).inserted }.joined(separator: ", ")
+        next.dongScopeConfirmed = !names.isEmpty && HousingAggregation.integer(next.fields["buildings"]) == Set(names).count
         let x = matches(html, #"x_coord\s*:\s*['\"]([-+]?[0-9.]+)['\"]"#).first, y = matches(html, #"y_coord\s*:\s*['\"]([-+]?[0-9.]+)['\"]"#).first
         if let x, let y, let dx = Double(x), let dy = Double(y) {
             next.fields["sourceX"] = x; next.fields["sourceY"] = y
@@ -80,6 +84,7 @@ struct RealtyHousingClient {
         let floors = cell("최고/최저층수").components(separatedBy: "/").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         if floors.count == 2 { next.fields["highestFloor"] = floors[0]; next.fields["lowestFloor"] = floors[1] }
         let areas = matches(cell("공시면적 종류"), #"([0-9]+(?:\.[0-9]+)?)"#).compactMap(Double.init).map { Int($0.rounded(.down)) }
+        next.fields["rawAreas"] = cell("공시면적 종류")
         next.fields["areas"] = Set(areas).sorted().map(String.init).joined(separator: ", ")
         return next
     }

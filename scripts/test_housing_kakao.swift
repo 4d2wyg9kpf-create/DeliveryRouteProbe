@@ -166,6 +166,127 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
             try empty.applySharing(fresh)
             try require(!empty.settings.key.isEmpty && secondState != nil, "shared credential lost")
         }
+        func notice(_ id: String, _ dongs: String, households: String, parking: String) -> HousingSource {
+            HousingSource(id:"realty:11680:"+id,aptCode:id,noticeDate:"20260626",regionCode:"1168010300",
+                fields:["name":"시험단지 "+id,"roadAddress":"서울특별시 강남구 개포로 264","jibunAddress":"서울특별시 강남구 개포동 1282","dongNames":dongs,"buildings":String(dongs.components(separatedBy:",").count),"households":households,"parking":parking,"approvalDate":"1994-10-31","highestFloor":"20","lowestFloor":"5","areas":"59.9, 84.8"],detailAt:Date(),dongScopeConfirmed:true)
+        }
+        let p1 = notice("p1","101동, 102동",households:"100",parking:"120")
+        let p2 = notice("p2","103동, 104동",households:"200",parking:"240")
+        let p3 = notice("p3","201동, 202동",households:"80",parking:"90")
+        var joined = region; joined.records = [p1,p2,p3]; joined.sourceCount = 3; joined.generation += 10
+        try check("adjacent dong sequences merge but different prefixes remain separate") {
+            try require(HousingIdentity.connected(p1,p2) && !HousingIdentity.connected(p1,p3),"dong prefix rule")
+            let values = HousingCatalog.effective(regions:[joined],edits:[])
+            try require(values.count == 2 && values.first { $0.sourceIDs.contains(p1.id) }?.fields["households"] == "300","canonical grouping or sum")
+        }
+        try check("missing dong membership and a gap never imply a connected complex") {
+            var missing = p2; missing.dongScopeConfirmed = false
+            var gap = p2; gap.fields["dongNames"] = "105동, 106동"
+            try require(!HousingIdentity.connected(p1,missing) && !HousingIdentity.connected(p1,gap),"uncertain membership merged")
+        }
+        try check("whole and part scopes never double-count parking or households") {
+            var full = p1; full.id = "realty:11680:full"; full.fields["dongNames"] = "101동,102동,103동,104동"; full.fields["households"] = "300"; full.fields["parking"] = "360"
+            let f = HousingAggregation.fields([p1,p2,full])
+            try require(f["households"] == "300" && f["parking"] == "360" && f["parkingPerHousehold"] == "1.2000","whole added to parts")
+        }
+        try check("different categorical dates addresses and areas survive a lossless merge") {
+            var other = p2; other.fields["heating"] = "개별난방"; other.fields["approvalDate"] = "1995-01-01"; other.fields["roadAddress"] = "서울특별시 강남구 개포로 266"; other.fields["highestFloor"] = "25"; other.fields["lowestFloor"] = "3"; other.fields["areas"] = "59.2, 99.1"
+            var first = p1; first.fields["heating"] = "지역난방"
+            let f = HousingAggregation.fields([first,other])
+            try require(f["heating"] == "지역난방\n개별난방" && f["approvalDate"]?.contains("1995-01-01") == true && f["roadAddress"]?.contains("266") == true && f["areas"] == "59, 84, 99" && f["highestFloor"] == "25" && f["lowestFloor"] == "3","details lost")
+        }
+        try check("partial overlap produces an unresolved total rather than a guessed sum") {
+            var partial = p2; partial.fields["dongNames"] = "102동,103동"; partial.fields["parking"] = "200"
+            try require(HousingAggregation.fields([p1,partial])["parking"] == "","partial overlap guessed")
+        }
+        let kaptSource = HousingSource(id:"kapt:1168010300:A30279105",aptCode:"A30279105",noticeDate:"",regionCode:"1168010300",fields:[:])
+        let basic = try json(["response":["header":["resultCode":"00"],"body":["item":["kaptCode":"A30279105","kaptName":"누리아파트","doroJuso":"대전광역시 서구 청사로 70","kaptAddr":"대전광역시 서구 월평동 301 누리아파트","codeSaleNm":"분양","codeHeatNm":"지역난방","codeHallNm":"계단식","kaptDongCnt":16,"kaptdaCnt":"1704","kaptUsedate":"19941031","kaptTel":"0424853697"]]]])
+        let facilities = try json(["response":["header":["resultCode":"00"],"body":["item":["kaptCode":"A30279105","codeWsupply":"부스터방식","kaptdEcnt":60,"kaptdPcnt":563,"kaptdPcntu":1586,"groundElChargerCnt":0,"undergroundElChargerCnt":2,"useYn":"Y"]]]])
+        let nuri = try KaptHousingClient.detail(basic:basic,facilities:facilities,source:kaptSource)
+        try check("current K-apt V5 data maps the seven requested fields and derives same-scope parking") {
+            try require(nuri.fields["saleType"] == "분양" && nuri.fields["heating"] == "지역난방" && nuri.fields["corridor"] == "계단식" && nuri.fields["waterSupply"] == "부스터방식" && nuri.fields["elevators"] == "60" && nuri.fields["parking"] == "2149" && nuri.fields["parkingPerHousehold"] == "1.2612" && nuri.fields["chargerPresent"] == "있음" && nuri.rawData != nil,"K-apt extraction")
+        }
+        try check("unknown elevator and charger values stay unknown while one positive flag wins") {
+            var f:[String:String] = ["chargerGround":"미확인","chargerUnderground":"있음","households":"0","parking":"100"]
+            HousingAggregation.derive(&f)
+            try require(f["chargerPresent"] == "있음" && f["elevatorPresent"] == "미확인" && f["parkingPerHousehold"] == "","unknown converted to zero")
+            f["chargerUnderground"] = "없음"; HousingAggregation.derive(&f); try require(f["chargerPresent"] == "미확인","unknown charger became absent")
+        }
+        try check("K-apt code mismatches and XML gateway quota errors reject") {
+            try rejects { _ = try KaptHousingClient.info(basic,code:"different") }
+            do { _ = try KaptGateway.body(Data("<OpenAPI_ServiceResponse><cmmMsgHeader><returnReasonCode>22</returnReasonCode></cmmMsgHeader></OpenAPI_ServiceResponse>".utf8)); throw PlannerFailure.message("quota accepted") }
+            catch PublicDataFailure.provider(let code) { try require(code == "22","XML quota code lost") }
+        }
+        try check("K-apt list XML singleton and an empty legal dong parse without JSON assumptions") {
+            let xml = "<response><header><resultCode>00</resultCode></header><body><items><item><kaptCode>A1</kaptCode><kaptName>단지</kaptName><bjdCode>1168010300</bjdCode></item></items><pageNo>1</pageNo><numOfRows>100</numOfRows><totalCount>1</totalCount></body></response>"
+            try require(try KaptHousingClient.list(Data(xml.utf8),region:"1168010300",page:1).records.count == 1,"XML singleton")
+            let empty = try json(["response":["header":["resultCode":"00"],"body":["items":[],"totalCount":0,"pageNo":1]]])
+            try require(try KaptHousingClient.list(empty,region:"1168010300",page:1).records.isEmpty,"empty list")
+        }
+        try check("current API paths and ServiceKey casing preserve literal plus signs") {
+            let list = try KaptGateway.request(.list,key:"key+with/slash=",parameters:["bjdCode":"1168010300","pageNo":"1"])
+            let detail = try KaptGateway.request(.facilities,key:"fixture",parameters:["kaptCode":"A1"])
+            try require(list.url?.path == "/1613000/AptListService4/getLegaldongAptList4" && list.url!.absoluteString.contains("%2B") && detail.url?.query?.contains("ServiceKey=") == true,"API URL/key encoding")
+        }
+        let addressJSON = try json(["results":["common":["errorCode":"0","totalCount":"1"],"juso":[["roadAddrPart1":"대전광역시 서구 청사로 70","jibunAddr":"대전광역시 서구 월평동 301","rnMgtSn":"301703166000","udrtYn":"0","buldMnnm":"70","buldSlno":"0","bdMgtSn":"301701130010301000000001","detBdNmList":"101동,102동","hemdNm":"월평2동 행정복지센터","relJibun":"301-1"]]]])
+        try check("address API stores structured identity center and building names as unconfirmed coverage") {
+            let reader = HousingAddressClient(transport:{ request in (addressJSON,HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:[:])!) })
+            // Parsing itself does not establish management-area membership.
+            let address = try HousingAddressClient.parse(addressJSON).addresses[0]
+            try require(address.communityCenter == "월평2동 행정복지센터" && address.dongNames.count == 2 && address.roadKey == "301703166000|0|70|0","address evidence")
+            _ = reader
+        }
+        let addressReader = HousingAddressClient(transport:{ request in (addressJSON,HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:[:])!) })
+        let enriched = try await addressReader.lookup(nuri,key:"fixture_address_key")
+        try check("address-wide dong names never become a K-apt ownership assertion") { try require(enriched.dongScopeConfirmed != true && enriched.fields["jusoDongNames"] == "101동\n102동" && enriched.fields["communityCenter"] == "월평2동 행정복지센터","inferred management scope") }
+        try check("different approval dates and multiple management registrations prevent ambiguous automatic linking") {
+            var matching = p1; matching.fields["buildings"] = "16"; matching.fields["households"] = "1704"; matching.fields["roadAddress"] = nuri.fields["roadAddress"]; matching.fields["jibunAddress"] = nuri.fields["jibunAddress"]
+            var duplicate = nuri; duplicate.id += "duplicate"
+            try require(HousingIdentity.certainMatch(matching,nuri,realtyPeers:[matching],kaptPeers:[nuri]),"unique match not corrected")
+            try require(!HousingIdentity.certainMatch(matching,nuri,realtyPeers:[matching],kaptPeers:[nuri,duplicate]),"same-address management ambiguity")
+            matching.fields["approvalDate"] = "2020-01-01"
+            try require(!HousingIdentity.certainMatch(matching,nuri,realtyPeers:[matching],kaptPeers:[nuri]),"old K-apt applied to redevelopment")
+        }
+        let mergeStore = HousingStore(directory:folder.appendingPathComponent("kapt-integration"))
+        var manual = joined; manual.records = [p1,p3]; manual.sourceCount = 2
+        var fullKapt = nuri; fullKapt.fields["name"] = "둔산이편한세상"; fullKapt.fields["parking"] = "700"; fullKapt.fields["households"] = "180"; fullKapt.fields["buildings"] = "4"
+        var partKapt = fullKapt; partKapt.aptCode = "PART1"; partKapt.id = "kapt:1168010300:PART1"; partKapt.fields["name"] = "둔산이편한세상1단지"; partKapt.fields["parking"] = "120"
+        manual.kaptRecords = [fullKapt,partKapt]; try mergeStore.importRegion(manual)
+        try check("manual merging keeps every original instead of blanking fields and can be undone") {
+            try mergeStore.merge(Set(mergeStore.complexes.map(\.id)),name:"통합 단지")
+            let combined = mergeStore.complexes[0]
+            try require(mergeStore.complexes.count == 1 && combined.originals.count == 2 && combined.fields["areas"] == "59, 84" && combined.fields["approvalDate"] == "1994-10-31","manual merge lost details")
+            try mergeStore.reset(combined.id); try require(mergeStore.complexes.count == 2,"undo failed")
+        }
+        let selectedComplex = mergeStore.complexes[0]
+        try mergeStore.attachKapt(selectedComplex,sourceIDs:[fullKapt.id,partKapt.id],wholeID:fullKapt.id)
+        try check("explicit whole K-apt selection retains partial provenance without summing duplicate totals") {
+            let value = mergeStore.complexes.first { $0.id == selectedComplex.id }!
+            try require(value.name == "둔산이편한세상" && value.fields["parking"] == "700" && value.originals.count == 3 && mergeStore.complexes.count == 2,"whole-plus-part doubled or provenance lost")
+        }
+        try mergeStore.saveSourceOverride(fullKapt,fields:["heating":"사용자 보정"],confirmedDongs:false)
+        fullKapt.fields["heating"] = "새 수집값"; fullKapt.detailAt = Date().addingTimeInterval(60); manual.kaptRecords = [fullKapt,partKapt]; manual.generation += 20; try mergeStore.importRegion(manual)
+        try check("source-specific corrections survive new K-apt data and a reload") {
+            let reload = HousingStore(directory:folder.appendingPathComponent("kapt-integration"))
+            try require(reload.complexes.first { $0.id == selectedComplex.id }?.fields["heating"]?.contains("사용자 보정") == true,"correction overwritten")
+        }
+        try mergeStore.saveAddressKey("fixture_address_key")
+        var housingReplica = DeviceShareReplica(deviceID:UUID().uuidString), housingObserved:[String:Data] = [:]
+        try housingReplica.capture(mergeStore.sharingSnapshot(),observed:&housingObserved)
+        let receiving = HousingStore(directory:folder.appendingPathComponent("kapt-receiver")); try receiving.importRegion(manual); try receiving.applySharing(housingReplica)
+        try check("K-apt links source corrections and address keys share while blank devices export no key deletion") {
+            try require(receiving.hasAddressKey && receiving.complexes.first { $0.id == selectedComplex.id }?.fields["parking"] == "700","shared integration lost")
+            let blank = HousingStore(directory:folder.appendingPathComponent("blank-housing")); try require(try blank.sharingSnapshot().values["setting/housing-address"] == nil,"empty key deletion")
+        }
+        var publicState: Data?, publicRequests = 0
+        let gateway = PublicDataStore(read:{ publicState },write:{ publicState = $0 },transport:{ request in
+            if request.httpMethod == "HEAD" { return (Data(),HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:["Date":"Sun, 11 Oct 2026 10:00:00 GMT"])!) }
+            publicRequests += 1; return (basic,HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:[:])!)
+        })
+        try require(gateway.saveSettings(key:"fixture-key",approved:[PublicDataService.kaptBasis.rawValue],limits:[PublicDataService.kaptBasis.rawValue:1]),"public settings")
+        _ = try await gateway.kaptData(.basic,parameters:["kaptCode":"A30279105"])
+        do { _ = try await gateway.kaptData(.facilities,parameters:["kaptCode":"A30279105"]); throw PlannerFailure.message("quota dispatched") } catch {}
+        try check("basic and facility requests reserve the same durable quota before dispatch") { try require(publicRequests == 1 && gateway.quotas.first { $0.id == .kaptBasis }?.used == 1,"shared K-apt quota") }
         print("Housing Kakao native checks: \(passed)/\(passed) passed")
     }
 }

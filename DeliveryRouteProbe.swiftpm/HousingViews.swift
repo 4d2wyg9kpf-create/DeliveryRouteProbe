@@ -32,7 +32,7 @@ struct HousingCatalogView: View {
     private var regionCode: String { sido + district + dong }
     private var filtered: [HousingComplex] {
         store.complexes.filter { item in
-            (dong.isEmpty || item.regionCode == regionCode) && (keyword.isEmpty || (item.name + item.address + (item.fields["jibunAddress"] ?? "")).localizedCaseInsensitiveContains(keyword))
+            (dong.isEmpty || item.regionCode == regionCode || item.originals.contains { $0.regionCode == regionCode }) && (keyword.isEmpty || item.searchText.localizedCaseInsensitiveContains(keyword))
         }
     }
     var body: some View {
@@ -46,6 +46,7 @@ struct HousingCatalogView: View {
                 Text("전국 수집 완료 여부는 보관 지역별로 확인하세요. 검색 결과는 최대 2,000건을 읽습니다. 미수집 지역과 상세 미수집 항목은 빈칸으로 표시합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("원본 수집 · 공유") {
+                NavigationLink("K-apt 정보 수집·단지 통합") { HousingIntegrationView(regionCode:dong.isEmpty ? "" : regionCode) }.disabled(store.isBusy)
                 Button("선택 법정동 목록 수집·새로고침") { collect(details: false) }.disabled(dong.isEmpty || store.isBusy)
                 Button("선택 법정동 상세 수집 이어서") { collect(details: true) }.disabled(dong.isEmpty || store.isBusy)
                 Button("전국 목록·상세 수집 이어서") { collectNational() }.disabled(store.isBusy)
@@ -62,7 +63,7 @@ struct HousingCatalogView: View {
             if !store.regions.isEmpty {
                 Section("수집 현황") {
                     ForEach(store.regions.filter { sido.isEmpty || $0.sido.code == sido }) { region in
-                        Text("\(region.title) · 목록 \(region.sourceCount) / 상세 \(region.detailCount)").font(.caption)
+                        Text("\(region.title) · 공시가격 \(region.sourceCount) / 상세 \(region.detailCount) · K-apt \(region.kaptDetailCount ?? 0)/\(region.kaptCount ?? 0) · 통합 \(region.complexCount ?? region.sourceCount)").font(.caption)
                     }
                 }
             }
@@ -105,7 +106,7 @@ struct HousingCatalogView: View {
                 TextField("단지명", text: $mergeName)
                 Button("합치기") { do { try store.merge(selected, name: mergeName); selected.removeAll() } catch { self.error = error.localizedDescription } }
                 Button("취소", role: .cancel) {}
-            } message: { Text("개별 원본과 기존 가공 기록은 남습니다. 합친 범위의 수치·주소는 직접 확인해 수정하세요.") }
+            } message: { Text("모든 원본의 세부 정보를 보존합니다. 범위를 확인할 수 없는 수치는 빈칸으로 남기며, 원본별 정보에서 확인·수정할 수 있습니다.") }
             .alert("새 단지", isPresented: $adding) {
                 TextField("단지명", text: $newName)
                 Button("추가") { do { _ = try store.add(name: newName, regionCode: dong.isEmpty ? "" : regionCode); newName = "" } catch { self.error = error.localizedDescription } }
@@ -192,6 +193,7 @@ struct HousingComplexView: View {
     @State private var reading = false
     @State private var detailTask: Task<Void, Never>?
     @State private var error: String?
+    @State private var linkingKapt = false
     private var complex: HousingComplex? { store.complexes.first { $0.id == complexID } }
     var body: some View {
         Form {
@@ -201,9 +203,10 @@ struct HousingComplexView: View {
                         Button(reading ? "상세 수집 중…" : "이 단지의 최신 상세 수집") { loadDetail(complex) }.disabled(reading || store.isBusy)
                     }
                     ForEach(HousingField.allCases) { field in
-                        VStack(alignment: .leading) { Text(field.title).font(.caption).foregroundStyle(.secondary)
+                        if field.derived { LabeledContent(field.title,value:complex.fields[field.rawValue] ?? "미확인") }
+                        else { VStack(alignment: .leading) { Text(field.title).font(.caption).foregroundStyle(.secondary)
                             NativeTextField(field.title, text: Binding(get: { fields[field.rawValue] ?? "" }, set: { fields[field.rawValue] = $0 }))
-                        }
+                        } }
                     }
                     Button("변경한 항목 저장") {
                         do { inputs.finishEditing(); let changed = fields.filter { complex.fields[$0.key, default: ""] != $0.value }; try store.edit(complex, fields: changed) } catch { self.error = error.localizedDescription }
@@ -215,6 +218,7 @@ struct HousingComplexView: View {
                     }
                 }
                 Section("단지 범위 가공") {
+                    Button("K-apt 연결·전체 단지 선택") { linkingKapt = true }
                     Button("분리할 새 단지 만들기 · 원본 연결 복사") {
                         do { _ = try store.add(name: complex.name + " (분리)", regionCode: complex.regionCode, fields: complex.fields, coordinate: complex.coordinate, sourceIDs: complex.sourceIDs) } catch { self.error = error.localizedDescription }
                     }
@@ -224,27 +228,36 @@ struct HousingComplexView: View {
                 }
                 Section("원본 근거") {
                     Text(complex.sourceIDs.joined(separator: "\n")).font(.caption).textSelection(.enabled)
-                    if let original = complex.original {
-                        ForEach(HousingField.allCases) { field in LabeledContent(field.title, value: original.fields[field.rawValue] ?? "") }
-                        ForEach(Array(original.issues.enumerated()), id: \.offset) { _, issue in Text(issue).font(.caption).foregroundStyle(.orange) }
-                        Text("산정자료 기준: \(original.fields["basisDate", default: "미수집"])").font(.caption)
+                    ForEach(complex.originals) { original in
+                        DisclosureGroup((original.isKapt ? "K-apt · " : "공시가격 · ") + (original.fields["name"] ?? original.aptCode)) {
+                            NavigationLink("이 원본의 소속 동·세부 값 보정") { HousingSourceEditView(source:original) }
+                            ForEach(HousingField.allCases) { field in LabeledContent(field.title,value:original.fields[field.rawValue] ?? "") }
+                            if let raw = original.fields["rawAreas"] { LabeledContent("원래 공시면적",value:raw) }
+                            HousingAddressEvidenceView(source:original)
+                            ForEach(Array(original.issues.enumerated()),id:\.offset) { _,issue in Text(issue).font(.caption).foregroundStyle(.orange) }
+                            Text("산정자료 기준: \(original.fields["basisDate",default:"미수집"])").font(.caption)
+                        }
                     }
                 }
                 if let error { Text(error).foregroundStyle(.red) }
             } else { Text("숨겼거나 변경된 단지입니다. 목록으로 돌아가세요.") }
         }.navigationTitle(complex?.name ?? "단지 정보").navigationBarTitleDisplayMode(.inline)
             .onAppear { fields = complex?.fields ?? [:] }
+            .onChange(of:complex?.fields) { old,new in if fields == old { fields = new ?? [:] } }
+            .sheet(isPresented:$linkingKapt) { if let complex { HousingKaptLinkView(complex:complex) } }
             .sheet(isPresented: $showMap) {
                 if let complex { CoordinateEditorView(title: "단지 좌표", coordinate: complex.coordinate, original: complex.original?.coordinate) { try store.edit(complex, fields: [:], coordinate: $0) } }
             }
             .onDisappear { detailTask?.cancel() }
     }
     private func loadDetail(_ complex: HousingComplex) {
-        guard let source = complex.original else { return }; reading = true; error = nil
+        let sources = complex.originals.filter { !$0.isKapt }; guard !sources.isEmpty else { return }; reading = true; error = nil
         detailTask = Task {
             defer { reading = false; detailTask = nil }
             do {
                 try await DeviceShareHooks.prepareRequest()
+                for source in sources {
+                try Task.checkCancellation()
                 var updated = try await RealtyHousingClient().detail(source)
                 if updated.fields["roadAddress", default: ""].isEmpty, KakaoRouteStore.shared.settings.mapFreeConfirmed, !KakaoRouteStore.shared.settings.key.isEmpty {
                     if let road = try await KakaoRouteStore.shared.roadAddress(for: updated) { updated.fields["roadAddress"] = road; updated.detailAt = Date(); updated.issues.removeAll { $0.contains("도로명주소") } }
@@ -253,6 +266,7 @@ struct HousingComplexView: View {
                 guard let index = region.records.firstIndex(where: { $0.id == source.id }) else { throw DeviceShareError.invalid }
                 region.records[index] = updated; region.generation = Date().timeIntervalSince1970 * 1000
                 try store.importRegion(region)
+                }
                 if let value = self.complex { fields = value.fields }
             } catch is CancellationError { error = "수집을 중단했습니다." }
             catch { self.error = error.localizedDescription }

@@ -6,6 +6,7 @@ swiftc -parse-as-library \
   "$route_root/DeliveryRouteProbe.swiftpm/DeviceShareModels.swift" \
   "$route_root/DeliveryRouteProbe.swiftpm/APICredentialArchive.swift" \
   "$route_root/DeliveryRouteProbe.swiftpm/PublicDataModels.swift" \
+  "$route_root/DeliveryRouteProbe.swiftpm/KaptGateway.swift" \
   "$route_root/DeliveryRouteProbe.swiftpm/PublicDataStore.swift" \
   "$route_root/scripts/test_public_data_live_clock.swift" \
   -o "$route_root/build/public-data-live-clock"
