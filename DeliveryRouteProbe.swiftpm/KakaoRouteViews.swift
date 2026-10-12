@@ -22,7 +22,7 @@ struct KakaoRouteView: View {
     @State private var keyword = ""
     @State private var radius = 10_000
     @State private var scheduled = false
-    @State private var departure = Date().addingTimeInterval(3600)
+    @State private var departure = Date(timeIntervalSince1970: ceil(Date().addingTimeInterval(3600).timeIntervalSince1970 / 600) * 600)
     @State private var showKakaoSettings = false
     @State private var showNaverSettings = false
     @State private var showBrowser = false
@@ -138,26 +138,11 @@ struct KakaoRouteView: View {
             Button("전체 저장 결과 CSV 만들기") { Task { do { exportURL = try await store.exportCSV() } catch { self.error = error.localizedDescription } } }
             if let exportURL { ShareLink("CSV 파일 저장·공유", item: exportURL) }
             Text("최근 300건 표시 · CSV는 전체 결과").font(.caption).foregroundStyle(.secondary)
-            ForEach(Array(store.results.reversed().prefix(300))) { result in resultRow(result) }
+            ForEach(Array(store.results.reversed().prefix(300))) { result in FacilityRouteResultRow(record: result, endpoints: endpoints) }
         }
     }
-    private func resultRow(_ r: KakaoDistanceRecord) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(r.origin.name + " → " + r.destination.name).bold()
-            Text((FacilityRouteProvider(rawValue: r.provider ?? "kakaoAPI")?.title ?? "카카오 API") + " · " + (r.mode == .walk ? "도보" : r.mode == .transit ? "대중교통" : "자동차") + " · " + r.alternative).font(.caption)
-            if let seconds = r.durationSeconds { Text("\(Double(seconds)/60, specifier: "%.1f")분" + (r.distanceMeters.map { " · \($0)m" } ?? " · 총거리 미제공")) }
-            if let distance = r.referenceDistanceMeters { Text("현재 경로 참고 거리 \(distance)m · 미래 경로 거리로 확정하지 않음").font(.caption).foregroundStyle(.secondary) }
-            if let departure = r.departureTime { Text("지정 출발 \(departure) · 미래 예상").font(.caption) }
-            else { Text("조회 당시 출발 기준").font(.caption).foregroundStyle(.secondary) }
-            if let issue = r.issue { Text(issue).foregroundStyle(.orange).font(.caption) }
-            if !r.matches(endpoints) { Text("좌표 수정 또는 장소 삭제 전의 결과 · 재조회 필요").foregroundStyle(.orange).font(.caption) }
-            Text("조회 \(publicTimestamp(r.queriedAt))").font(.caption2)
-            if let raw = r.rawSummary { DisclosureGroup("읽은 웹 원문") { Text(raw).font(.caption).textSelection(.enabled) } }
-            if let value = r.landingURL, let url = URL(string: value), url.scheme == "https", ["map.naver.com", "m.map.naver.com", "m.search.naver.com", "map.kakao.com", "m.map.kakao.com"].contains(url.host ?? "") { Link("조회 경로 보기", destination: url).font(.caption) }
-        }.fixedSize(horizontal: false, vertical: true)
-    }
     private func normalizeOptions() {
-        if !providers.contains(provider) { provider = .naverWeb }
+        if !providers.contains(provider) { provider = provider == .kakaoAPI ? .kakaoWeb : .naverWeb }
         if !criteria.contains(criterion) { criterion = criteria[0] }
         if !canSchedule { scheduled = false }
     }
@@ -203,6 +188,49 @@ struct KakaoRouteView: View {
             } catch is CancellationError { error = "조회 중단 · 완료 결과는 보관했습니다. 전송된 API 요청은 사용량에 포함됩니다." }
             catch { self.error = error.localizedDescription }
         }
+    }
+}
+private struct FacilityRouteResultRow: View {
+    let record: KakaoDistanceRecord
+    let endpoints: [RouteEndpoint]
+    private var routeTitle: String { record.origin.name + " → " + record.destination.name }
+    private var subtitle: String {
+        let provider = FacilityRouteProvider(rawValue: record.provider ?? "kakaoAPI")?.title ?? "카카오 API"
+        let transport = record.mode == .walk ? "도보" : record.mode == .transit ? "대중교통" : "자동차"
+        let alternative = record.alternative.replacingOccurrences(of: "SUBWAY 경로", with: "지하철 경로").replacingOccurrences(of: "BUS 경로", with: "버스 경로")
+        return provider + " · " + transport + " · " + alternative
+    }
+    private var durationText: String? {
+        guard let seconds = record.durationSeconds else { return nil }
+        let minutes = String(format: "%.1f", Double(seconds) / 60)
+        let distance = record.distanceMeters.map { " · \($0)m" } ?? " · 총거리 미제공"
+        return minutes + "분" + distance
+    }
+    private var departureText: String? {
+        guard let key = record.departureTime else { return nil }
+        let input = DateFormatter(); input.locale = Locale(identifier: "en_US_POSIX"); input.timeZone = TimeZone(identifier: "Asia/Seoul"); input.dateFormat = "yyyyMMddHHmm"
+        guard let date = input.date(from: key) else { return key }
+        let output = DateFormatter(); output.locale = Locale(identifier: "ko_KR"); output.timeZone = input.timeZone; output.dateFormat = "yyyy-MM-dd HH:mm"
+        return output.string(from: date)
+    }
+    private var routeURL: URL? {
+        guard let value = record.landingURL, let url = URL(string: value), url.scheme == "https", ["map.naver.com", "m.map.naver.com", "m.search.naver.com", "map.kakao.com", "m.map.kakao.com"].contains(url.host ?? "") else { return nil }
+        return url
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(routeTitle).bold()
+            Text(subtitle).font(.caption)
+            if let durationText { Text(durationText) }
+            if let distance = record.referenceDistanceMeters { Text("현재 경로 참고 거리 \(distance)m · 미래 경로 거리로 확정하지 않음").font(.caption).foregroundStyle(.secondary) }
+            if let departureText { Text("지정 출발 " + departureText + " · 미래 예상").font(.caption) }
+            else { Text("조회 당시 출발 기준").font(.caption).foregroundStyle(.secondary) }
+            if let issue = record.issue { Text(issue).foregroundStyle(.orange).font(.caption) }
+            if !record.matches(endpoints) { Text("좌표 수정 또는 장소 삭제 전의 결과 · 재조회 필요").foregroundStyle(.orange).font(.caption) }
+            Text("조회 " + publicTimestamp(record.queriedAt)).font(.caption2)
+            if let raw = record.rawSummary { DisclosureGroup("읽은 웹 원문") { Text(raw).font(.caption).textSelection(.enabled) } }
+            if let routeURL { Link(record.departureTime == nil ? "조회 경로 보기" : "기본 경로 보기 · 지정 시각은 다시 설정", destination: routeURL).font(.caption) }
+        }.fixedSize(horizontal: false, vertical: true)
     }
 }
 struct KakaoSettingsView: View {
