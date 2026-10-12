@@ -10,6 +10,10 @@ on:
       - 'native/**'
       - 'scripts/build_ios.sh'
       - 'scripts/package_unsigned_ipa.py'
+      - 'scripts/test_facility_routes.*'
+      - 'scripts/test_facility_live.*'
+      - 'scripts/facility_route*'
+      - 'tests/facility_route_tests.js'
       - 'scripts/test_naver_frames.*'
       - 'scripts/test_naver_api.*'
       - 'scripts/test_shared_links.*'
@@ -36,7 +40,7 @@ concurrency:
 jobs:
   naver-checks:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -44,6 +48,10 @@ jobs:
           persist-credentials: false
       - name: Verify cross-origin iframe reads and share links in native WKWebView
         run: bash scripts/test_naver_frames.sh
+      - name: Verify mobile and desktop route identities and units
+        run: node tests/facility_route_tests.js
+      - name: Verify route summaries at phone widths and desktop cropped canvas in native WKWebView
+        run: bash scripts/test_facility_routes.sh
       - name: Verify official API parsing and free quota boundary cases
         run: node tests/naver_api_tests.js
       - name: Verify shared pin coordinates cannot be replaced by building geocoding
@@ -68,12 +76,16 @@ jobs:
         run: bash scripts/test_place_destinations.sh
       - name: Verify housing parsing, editable coordinates, source preservation and Kakao routing request gates
         run: bash scripts/test_housing_kakao.sh
+      - name: Verify live mobile walk/transit and scheduled desktop car routes on both providers
+        run: bash scripts/test_facility_live.sh
       - name: Upload native check log
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: DeliveryRouteProbe-native-check-log
-          path: build/logs/*.log
+          path: |
+            build/logs/*.log
+            build/logs/facility-live.json
           if-no-files-found: ignore
           retention-days: 7
   ipa:

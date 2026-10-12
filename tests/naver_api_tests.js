@@ -63,4 +63,11 @@ test('HUB 월 차단은 다음 날에도 유지',()=>{const g=hubGate(true),r=ap
 test('HUB 월 한도는 다음 달 첫날 00:05에 재개',()=>{const g=hubGate(true),r=api.block(g);assert.throws(()=>api.reserve({...g,ledger:r.ledger,now:Date.parse('2026-10-31T15:04:59Z')}));assert.equal(api.reserve({...g,ledger:r.ledger,now:Date.parse('2026-10-31T15:05:00Z')}).quota.used,1);});
 test('기존 Developers 카운터와 HUB 일·월 카운터는 분리 보존',()=>{const old=gate();let r=api.raise({...old,used:100});r=api.reserve({...hubGate(),ledger:r.ledger});r=api.reserve({...hubGate(true),ledger:r.ledger});assert.equal(r.ledger.accounts[old.key].used,100);assert.equal(Object.keys(r.ledger.accounts).length,3);});
 test('HUB 일·월 계정 키를 혼용하면 차단',()=>{assert.throws(()=>api.reserve(hubGate(false,{key:'hub-month:'+'a'.repeat(64)})));assert.throws(()=>api.reserve(hubGate(true,{key:'search:'+'a'.repeat(64)})));});
+const directionsGate=(extra={})=>({ledger:{version:1,accounts:{}},provider:'directions',key:'directions-free',now,freeConfirmed:true,...extra});
+test('Directions 5 월 무료 60,000번째 예약 이후 차단',()=>{const g=directionsGate();let r=api.raise({...g,used:59999});r=api.reserve({...g,ledger:r.ledger});assert.equal(r.quota.used,60000);assert.throws(()=>api.reserve({...g,ledger:r.ledger}));});
+test('Directions 5와 Geocoding은 같은 계정의 별도 서비스 한도',()=>{let r=api.reserve(gate('maps'));r=api.reserve(directionsGate({ledger:r.ledger}));assert.equal(r.ledger.accounts['maps-free'].used,1);assert.equal(r.ledger.accounts['directions-free'].used,1);});
+test('Directions 5 대표 계정 확인 전 예약 차단',()=>assert.throws(()=>api.reserve(directionsGate({freeConfirmed:false}))));
+test('Directions 5 월 한도는 다음 날 초기화되지 않음',()=>{const g=directionsGate(),r=api.block(g);assert.throws(()=>api.reserve({...g,ledger:r.ledger,now:now+86400000}));});
+test('Directions 5 월 한도는 다음 달 00:05 이후 초기화',()=>{const g=directionsGate(),r=api.block(g);assert.equal(api.reserve({...g,ledger:r.ledger,now:Date.parse('2026-10-31T15:05:00Z')}).quota.used,1);});
+test('Directions 5 계정 키를 Geocoding으로 혼용하면 차단',()=>assert.throws(()=>api.reserve(directionsGate({key:'maps-free'}))));
 const report={passed:checks.filter(x=>x.passed).length,total:checks.length,checks};console.log(JSON.stringify(report));if(report.passed!==report.total)process.exitCode=1;

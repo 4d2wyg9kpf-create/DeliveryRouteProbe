@@ -176,14 +176,15 @@ final class NaverAPIStore: ObservableObject {
         searchProvider = state.searchProvider
         searchFreeConfirmed = state.searchFreeConfirmed
     }
-    private var quotaProviders: [String] { state.searchProvider == .hub ? ["search", "searchMonth", "maps"] : ["search", "maps"] }
+    private var quotaProviders: [String] { state.searchProvider == .hub ? ["search", "searchMonth", "maps", "directions"] : ["search", "maps", "directions"] }
     private func key(_ provider: String) -> String {
+        if provider == "directions" { return "directions-free" }
         if provider == "maps" { return "maps-free" } // Account free allowance is shared across Maps apps.
         let prefix = provider == "searchMonth" ? "hub-month:" : state.searchProvider == .hub ? "hub:" : "search:"
         return prefix + SHA256.hash(data: Data(state.searchID.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     private func host(_ provider: String) -> String {
-        provider == "maps" ? "maps.apigw.ntruss.com" : state.searchProvider == .hub ? "naverapihub.apigw.ntruss.com" : "openapi.naver.com"
+        ["maps", "directions"].contains(provider) ? "maps.apigw.ntruss.com" : state.searchProvider == .hub ? "naverapihub.apigw.ntruss.com" : "openapi.naver.com"
     }
     private func commit(_ next: NaverSecureState, reservations: [String] = []) throws {
         guard !recoveryBlocked else { throw PlannerFailure.message("보관함 오류를 해결하기 전에는 요청할 수 없습니다.") }
@@ -196,8 +197,8 @@ final class NaverAPIStore: ObservableObject {
         return try await session.data(for: request)
     }
     private func quotaChange(_ method: String, provider: String, now: Double, extra: [String: Any] = [:], ledger: NaverQuotaLedger? = nil) throws -> NaverQuotaChange {
-        let engineProvider = provider == "maps" ? "maps" : provider == "searchMonth" ? "hubMonth" : state.searchProvider == .hub ? "hub" : "search"
-        var input: [String: Any] = ["ledger": try TMapBridge.object(ledger ?? state.ledger), "key": key(provider), "provider": engineProvider, "now": now, "freeConfirmed": provider == "maps" ? state.mapsFreeConfirmed : state.searchFreeConfirmed]
+        let engineProvider = provider == "directions" ? "directions" : provider == "maps" ? "maps" : provider == "searchMonth" ? "hubMonth" : state.searchProvider == .hub ? "hub" : "search"
+        var input: [String: Any] = ["ledger": try TMapBridge.object(ledger ?? state.ledger), "key": key(provider), "provider": engineProvider, "now": now, "freeConfirmed": ["maps", "directions"].contains(provider) ? state.mapsFreeConfirmed : state.searchFreeConfirmed]
         extra.forEach { input[$0.key] = $0.value }
         var result = try NaverAPIBridge.call(method, input, as: NaverQuotaChange.self)
         result.quota.provider = provider
@@ -261,7 +262,7 @@ final class NaverAPIStore: ObservableObject {
         } catch { errorMessage = error.localizedDescription; return false }
     }
     private func trustedTime(_ provider: String) async throws -> Double {
-        let clockProvider = provider == "maps" ? "maps" : "search"
+        let clockProvider = ["maps", "directions"].contains(provider) ? "maps" : "search"
         if let clock = clocks[clockProvider] {
             let elapsed = ProcessInfo.processInfo.systemUptime - clock.uptime
             if elapsed >= 0 && elapsed < 300 { return clock.milliseconds + elapsed * 1000 }
@@ -283,7 +284,7 @@ final class NaverAPIStore: ObservableObject {
         guard !isBusy, !recoveryBlocked else { return }
         isBusy = true; defer { isBusy = false }
         errorMessage = nil
-        for provider in ["search", "maps"] where (provider == "search" ? hasSearchKeys : hasMapsKeys) {
+        for provider in ["search", "maps", "directions"] where (provider == "search" ? hasSearchKeys : hasMapsKeys) {
             do { try changeQuota("refresh", provider: provider, now: try await trustedTime(provider)) }
             catch { errorMessage = error.localizedDescription }
         }
@@ -294,7 +295,7 @@ final class NaverAPIStore: ObservableObject {
         do { try changeQuota("raise", provider: provider, now: try await trustedTime(provider), extra: ["used": used]); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
-    private func fetch(_ provider: String, query: String) async throws -> [String: Any] {
+    private func fetch(_ provider: String, query: String, routeItems: [URLQueryItem]? = nil) async throws -> [String: Any] {
         try Task.checkCancellation()
         try await DeviceShareHooks.prepareRequest()
         guard !recoveryBlocked else { throw PlannerFailure.message(errorMessage ?? "사용량 보관함 오류로 요청을 차단했습니다.") }
@@ -308,8 +309,9 @@ final class NaverAPIStore: ObservableObject {
         let hubSearch = provider == "search" && state.searchProvider == .hub
         let host = host(provider)
         var parts = URLComponents(); parts.scheme = "https"; parts.host = host
-        parts.path = provider == "search" ? hubSearch ? "/search/v1/local" : "/v1/search/local.json" : "/map-geocode/v2/geocode"
+        parts.path = provider == "search" ? hubSearch ? "/search/v1/local" : "/v1/search/local.json" : provider == "directions" ? "/map-direction/v1/driving" : "/map-geocode/v2/geocode"
         parts.queryItems = provider == "search" ? [URLQueryItem(name: "query", value: trimmed), URLQueryItem(name: "display", value: "5"), URLQueryItem(name: "start", value: "1"), URLQueryItem(name: "sort", value: "random")] : [URLQueryItem(name: "query", value: trimmed), URLQueryItem(name: "count", value: "100")]
+        if let routeItems { parts.queryItems = routeItems }
         if hubSearch { parts.queryItems?.append(URLQueryItem(name: "format", value: "json")) }
         guard let url = parts.url, url.host == host else { throw PlannerFailure.message("공식 API 요청을 준비하지 못했습니다.") }
         var request = URLRequest(url: url); request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -320,7 +322,7 @@ final class NaverAPIStore: ObservableObject {
         try changeQuota("reserve", provider: provider, now: now) // Persist before dispatch. No refund on failure/cancellation.
         let (data, response) = try await send(request)
         guard let http = response as? HTTPURLResponse, http.url?.host == host, http.url?.scheme == "https" else { throw PlannerFailure.message("네이버 API 응답 주소를 확인하지 못했습니다.") }
-        guard data.count <= 1_000_000 else { throw PlannerFailure.message("네이버 API 응답이 너무 큽니다.") }
+        guard data.count <= (provider == "directions" ? 20_000_000 : 1_000_000) else { throw PlannerFailure.message("네이버 API 응답이 너무 큽니다.") }
         let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         if http.statusCode != 200 {
             let cloudError = body["error"] as? [String: Any]
@@ -336,11 +338,19 @@ final class NaverAPIStore: ObservableObject {
                 try changeQuota("block", provider: blockedProvider, now: now)
                 throw PlannerFailure.message(provider == "maps" ? "Maps 서버가 할당량을 제한했습니다. 콘솔에서 Geocoding 사용 선택과 할당량을 확인해 주세요. 다음 초기화까지 요청을 차단합니다." : "네이버 서버가 호출을 제한했습니다. 다음 초기화까지 요청을 차단합니다.")
             }
-            if [401, 403].contains(http.statusCode) { throw PlannerFailure.message(provider == "search" ? "검색 서비스 선택·키와 콘솔의 ‘지역’ API 권한을 확인해 주세요. HUB·Developers·Maps 키는 서로 다릅니다. (HTTP \(http.statusCode))" : "Maps 키와 콘솔의 Geocoding API 권한을 확인해 주세요. HUB 검색 키와 Maps 키는 서로 다릅니다. (HTTP \(http.statusCode))") }
+            if [401, 403].contains(http.statusCode) { throw PlannerFailure.message(provider == "search" ? "검색 서비스 선택·키와 콘솔의 ‘지역’ API 권한을 확인해 주세요. HUB·Developers·Maps 키는 서로 다릅니다. (HTTP \(http.statusCode))" : "Maps 키와 콘솔의 Geocoding·Directions 5 API 권한을 확인해 주세요. HUB 검색 키와 Maps 키는 서로 다릅니다. (HTTP \(http.statusCode))") }
             throw PlannerFailure.message("네이버 API 요청에 실패했습니다. (HTTP \(http.statusCode))")
         }
         guard !body.isEmpty else { throw PlannerFailure.message("네이버 API JSON 응답을 읽지 못했습니다.") }
         return body
+    }
+    func directions(startLongitude: Double, startLatitude: Double, goalLongitude: Double, goalLatitude: Double, option: String) async throws -> [String: Any] {
+        let coords = [startLongitude, startLatitude, goalLongitude, goalLatitude]
+        guard coords.allSatisfy({ $0.isFinite }), (124...132).contains(startLongitude), (124...132).contains(goalLongitude),
+              (32...40).contains(startLatitude), (32...40).contains(goalLatitude), ["trafast", "traoptimal"].contains(option) else { throw PlannerFailure.message("네이버 자동차 좌표·탐색 옵션을 확인하세요.") }
+        guard !isBusy else { throw PlannerFailure.message("진행 중인 네이버 요청이 끝난 뒤 다시 시도하세요.") }
+        isBusy = true; defer { isBusy = false }
+        return try await fetch("directions", query: "directions", routeItems: [URLQueryItem(name: "start", value: "\(startLongitude),\(startLatitude)"), URLQueryItem(name: "goal", value: "\(goalLongitude),\(goalLatitude)"), URLQueryItem(name: "option", value: option), URLQueryItem(name: "cartype", value: "1")])
     }
     func search(_ query: String) async throws -> [NaverAPIResult] {
         try await DeviceShareHooks.prepareRequest()
@@ -387,8 +397,8 @@ extension NaverAPIStore {
         }
         if !state.mapsID.isEmpty { result.values["setting/naver-maps"] = try DeviceShareCodec.encode(DeviceShareNaverMaps(id: state.mapsID, secret: state.mapsSecret, freeConfirmed: state.mapsFreeConfirmed)) }
         for (key, account) in state.ledger.accounts {
-            let slot = key == "maps-free" ? "maps" : key.hasPrefix("hub-month:") ? "searchMonth" : "search"
-            let limit = slot == "maps" ? 3_000_000 : slot == "searchMonth" ? 775_000 : 25_000
+            let slot = key == "directions-free" ? "directions" : key == "maps-free" ? "maps" : key.hasPrefix("hub-month:") ? "searchMonth" : "search"
+            let limit = slot == "directions" ? 60_000 : slot == "maps" ? 3_000_000 : slot == "searchMonth" ? 775_000 : 25_000
             result.usage.append(DeviceShareUsageObservation(domain: "naver", account: key, period: account.period, slot: slot, used: account.used,
                 limit: limit, blocked: account.blocked, trustedMillis: account.lastTrustedMs, resetMillis: account.resetMillis))
         }
@@ -413,10 +423,10 @@ extension NaverAPIStore {
         }
         for bucket in replica.usages("naver") {
             let item = bucket.observation
-            guard item.account == "maps-free" || item.account.range(of: #"^(?:search|hub|hub-month):[a-f0-9]{64}$"#, options: .regularExpression) != nil else { throw DeviceShareError.invalid }
-            let slot = item.account == "maps-free" ? "maps" : item.account.hasPrefix("hub-month:") ? "searchMonth" : "search"
+            guard ["maps-free", "directions-free"].contains(item.account) || item.account.range(of: #"^(?:search|hub|hub-month):[a-f0-9]{64}$"#, options: .regularExpression) != nil else { throw DeviceShareError.invalid }
+            let slot = item.account == "directions-free" ? "directions" : item.account == "maps-free" ? "maps" : item.account.hasPrefix("hub-month:") ? "searchMonth" : "search"
             guard item.slot == slot else { throw DeviceShareError.invalid }
-            let limit = slot == "maps" ? 3_000_000 : slot == "searchMonth" ? 775_000 : 25_000
+            let limit = slot == "directions" ? 60_000 : slot == "maps" ? 3_000_000 : slot == "searchMonth" ? 775_000 : 25_000
             let old = next.ledger.accounts[item.account]
             if let old, old.period > item.period { continue }
             let samePeriod = old?.period == item.period

@@ -46,7 +46,7 @@ private final class Fixture {
     func used(_ provider: String) throws -> Int {
         let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
         let ledger = json["ledger"] as! [String: Any], accounts = ledger["accounts"] as! [String: [String: Any]]
-        let prefix = provider == "maps" ? "maps-" : provider == "searchMonth" ? "hub-month:" : (json["searchProvider"] as? String == "hub" ? "hub:" : "search:")
+        let prefix = provider == "directions" ? "directions-" : provider == "maps" ? "maps-" : provider == "searchMonth" ? "hub-month:" : (json["searchProvider"] as? String == "hub" ? "hub:" : "search:")
         return accounts.first(where: { $0.key.hasPrefix(prefix) })?.value["used"] as? Int ?? 0
     }
     func respond(_ request: URLRequest) async throws -> (Data, URLResponse) {
@@ -54,7 +54,7 @@ private final class Fixture {
         let head = request.httpMethod == "HEAD"
         if head { headCount += 1 } else {
             getCount += 1
-            let provider = request.url!.host == "maps.apigw.ntruss.com" ? "maps" : "search"
+            let provider = request.url!.path == "/map-direction/v1/driving" ? "directions" : request.url!.host == "maps.apigw.ntruss.com" ? "maps" : "search"
             try require(try used(provider) > 0, "request dispatched before persisted reservation")
             if request.url!.host == "naverapihub.apigw.ntruss.com" { try require(try used("searchMonth") > 0, "monthly reservation not persisted before HUB request") }
             if cancelGET { throw CancellationError() }
@@ -67,6 +67,7 @@ private final class Fixture {
             let code = serverErrorCode ?? (status == 429 ? "429" : "SE01")
             json = nestedError ? ["error": ["errorCode": code, "message": serverErrorMessage, "details": serverErrorDetails]] : ["errorCode": code, "errorMessage": serverErrorMessage]
         }
+        else if request.url!.path == "/map-direction/v1/driving" { json = ["code": 0, "route": ["trafast": [["summary": ["distance": 1500, "duration": 90001]]]]] }
         else if request.url!.host != "maps.apigw.ntruss.com" {
             json = ["items": [["title": "<b>가상</b> 거래처", "roadAddress": address, "address": "대전 중구 유천동 100", "category": "배송", "mapx": decimalSearchCoordinate ? "127.398" : "1273980000", "mapy": decimalSearchCoordinate ? "36.316" : "363160000"]]]
         } else {
@@ -284,6 +285,29 @@ struct NaverAPINativeTests {
             let shared = try NaverPlaceBridge.call("shared", ["capture": try TMapBridge.object(seed), "url": "https://naver.me/pointA"], as: NaverPlaceCapture.self)
             try await rejects { _ = try await s.resolve(shared) }
             try require(f.getCount == 0 && (try f.used("maps")) == 0, "shared address used representative coordinates or quota")
+        }
+        await test("Directions 5 reserves its own monthly counter before official GET") {
+            let f = try Fixture(), s = f.store()
+            _ = try await s.directions(startLongitude: 126.97, startLatitude: 37.55, goalLongitude: 126.98, goalLatitude: 37.56, option: "trafast")
+            let r = f.requests.last!
+            try require(r.url?.host == "maps.apigw.ntruss.com" && r.url?.path == "/map-direction/v1/driving", "wrong host/path")
+            try require(r.value(forHTTPHeaderField: "X-NCP-APIGW-API-KEY-ID") == "fixture-maps" && r.value(forHTTPHeaderField: "X-Naver-Client-Id") == nil, "wrong credential service")
+            try require(try f.used("directions") == 1 && f.used("maps") == 0, "mixed service counters")
+            try require(URLComponents(url: r.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: { $0.name == "departure_time" }) == false, "unsupported future parameter sent")
+        }
+        await test("Directions 5 free confirmation and invalid options prevent dispatch") {
+            let f = try Fixture(free: false), s = f.store()
+            try await rejects { _ = try await s.directions(startLongitude: 126.97, startLatitude: 37.55, goalLongitude: 126.98, goalLatitude: 37.56, option: "trafast") }
+            try require(f.getCount == 0, "unconfirmed paid request")
+            try await rejects { _ = try await s.directions(startLongitude: 126.97, startLatitude: 37.55, goalLongitude: 126.98, goalLatitude: 37.56, option: "DISTANCE") }
+            try require(f.getCount == 0, "unsupported distance option")
+        }
+        await test("Directions 5 failed requests stay charged independently after restart") {
+            let f = try Fixture(), s = f.store(); f.status = 500
+            try await rejects { _ = try await s.directions(startLongitude: 126.97, startLatitude: 37.55, goalLongitude: 126.98, goalLatitude: 37.56, option: "traoptimal") }
+            f.status = 200; let restored = f.store()
+            _ = try await restored.directions(startLongitude: 126.97, startLatitude: 37.55, goalLongitude: 126.98, goalLatitude: 37.56, option: "trafast")
+            try require(try f.used("directions") == 2 && f.used("maps") == 0, "direction charge lost")
         }
         let passed = checks.filter { $0["passed"] as? Bool == true }.count
         let report: [String: Any] = ["passed": passed, "total": checks.count, "checks": checks, "live_api": false, "browser_or_map_required": false]

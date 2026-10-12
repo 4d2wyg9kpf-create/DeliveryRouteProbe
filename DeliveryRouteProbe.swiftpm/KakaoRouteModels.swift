@@ -30,6 +30,10 @@ struct KakaoDistanceRecord: Codable, Identifiable {
     var alternative: String
     var issue: String?
     var landingURL: String?
+    var provider: String? = nil
+    var timeBasis: String? = nil
+    var rawSummary: String? = nil
+    var referenceDistanceMeters: Int? = nil
     func matches(_ endpoints: [RouteEndpoint]) -> Bool {
         endpoints.contains { $0.id == origin.id && $0.coordinate.longitude == origin.coordinate.longitude && $0.coordinate.latitude == origin.coordinate.latitude } && endpoints.contains { $0.id == destination.id && $0.coordinate.longitude == destination.coordinate.longitude && $0.coordinate.latitude == destination.coordinate.latitude }
     }
@@ -128,7 +132,7 @@ private func kakaoCSVQuote(_ value: String) -> String {
     let safe = value.first.map { "=+-@".contains($0) } == true ? "'" + value : value
     return "\"" + safe.replacingOccurrences(of: "\"", with: "\"\"") + "\""
 }
-let kakaoCSVHeader = ["ID", "출발ID", "출발지", "출발주소", "출발위도", "출발경도", "목적ID", "목적지", "목적주소", "목적위도", "목적경도", "API", "탐색기준", "출발시각", "조회시각", "거리m", "시간s", "대안", "오류"].map(kakaoCSVQuote).joined(separator: ",")
+let kakaoCSVHeader = ["ID", "출발ID", "출발지", "출발주소", "출발위도", "출발경도", "목적ID", "목적지", "목적주소", "목적위도", "목적경도", "이동방식", "탐색기준", "출발시각", "조회시각", "거리m", "시간s", "대안", "오류", "제공자", "시간기준", "웹요약원문", "현재경로참고거리m", "결과URL"].map(kakaoCSVQuote).joined(separator: ",")
 func kakaoCSVRow(_ r: KakaoDistanceRecord) -> String {
     let f = ISO8601DateFormatter()
     var fields: [String] = [r.id, r.origin.id, r.origin.name, r.origin.address]
@@ -137,5 +141,6 @@ func kakaoCSVRow(_ r: KakaoDistanceRecord) -> String {
     fields.append(contentsOf: [String(r.destination.coordinate.latitude), String(r.destination.coordinate.longitude)])
     fields.append(contentsOf: [r.mode.rawValue, r.priority, r.departureTime ?? "", f.string(from: r.queriedAt)])
     fields.append(contentsOf: [r.distanceMeters.map { String($0) } ?? "", r.durationSeconds.map { String($0) } ?? "", r.alternative, r.issue ?? ""])
+    fields.append(contentsOf: [r.provider ?? "kakaoAPI", r.timeBasis ?? (r.departureTime == nil ? "current" : "scheduled"), r.rawSummary ?? "", r.referenceDistanceMeters.map { String($0) } ?? "", r.landingURL ?? ""])
     return fields.map(kakaoCSVQuote).joined(separator: ",")
 }

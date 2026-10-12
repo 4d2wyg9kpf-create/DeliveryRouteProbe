@@ -138,6 +138,10 @@ final class KakaoRouteStore: ObservableObject {
         let records = try KakaoRouteAPI.parse(data, mode: mode, origin: fixed, destinations: others, priority: priority, departure: departure, now: now)
         try saveResults(records); return records
     }
+    func saveExternalResults(_ records: [KakaoDistanceRecord]) throws {
+        guard !isBusy else { throw PlannerFailure.message("카카오 API 조회가 진행 중입니다.") }
+        try saveResults(records)
+    }
     private func saveResults(_ records: [KakaoDistanceRecord]) throws {
         guard !blockedRecovery else { throw APICredentialStorageError.notLoaded }
         guard let resultArchive else { throw DeviceShareError.unavailable }
