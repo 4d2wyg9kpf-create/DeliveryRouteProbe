@@ -88,10 +88,10 @@ struct DeliveryRootView: View {
     }
 }
 
-struct MapWebView: UIViewRepresentable {
+struct MapWebView: View {
     let webView: WKWebView
-    func makeUIView(context: Context) -> WKWebView { webView }
-    func updateUIView(_ uiView: WKWebView, context: Context) { }
+    var desktop = false
+    var body: some View { FacilityRouteWebCanvas(webView: webView, desktop: desktop) }
 }
 
 struct ProbeView: View {
@@ -120,6 +120,8 @@ struct ProbeView: View {
                         .disabled(!model.canGoForward).accessibilityLabel("앞으로")
                     Button { model.webView.reload() } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("새로고침")
+                    Button(model.desktopCanvas ? "기기 크기 보기" : "PC 크기 보기") { model.desktopCanvas.toggle() }
+                        .disabled(model.isReading || model.isReadingBike || model.isReadingPlace || model.isImportingSavedList)
                     Button("지도 홈", action: model.openHome)
                     Button("공유 링크 붙여넣기") { showSharedLink = true }
                         .disabled(model.isImportingSavedList || model.isReadingPlace || model.isOpeningSharedLink)
@@ -172,16 +174,16 @@ struct ProbeView: View {
             Divider()
             GeometryReader { geometry in
                 if mapExpanded {
-                    MapWebView(webView: model.webView)
+                    MapWebView(webView: model.webView, desktop: model.desktopCanvas)
                 } else if geometry.size.width >= 950 {
                     HStack(spacing: 0) {
-                        MapWebView(webView: model.webView)
+                        MapWebView(webView: model.webView, desktop: model.desktopCanvas)
                         Divider()
                         CapturePanel(model: model, planner: planner).frame(width: 340)
                     }
                 } else {
                     VStack(spacing: 0) {
-                        MapWebView(webView: model.webView)
+                        MapWebView(webView: model.webView, desktop: model.desktopCanvas)
                         Divider()
                         CapturePanel(model: model, planner: planner).frame(height: min(300, geometry.size.height * 0.38))
                     }

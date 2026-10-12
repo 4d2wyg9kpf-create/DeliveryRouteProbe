@@ -12,6 +12,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         storedWebView = view
         return view
     }
+    @Published var desktopCanvas = false { didSet { storedWebView?.pageZoom = desktopCanvas ? 1 : UIDevice.current.userInterfaceIdiom == .phone ? 0.72 : 1 } }
     @Published var canGoBack = false
     @Published var canGoForward = false
     @Published var isLoading = false
@@ -61,7 +62,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        if UIDevice.current.userInterfaceIdiom == .phone { webView.pageZoom = 0.72 }
+        if UIDevice.current.userInterfaceIdiom == .phone && !desktopCanvas { webView.pageZoom = 0.72 }
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.keyboardDismissMode = .interactive
 

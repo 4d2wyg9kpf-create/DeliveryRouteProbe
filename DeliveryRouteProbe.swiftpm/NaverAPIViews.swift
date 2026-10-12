@@ -161,12 +161,13 @@ struct NaverLinkWebView: View {
             if browser.isLoading { ProgressView(value: browser.progress) }
             Text(browser.savedListProgress.isEmpty ? browser.status : browser.savedListProgress).font(.caption).padding(.horizontal)
             if let error = browser.errorMessage { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal) }
-            HStack {
+            ScrollView(.horizontal, showsIndicators: false) { HStack {
                 Button { _ = browser.webView.goBack() } label: { Image(systemName: "chevron.left") }.disabled(!browser.canGoBack)
+                Button(browser.desktopCanvas ? "기기 크기" : "PC 크기") { browser.desktopCanvas.toggle() }.disabled(browser.isReadingPlace || browser.isImportingSavedList)
                 Button("새로고침") { browser.webView.reload() }
                 Button("선택 장소 읽기") { browser.readSelectedPlace() }.disabled(browser.isLoading || browser.isReadingPlace || browser.isImportingSavedList || browser.isOpeningSharedLink)
-            }.buttonStyle(.bordered)
-            MapWebView(webView: browser.webView)
+            }.buttonStyle(.bordered).padding(.horizontal) }
+            MapWebView(webView: browser.webView, desktop: browser.desktopCanvas)
         }.navigationTitle("네이버 목록 · 로그인 확인").navigationBarTitleDisplayMode(.inline)
             .onDisappear {
                 if browser.isOpeningSharedLink || browser.isImportingSavedList || browser.waitingForSavedFolder {

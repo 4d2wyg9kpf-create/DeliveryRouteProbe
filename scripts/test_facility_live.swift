@@ -1,10 +1,12 @@
 import Foundation
+import Darwin
 import AppKit
 import WebKit
 struct TMapCoordinate: Codable, Equatable {var longitude:Double;var latitude:Double;var poiID:String?;var detailAddress:String?}
 enum PlannerFailure:LocalizedError {case message(String);var errorDescription:String?{if case .message(let s)=self{return s};return nil}}
 @main struct FacilityLiveChecks {
     @MainActor static func main() {
+        setbuf(stdout,nil);NSTimeZone.default=TimeZone(identifier:"Asia/Seoul")!
         let app=NSApplication.shared;app.setActivationPolicy(.accessory);app.finishLaunching()
         Task { await run() };app.run()
     }

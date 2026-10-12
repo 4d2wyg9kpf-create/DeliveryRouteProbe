@@ -231,7 +231,7 @@ var DeliveryFacilityWeb = (function () {
   }
   function step(request) {
     if(!request||!request.id) return failure('조회 식별자가 없습니다.');
-    if(document.readyState==='loading') return pending('웹 문서를 불러옵니다.');
+    if(location.href==='about:blank' || document.readyState==='loading') return pending('웹 문서를 불러옵니다.');
     const url=new URL(location.href), naver=request.provider==='naverWeb';
     if(url.protocol!=='https:' || !(naver?['map.naver.com','m.map.naver.com','m.search.naver.com']:['map.kakao.com','m.map.kakao.com']).includes(url.hostname)) return failure('공식 지도 웹 화면이 아닙니다.');
     let state=window.__DeliveryFacilityRouteState;

@@ -52,7 +52,14 @@ final class FacilityRouteWebRunner: NSObject, ObservableObject, WKNavigationDele
     }
     private func read(_ view: WKWebView, request: FacilityRouteRequest) async throws -> Any {
         try await withCheckedThrowingContinuation { continuation in
-            view.callAsyncJavaScript(FacilityRouteWebScript.source + "\nreturn JSON.stringify(DeliveryFacilityWeb.step(request));", arguments: ["request": request.scriptArguments], in: nil, in: .page) { continuation.resume(with: $0) }
+            var finished = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                guard !finished else { return }; finished = true
+                continuation.resume(throwing: PlannerFailure.message("웹 문서의 응답이 멈췄습니다. 이 구간을 다시 조회하세요."))
+            }
+            view.callAsyncJavaScript(FacilityRouteWebScript.source + "\nreturn JSON.stringify(DeliveryFacilityWeb.step(request));", arguments: ["request": request.scriptArguments], in: nil, in: .page) { result in
+                guard !finished else { return }; finished = true; continuation.resume(with: result)
+            }
         }
     }
     func cancel() { activeID = nil; webView?.stopLoading(); message = "웹 조회를 중단했습니다." }

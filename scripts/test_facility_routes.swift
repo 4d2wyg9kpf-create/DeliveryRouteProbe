@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import AppKit
 import WebKit
 
@@ -26,6 +27,7 @@ enum PlannerFailure: LocalizedError { case message(String); var errorDescription
         guard let s = raw as? String, let data = s.data(using: .utf8), let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PlannerFailure.message("fixture JSON") }; return result
     }
     func load(_ url: URL, width: Double) async throws {
+        window.setContentSize(NSSize(width: width, height: 700))
         view = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: 700));window.contentView = view;window.orderFront(nil)
         view.load(URLRequest(url: url))
         for _ in 0..<50 {
@@ -49,9 +51,14 @@ enum PlannerFailure: LocalizedError { case message(String); var errorDescription
     }
     func run() async {
         do {
+            let blank = FacilityRouteRequest(provider:.naverWeb,transport:.walk,criterion:.recommended,origin:origin,destination:destination)
+            let empty = try await evaluate(fixtureSource + "\nreturn JSON.stringify(DeliveryFacilityWeb.step(request));",args:["request":blank.scriptArguments])
+            try check(empty["status"] as? String == "pending", "initial blank document waits for actual committed navigation")
             for width in [320.0,393.0,1280.0] {
                 let r = FacilityRouteRequest(provider:.naverWeb,transport:.walk,criterion:.recommended,origin:origin,destination:destination)
                 try await load(mobileURL(r,fixture:width==320 ? "outside" : "walk"),width:width)
+                let viewport = try await evaluate("return JSON.stringify({width:window.innerWidth});")
+                try check(viewport["width"] as? Double == width, "actual WebKit CSS viewport is \(width)px")
                 let first = try await evaluate(fixtureSource + "\nreturn JSON.stringify(DeliveryFacilityWeb.step(request));",args:["request":r.scriptArguments])
                 try check(first["status"] as? String == "pending", "\(width)px result is not saved before stable readings")
                 let result = try await reply(r), rows = result["candidates"] as? [[String: Any]] ?? []
@@ -105,4 +112,4 @@ enum PlannerFailure: LocalizedError { case message(String); var errorDescription
         } catch {print("FAIL facility route checks: \(error)");exit(1)}
     }
 }
-@main struct FacilityRouteTests { @MainActor static func main() {let app=NSApplication.shared;app.setActivationPolicy(.accessory);app.finishLaunching();let checks=FacilityChecks();Task{await checks.run()};app.run()} }
+@main struct FacilityRouteTests { @MainActor static func main() {setbuf(stdout,nil);let app=NSApplication.shared;app.setActivationPolicy(.accessory);app.finishLaunching();let checks=FacilityChecks();Task{await checks.run()};app.run()} }

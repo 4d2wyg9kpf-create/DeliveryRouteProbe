@@ -92,7 +92,7 @@ private struct NaverCoordinatePlaceReader: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 10) {
-                Text("공유한 장소에서 좌표를 확인하고 있습니다.").font(.caption).padding(.horizontal)
+                Text("공유한 장소를 PC 크기로 열어 좌표를 확인합니다. 가로로 밀어 전체 화면을 볼 수 있습니다.").font(.caption).padding(.horizontal)
                 if browser.isLoading || polling || reading { ProgressView() }
                 if let error { Text(error).font(.caption).foregroundStyle(.red).padding(.horizontal) }
                 Button("이 장소 좌표 다시 읽기") {
@@ -104,11 +104,12 @@ private struct NaverCoordinatePlaceReader: View {
                         catch { if active && !Task.isCancelled { self.error = error.localizedDescription } }
                     }
                 }.disabled(browser.isLoading || polling || reading)
-                MapWebView(webView: browser.webView)
+                MapWebView(webView: browser.webView, desktop: true)
             }
             .navigationTitle("네이버지도 좌표 확인").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("취소") { dismiss() } } }
             .task {
+                browser.desktopCanvas = true
                 browser.openRecordedRoute(target.url.absoluteString)
                 let deadline = Date().addingTimeInterval(30)
                 defer { polling = false }

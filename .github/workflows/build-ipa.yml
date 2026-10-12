@@ -77,6 +77,8 @@ jobs:
       - name: Verify housing parsing, editable coordinates, source preservation and Kakao routing request gates
         run: bash scripts/test_housing_kakao.sh
       - name: Verify live mobile walk/transit and scheduled desktop car routes on both providers
+        env:
+          TZ: Asia/Seoul
         run: bash scripts/test_facility_live.sh
       - name: Upload native check log
         if: always()
