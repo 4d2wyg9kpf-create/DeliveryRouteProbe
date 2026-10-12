@@ -13,42 +13,47 @@ struct CoordinateEditorView: View {
     @State private var longitude: String
     @State private var satellite = false
     @State private var error: String?
+    @State private var readingLink = false
     init(title: String, coordinate: TMapCoordinate?, original: TMapCoordinate? = nil,
          onReset: (() throws -> Void)? = nil, onSave: @escaping (TMapCoordinate) throws -> Void) {
         self.title = title; self.original = original; self.onSave = onSave; self.onReset = onReset
         let value = coordinate ?? TMapCoordinate(longitude: 127.3845, latitude: 36.3504)
         _coordinate = State(initialValue: value)
-        _latitude = State(initialValue: String(format: "%.8f", value.latitude))
-        _longitude = State(initialValue: String(format: "%.8f", value.longitude))
+        _latitude = State(initialValue: String(value.latitude))
+        _longitude = State(initialValue: String(value.longitude))
     }
     var body: some View {
         NavigationStack {
             VStack(spacing: 10) {
                 Text("지도를 길게 누르거나 표식을 끌어서 위치를 지정하세요.").font(.caption).padding(.horizontal)
-                EditableCoordinateMap(coordinate: $coordinate, satellite: satellite).frame(minHeight: 250)
+                EditableCoordinateMap(coordinate: $coordinate, satellite: satellite).frame(minHeight: 250).allowsHitTesting(!readingLink)
                 Form {
+                    NaverCoordinateLinkSection(onCoordinate: { point in
+                        coordinate = point; latitude = String(point.latitude); longitude = String(point.longitude); error = nil
+                    }, onReadingChanged: { readingLink = $0 })
                     Toggle("위성 지도", isOn: $satellite)
-                    NativeTextField("위도", text: $latitude, keyboard: .decimalPad)
-                    NativeTextField("경도", text: $longitude, keyboard: .decimalPad)
+                    NativeTextField("위도", text: $latitude, keyboard: .decimalPad).disabled(readingLink)
+                    NativeTextField("경도", text: $longitude, keyboard: .decimalPad).disabled(readingLink)
                     Button("입력한 좌표로 표식 이동") {
                         guard let lat = Double(latitude), let lon = Double(longitude) else { error = "좌표를 숫자로 입력하세요."; return }
                         let value = TMapCoordinate(longitude: lon, latitude: lat)
                         guard SiteTargetStore.valid(value) else { error = "국내 위도·경도 범위를 확인하세요."; return }
                         coordinate = value; error = nil
-                    }
+                    }.disabled(readingLink)
                     if let original { Text("원본: \(original.latitude, specifier: "%.8f"), \(original.longitude, specifier: "%.8f")").font(.caption) }
-                    if let onReset { Button("원본 좌표로 복원") { do { try onReset(); dismiss() } catch { self.error = error.localizedDescription } } }
+                    if let onReset { Button("원본 좌표로 복원") { do { try onReset(); dismiss() } catch { self.error = error.localizedDescription } }.disabled(readingLink) }
                     if let error { Text(error).foregroundStyle(.red) }
                 }.frame(maxHeight: 290)
             }.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("취소") { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) { Button("이 좌표 저장") {
+                        guard !readingLink else { return }
                         do { inputs.finishEditing(); guard let lat = Double(latitude), let lon = Double(longitude) else { throw DeviceShareError.invalid }; let value = TMapCoordinate(longitude: lon, latitude: lat); guard SiteTargetStore.valid(value) else { throw DeviceShareError.invalid }; try onSave(value); dismiss() } catch { self.error = error.localizedDescription }
-                    } }
+                    }.disabled(readingLink) }
                 }
                 .onChange(of: coordinate) { _, value in
-                    latitude = String(format: "%.8f", value.latitude); longitude = String(format: "%.8f", value.longitude)
+                    latitude = String(value.latitude); longitude = String(value.longitude)
                 }
         }
     }

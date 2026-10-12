@@ -6,6 +6,30 @@ enum PlannerFailure: LocalizedError { case message(String); var errorDescription
 func require(_ value: Bool, _ text: String) throws { if !value { throw PlannerFailure.message(text) } }
 func rejects(_ action: () throws -> Void) throws { do { try action() } catch { return }; throw PlannerFailure.message("expected rejection") }
 func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObject: value) }
+@MainActor final class HousingCollectionFixture: RealtyHousingCollecting {
+    var areaMap: [String: [HousingArea]] = [:]
+    var areaCalls: [String] = []
+    var listRegion: HousingRegion?
+    var listCalls = 0
+    var detailCalls: [String] = []
+    var failedIDs = Set<String>()
+    var cancelledIDs = Set<String>()
+    var onDetail: ((HousingSource) -> Void)?
+    func areas(sido: String, sigungu: String) async throws -> [HousingArea] {
+        let key = sido + "/" + sigungu; areaCalls.append(key); return areaMap[key] ?? []
+    }
+    func list(sido: HousingArea, sigungu: HousingArea, dong: HousingArea) async throws -> HousingRegion {
+        listCalls += 1
+        guard let region = listRegion, region.code == sido.code + sigungu.code + dong.code else { throw PlannerFailure.message("fixture list mismatch") }
+        return region
+    }
+    func detail(_ source: HousingSource) async throws -> HousingSource {
+        detailCalls.append(source.id); onDetail?(source)
+        if cancelledIDs.contains(source.id) { throw CancellationError() }
+        if failedIDs.contains(source.id) { throw PlannerFailure.message("fixture detail failure") }
+        var value = source; value.detailAt = Date(); return value
+    }
+}
 @main struct HousingKakaoChecks {
     @MainActor static func main() async throws {
         var passed = 0
@@ -372,6 +396,105 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         _ = try await gateway.kaptData(.basic,parameters:["kaptCode":"A30279105"])
         do { _ = try await gateway.kaptData(.facilities,parameters:["kaptCode":"A30279105"]); throw PlannerFailure.message("quota dispatched") } catch {}
         try check("basic and facility requests reserve the same durable quota before dispatch") { try require(publicRequests == 1 && gateway.quotas.first { $0.id == .kaptBasis }?.used == 1,"shared K-apt quota") }
+        let s1 = HousingArea(code: "11", name: "시도1"), s2 = HousingArea(code: "26", name: "시도2")
+        let g1 = HousingArea(code: "680", name: "시군구1"), g2 = HousingArea(code: "110", name: "시군구2")
+        let d1 = HousingArea(code: "10300", name: "법정동1"), d2 = HousingArea(code: "11000", name: "법정동2")
+        let areas = HousingCollectionFixture()
+        areas.areaMap = ["/": [s1,s2], "11/": [g1], "26/": [g2], "11/680": [d1,d1], "26/110": [d2]]
+        let provinceTargets = try await HousingCollectionTargets.resolve(.province(s1), client: areas)
+        try check("province selection collects its child dongs without querying another province") {
+            try require(provinceTargets.map(\.id) == ["1168010300"] && areas.areaCalls == ["11/","11/680"], "province scope or duplicate target")
+        }
+        areas.areaCalls = []
+        let districtTargets = try await HousingCollectionTargets.resolve(.district(s1,g1), client: areas)
+        try check("district selection collects only that district's child dongs") {
+            try require(districtTargets.map(\.id) == ["1168010300"] && areas.areaCalls == ["11/680"], "district scope")
+        }
+        areas.areaCalls = []
+        let dongTargets = try await HousingCollectionTargets.resolve(.dong(s1,g1,d1), client: areas)
+        try check("single dong selection uses its known target without redundant area queries") {
+            try require(dongTargets.count == 1 && areas.areaCalls.isEmpty, "dong scope")
+        }
+        areas.areaCalls = []
+        let nationwideTargets = try await HousingCollectionTargets.resolve(.nationwide, client: areas)
+        try check("nationwide targets are discovered without any prior apartment list collection") {
+            try require(nationwideTargets.map(\.id) == ["1168010300","2611011000"] && areas.listCalls == 0, "nationwide enumeration depended on saved apartment lists")
+        }
+        try check("discovery has no invented percentage and the scope denominator stays frozen") {
+            var progress = HousingCollectionProgress(scopeTitle:"전국",includesDetails:true)
+            progress.discovered(1); try require(progress.fraction == nil && progress.percentage == nil,"premature completion rate")
+            progress.setTargets(nationwideTargets.map(\.id)); progress.setTargets(["unrelated"])
+            progress.beginRegion(id:nationwideTargets[0].id,title:"첫 지역"); progress.regionFinished(successful:true)
+            progress.beginRegion(id:nationwideTargets[1].id,title:"둘째 지역"); progress.regionFinished(successful:false)
+            progress.finish()
+            try require(progress.targetRegionIDs?.count == 2 && progress.fraction == 0.5 && progress.failedRegionIDs.count == 1,"scope total changed or failed region marked complete")
+        }
+        try check("large incomplete scope cannot round up to 100 percent") {
+            var progress = HousingCollectionProgress(scopeTitle:"전국",includesDetails:true)
+            let ids = (0..<5000).map(String.init); progress.setTargets(ids)
+            for id in ids.dropLast() { progress.beginRegion(id:id,title:id); progress.regionFinished(successful:true) }
+            try require(progress.percentage == "99.9%", "rounded unfinished collection to 100%")
+        }
+        var realtyList = manual; realtyList.kaptRecords = nil; realtyList.kaptListAt = nil
+        realtyList.records = ["z-last","a-first","m-middle"].map { apt in
+            var row = manual.records[0]; row.aptCode = apt; row.id = "realty:" + manual.code.prefix(5) + ":" + apt
+            row.detailAt = nil; row.fields["roadAddress"] = "서울 강남구 가상로 1"; return row
+        }
+        realtyList.sourceCount = realtyList.records.count
+        let realty = HousingCollectionFixture(); realty.listRegion = realtyList
+        let realtyTarget = HousingCollectionTarget(sido:realtyList.sido,sigungu:realtyList.sigungu,dong:realtyList.dong)
+        let realtyStore = HousingStore(directory:folder.appendingPathComponent("realty-progress"),seedIfEmpty:false)
+        realtyStore.collectionProgress = HousingCollectionProgress(scopeTitle:"전국",includesDetails:true)
+        realtyStore.updateCollectionProgress { $0.setTargets([realtyTarget.id]) }
+        var beforeCounts: [Int] = [], denominators: [Int] = []
+        realty.onDetail = { _ in
+            beforeCounts.append(realtyStore.collectionProgress!.detailCompletedCount)
+            denominators.append(realtyStore.collectionProgress!.detailTotalCount!)
+        }
+        let completeRealty = try await realtyStore.collectRealtyRegion(realtyTarget,details:true,client:realty)
+        try check("same-dong detail numerator advances sequentially despite source sorting during save") {
+            try require(completeRealty && beforeCounts == [0,1,2] && denominators == [3,3,3] && realtyStore.collectionProgress?.detailCompletedCount == 3,"record index leaked into completion count")
+            try require(try realtyStore.originalRegion(realtyTarget.id).detailCount == 3,"count advanced before successful persistence")
+        }
+        var added = realtyList.records[0]; added.aptCode = "b-new"; added.id = "realty:" + manual.code.prefix(5) + ":b-new"
+        realtyList.records.append(added); realtyList.sourceCount = realtyList.records.count; realty.listRegion = realtyList
+        beforeCounts = []; denominators = []; let previousCalls = realty.detailCalls.count
+        realtyStore.collectionProgress = HousingCollectionProgress(scopeTitle:"선택 시도",includesDetails:true)
+        realtyStore.updateCollectionProgress { $0.setTargets([realtyTarget.id]) }
+        _ = try await realtyStore.collectRealtyRegion(realtyTarget,details:true,client:realty)
+        try check("one combined collection action detects new rows and skips all completed details") {
+            try require(realty.detailCalls.count == previousCalls + 1 && beforeCounts == [3] && denominators == [4] && realtyStore.collectionProgress?.detailCompletedCount == 4,"existing detail refetched or resumed count restarted")
+        }
+        let failureStore = HousingStore(directory:folder.appendingPathComponent("realty-progress-failure"),seedIfEmpty:false)
+        let failing = HousingCollectionFixture(); failing.listRegion = realty.listRegion; failing.failedIDs = [added.id]
+        failureStore.collectionProgress = HousingCollectionProgress(scopeTitle:"시군구",includesDetails:true)
+        failureStore.updateCollectionProgress { $0.setTargets([realtyTarget.id]) }
+        let completeFailed = try await failureStore.collectRealtyRegion(realtyTarget,details:true,client:failing)
+        failureStore.updateCollectionProgress { $0.regionFinished(successful:completeFailed); $0.finish() }
+        try check("failed detail is retained as pending and never inflates either completion numerator") {
+            try require(!completeFailed && failureStore.collectionProgress?.detailCompletedCount == 3 && failureStore.collectionProgress?.detailTotalCount == 4 && failureStore.collectionProgress?.failedDetailIDs.count == 1 && failureStore.collectionProgress?.fraction == 0,"failed attempt counted as completed")
+        }
+        let stopStore = HousingStore(directory:folder.appendingPathComponent("realty-progress-stop"),seedIfEmpty:false)
+        let stopping = HousingCollectionFixture(); stopping.listRegion = realtyList; stopping.cancelledIDs = [realtyList.records[1].id]
+        stopStore.collectionProgress = HousingCollectionProgress(scopeTitle:"법정동",includesDetails:true)
+        stopStore.updateCollectionProgress { $0.setTargets([realtyTarget.id]) }
+        do { _ = try await stopStore.collectRealtyRegion(realtyTarget,details:true,client:stopping); throw PlannerFailure.message("ignored cancellation") }
+        catch is CancellationError { stopStore.updateCollectionProgress { $0.stop() } }
+        try check("stopping collection keeps successful detail and does not claim completion") {
+            try require(try stopStore.originalRegion(realtyTarget.id).detailCount == 1 && stopStore.collectionProgress?.detailCompletedCount == 1 && stopStore.collectionProgress?.fraction == 0,"stop discarded records or marked scope complete")
+        }
+        stopping.cancelledIDs = []; let previousStopCalls = stopping.detailCalls.count
+        stopStore.collectionProgress = HousingCollectionProgress(scopeTitle:"법정동",includesDetails:true)
+        stopStore.updateCollectionProgress { $0.setTargets([realtyTarget.id]) }
+        let resumed = try await stopStore.collectRealtyRegion(realtyTarget,details:true,client:stopping)
+        try check("combined action resumes after stop with a stable whole-region detail denominator") {
+            try require(resumed && stopping.detailCalls.count == previousStopCalls + 3 && stopStore.collectionProgress?.detailCompletedCount == 4 && stopStore.collectionProgress?.detailTotalCount == 4,"resume repeated completed detail or changed denominator")
+        }
+        let callsBeforeListOnly = realty.detailCalls.count
+        _ = try await realtyStore.collectRealtyRegion(realtyTarget,details:false,client:realty)
+        try check("list-only confirmation stays separate and never requests detail") {
+            try require(realty.detailCalls.count == callsBeforeListOnly,"list-only action requested detail")
+        }
         print("Housing Kakao native checks: \(passed)/\(passed) passed")
     }
 }

@@ -69,7 +69,7 @@ struct HousingIntegrationView: View {
         guard !store.isBusy else { return }; store.isBusy = true; error = nil
         job = Task {
             defer { store.isBusy = false; job = nil; reload() }
-            do { try await work(); store.progress = "수집 원본을 저장했습니다. 연결과 통합은 직접 검토한 뒤 적용하세요." }
+            do { store.collectionProgress = nil; try await work(); store.progress = "수집 원본을 저장했습니다. 연결과 통합은 직접 검토한 뒤 적용하세요." }
             catch is CancellationError { store.progress = "중단했습니다. 완료된 자료에서 이어서 수집할 수 있습니다." }
             catch { self.error = error.localizedDescription }
         }

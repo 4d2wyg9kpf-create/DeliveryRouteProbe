@@ -26,6 +26,8 @@ struct TMapScreen: View {
     @State private var deleteLocation: TMapLocationDraft?
     @State private var showDeleteLocation = false
     @State private var showCustomers = false
+    @State private var useCurrentDepartureTime = true
+    @State private var departurePreviewDate = Date()
     private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -90,13 +92,14 @@ struct TMapScreen: View {
             .task {
                 if store.nowMillis == nil && store.errorMessage == nil { await store.refreshClock() }
             }
-            .onReceive(timer) { _ in store.tick() }
+            .onAppear { departurePreviewDate = Date() }
+            .onReceive(timer) { date in departurePreviewDate = date; store.tick() }
         }
     }
     private var requestSection: some View {
         Section("경로 최적화") {
             Text("\(planner.plan.originName) → 배송 \(planner.plan.visits.count)곳 → \(planner.plan.finishName)").font(.headline)
-            Text("배송일 \(planner.plan.planDate) · \(PlannerClock.text(planner.plan.startMinute)) 출발").font(.caption)
+            Text(useCurrentDepartureTime ? "최적화를 요청하는 현재시각에 출발" : "배송일 \(planner.plan.planDate) · \(PlannerClock.text(planner.plan.startMinute)) 출발").font(.caption)
             if let quota = store.quota(for: planner.plan.visits.count) {
                 Text("선택 API: \(quota.label) · 무료 \(quota.remaining)/\(quota.limit)회 남음")
                 if quota.blocked { Text("무료 한도 소진 · \(resetTime(quota.resetAtMillis)) 이후 재개").foregroundColor(.orange) }
@@ -105,7 +108,10 @@ struct TMapScreen: View {
                 HStack { ProgressView(); Button("요청 중단", action: store.cancel) }
             } else {
                 Button("티맵으로 배송 순서 최적화 · 1회 사용") {
-                    inputs.finishEditing(); displayPlan = planner.plan; store.optimize(plan: planner.plan)
+                    inputs.finishEditing()
+                    let requestPlan = departurePlan(at: Date())
+                    if useCurrentDepartureTime { planner.replacePlan(requestPlan) }
+                    displayPlan = requestPlan; store.optimize(plan: requestPlan)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!planner.plan.returnToOrigin || !store.canRequest || store.quota(for: planner.plan.visits.count) == nil || store.quota(for: planner.plan.visits.count)?.blocked == true || planner.isComputing)
@@ -115,12 +121,19 @@ struct TMapScreen: View {
             Text(store.message).font(.caption).foregroundColor(.secondary)
             if !store.hasAppKey || !store.freePlanConfirmed { Button("Free 앱키 설정") { showSettings = true } }
             Text("선택한 배송지만 방문합니다. 출발지와 최종 도착지는 별도로 선택할 수 있습니다.").font(.caption).foregroundStyle(.secondary)
-            NativeTextField("배송 날짜 YYYY-MM-DD", text: $planner.plan.planDate, keyboard: .numbersAndPunctuation).frame(minHeight: 44)
-            Picker("출발 시", selection: Binding(get: { planner.plan.startMinute / 60 }, set: { planner.plan.startMinute = $0 * 60 + planner.plan.startMinute % 60 })) {
-                ForEach(0..<24) { Text("\($0)시").tag($0) }
-            }
-            Picker("출발 분", selection: Binding(get: { planner.plan.startMinute % 60 }, set: { planner.plan.startMinute = planner.plan.startMinute / 60 * 60 + $0 })) {
-                ForEach(0..<60) { Text("\($0)분").tag($0) }
+            Toggle("출발시간을 현재시각으로", isOn: $useCurrentDepartureTime)
+                .disabled(store.isOptimizing)
+                .onChange(of: useCurrentDepartureTime) { _, enabled in
+                    if !enabled { planner.replacePlan(currentDeparturePlan(at: Date())) }
+                }
+            if !useCurrentDepartureTime {
+                NativeTextField("배송 날짜 YYYY-MM-DD", text: $planner.plan.planDate, keyboard: .numbersAndPunctuation).frame(minHeight: 44)
+                Picker("출발 시", selection: Binding(get: { planner.plan.startMinute / 60 }, set: { planner.plan.startMinute = $0 * 60 + planner.plan.startMinute % 60 })) {
+                    ForEach(0..<24) { Text("\($0)시").tag($0) }
+                }
+                Picker("출발 분", selection: Binding(get: { planner.plan.startMinute % 60 }, set: { planner.plan.startMinute = planner.plan.startMinute / 60 * 60 + $0 })) {
+                    ForEach(0..<60) { Text("\($0)분").tag($0) }
+                }
             }
 
         }
@@ -150,8 +163,17 @@ struct TMapScreen: View {
     }
     private var timingPreview: Result<TMapTimeInputs, Error> {
         do {
-            return .success(try TMapBridge.timeInputs(planner.plan))
+            return .success(try TMapBridge.timeInputs(departurePlan(at: departurePreviewDate)))
         } catch { return .failure(error) }
+    }
+    private func departurePlan(at date: Date) -> DeliveryPlan {
+        useCurrentDepartureTime ? currentDeparturePlan(at: date) : planner.plan
+    }
+    private func currentDeparturePlan(at date: Date) -> DeliveryPlan {
+        var plan = planner.plan
+        let time = DeliveryDepartureTime.current(at: date)
+        plan.planDate = time.planDate; plan.startMinute = time.startMinute
+        return plan
     }
     private func requestTime(_ text: String) -> String {
         guard text.count == 12, text.allSatisfy(\.isNumber) else { return "시각 미지정" }
@@ -420,18 +442,23 @@ struct TMapLocationEditor: View {
     @State private var poiID = ""
     @State private var detailAddress = ""
     @State private var error: String?
+    @State private var readingLink = false
     var body: some View {
         NavigationStack {
             Form {
                 Text(name).bold()
-                NativeTextField("경도 · 예: 127.123456", text: $longitude, keyboard: .decimalPad).frame(minHeight: 44)
-                NativeTextField("위도 · 예: 36.123456", text: $latitude, keyboard: .decimalPad).frame(minHeight: 44)
+                NaverCoordinateLinkSection(onCoordinate: { point in
+                    longitude = String(point.longitude); latitude = String(point.latitude)
+                    poiID = ""; error = nil
+                }, onReadingChanged: { readingLink = $0 })
+                NativeTextField("경도 · 예: 127.123456", text: $longitude, keyboard: .decimalPad).frame(minHeight: 44).disabled(readingLink)
+                NativeTextField("위도 · 예: 36.123456", text: $latitude, keyboard: .decimalPad).frame(minHeight: 44).disabled(readingLink)
                 Text("WGS84 경위도 좌표입니다. 실제 하역 위치를 확인한 값을 입력하세요.").font(.caption)
                 if !isDepot {
                     NativeTextField("상세주소 · 예: 급식실 출입구", text: $detailAddress).frame(minHeight: 44)
                 }
                 DisclosureGroup("티맵 장소 ID · 알고 있는 경우") {
-                    NativeTextField("티맵 검색 결과의 장소 ID", text: $poiID).frame(minHeight: 44)
+                    NativeTextField("티맵 검색 결과의 장소 ID", text: $poiID).frame(minHeight: 44).disabled(readingLink)
                     Text("선택 입력입니다. 티맵 검색 결과의 ID와 현재 하역 좌표가 같은 장소인지 확인하세요. 네이버 장소 ID는 사용할 수 없습니다. 도착지 ID는 최종 도착 장소에 전달합니다.").font(.caption)
                 }
                 if let error = error { Text(error).foregroundColor(.red) }
@@ -439,13 +466,14 @@ struct TMapLocationEditor: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("취소") { inputs.finishEditing(); dismiss() } }
                     ToolbarItem(placement: .confirmationAction) { Button("저장") {
+                        guard !readingLink else { return }
                         inputs.finishEditing()
                         guard let lon = Double(longitude), let lat = Double(latitude), lon.isFinite, lat.isFinite, (124...132).contains(lon), (32...40).contains(lat) else { error = "경도 124~132, 위도 32~40 범위인지 확인해 주세요."; return }
                         let pointID = poiID.trimmingCharacters(in: .whitespacesAndNewlines)
                         let address = detailAddress.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard pointID.utf16.count <= 128, pointID.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.union(.controlCharacters)) == nil, address.utf16.count <= 1000, address.rangeOfCharacter(from: .controlCharacters) == nil else { error = "장소 ID는 공백 없이 128자 이하, 상세주소는 한 줄로 1000자 이하인지 확인해 주세요."; return }
                         save(TMapCoordinate(longitude: lon, latitude: lat, poiID: pointID.isEmpty ? nil : pointID, detailAddress: address.isEmpty ? nil : address)); dismiss()
-                    } }
+                    }.disabled(readingLink) }
                 }
                 .onAppear {
                     if let coordinate = coordinate { longitude = String(coordinate.longitude); latitude = String(coordinate.latitude); poiID = coordinate.poiID ?? ""; detailAddress = coordinate.detailAddress ?? "" }

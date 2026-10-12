@@ -35,17 +35,22 @@ struct NativeTextField: UIViewRepresentable {
     var alignment: NSTextAlignment = .natural
     var digitsOnly = false
     var secure = false
+    var returnKey: UIReturnKeyType = .done
+    var onSubmit: (() -> Void)?
     var onEditingChanged: (Bool) -> Void = { _ in }
     @EnvironmentObject private var inputs: NativeInputSession
+    @Environment(\.isEnabled) private var isEnabled
 
     init(_ title: String, text: Binding<String>, keyboard: UIKeyboardType = .default,
          alignment: NSTextAlignment = .natural, digitsOnly: Bool = false, secure: Bool = false,
+         returnKey: UIReturnKeyType = .done, onSubmit: (() -> Void)? = nil,
          onEditingChanged: @escaping (Bool) -> Void = { _ in }) {
         self.title = title
         self._text = text
         self.keyboard = keyboard
         self.alignment = alignment
         self.digitsOnly = digitsOnly; self.secure = secure
+        self.returnKey = returnKey; self.onSubmit = onSubmit
         self.onEditingChanged = onEditingChanged
     }
 
@@ -62,7 +67,8 @@ struct NativeTextField: UIViewRepresentable {
         field.spellCheckingType = .no
         field.smartQuotesType = .no
         field.smartDashesType = .no
-        field.returnKeyType = .done
+        field.returnKeyType = returnKey
+        field.isEnabled = isEnabled
         field.clearButtonMode = .whileEditing
         field.font = .preferredFont(forTextStyle: .body)
         field.adjustsFontForContentSizeCategory = true
@@ -76,6 +82,8 @@ struct NativeTextField: UIViewRepresentable {
 
     func updateUIView(_ field: DeliveryTextField, context: Context) {
         context.coordinator.parent = self
+        field.isEnabled = isEnabled
+        field.returnKeyType = returnKey
         // Same guard as the working address field: a redraw does not replace
         // marked text or reset the cursor when the value hasn't changed.
         if field.markedTextRange == nil, field.text != text { field.text = text }
@@ -99,7 +107,11 @@ struct NativeTextField: UIViewRepresentable {
         }
 
         func textFieldShouldReturn(_ field: UITextField) -> Bool {
+            // Commit Korean marked text before the search callback reads its binding.
+            field.unmarkText()
+            changed(field)
             field.resignFirstResponder()
+            parent.onSubmit?()
             return true
         }
 

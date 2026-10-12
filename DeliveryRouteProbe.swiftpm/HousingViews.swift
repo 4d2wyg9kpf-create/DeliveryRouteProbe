@@ -30,6 +30,14 @@ struct HousingCatalogView: View {
     @State private var error: String?
     private let client = RealtyHousingClient()
     private var regionCode: String { sido + district + dong }
+    private var selectedCollectionScope: HousingCollectionScope? {
+        guard let s = sidos.first(where: { $0.code == sido }) else { return nil }
+        guard !district.isEmpty else { return .province(s) }
+        guard let g = districts.first(where: { $0.code == district }) else { return nil }
+        guard !dong.isEmpty else { return .district(s, g) }
+        guard let d = dongs.first(where: { $0.code == dong }) else { return nil }
+        return .dong(s, g, d)
+    }
     private var filtered: [HousingComplex] {
         store.complexes.filter { item in
             (dong.isEmpty || item.regionCode == regionCode || item.originals.contains { $0.regionCode == regionCode }) && (keyword.isEmpty || item.searchText.localizedCaseInsensitiveContains(keyword))
@@ -47,12 +55,18 @@ struct HousingCatalogView: View {
             }
             Section("원본 수집 · 공유") {
                 NavigationLink("K-apt 정보 수집·단지 통합") { HousingIntegrationView(regionCode:dong.isEmpty ? "" : regionCode) }.disabled(store.isBusy)
-                Button("선택 법정동 신규단지 목록 확인") { collect(details: false) }.disabled(dong.isEmpty || store.isBusy)
-                Button("선택 법정동 신규단지 추가·상세 수집") { collect(details:true) }.disabled(dong.isEmpty || store.isBusy)
-                Button("선택 법정동 미완료 상세 수집 이어서") { collect(details:true,refresh:false) }.disabled(dong.isEmpty || store.isBusy)
+                Button("\(selectedCollectionScope?.buttonPrefix ?? "선택 지역") 신규단지 목록 확인") { collect(details: false) }.disabled(selectedCollectionScope == nil || store.isBusy)
+                Button("\(selectedCollectionScope?.buttonPrefix ?? "선택 지역") 신규단지 추가·미완료 상세 수집") { collect(details: true) }.disabled(selectedCollectionScope == nil || store.isBusy)
                 Button("전국 신규단지 추가·미완료 상세 수집") { collectNational() }.disabled(store.isBusy)
                 Text("모바일 목록을 확인해 신규 단지를 추가하고 상세 미완료 항목만 수집합니다. 공시 연도가 바뀌어도 기존 상세와 사용자 수정·통합은 유지합니다. 전체 목록 저장에는 2,000건 제한이 없으며, 기존 단지의 최신 상세는 단지 화면에서 직접 수집하세요.").font(.caption).foregroundStyle(.secondary)
-                if store.isBusy { ProgressView(); Text(store.progress).font(.caption); Button("수집 중단") { job?.cancel() } }
+                if let progress = store.collectionProgress {
+                    if store.isBusy {
+                        if let fraction = progress.fraction { ProgressView(value: fraction) } else { ProgressView() }
+                    }
+                    Text(progress.text).font(.caption)
+                } else if store.isBusy { ProgressView(); Text(store.progress).font(.caption) }
+                if store.isBusy { Button("수집 중단") { job?.cancel() } }
+                Text("시도만 선택하면 해당 시도 전체, 시군구까지만 선택하면 해당 시군구 전체를 수집합니다. 상세 수집은 새 단지와 미완료 단지만 처리합니다.").font(.caption).foregroundStyle(.secondary)
                 NavigationLink("기기 간 공유 폴더 설정") { DeviceSharingSettingsView() }
                 Button("JSON 자료 가져오기") { importing = true }.disabled(store.isBusy)
                 Button("보관 자료·사용자 수정 JSON 내보내기") {
@@ -130,58 +144,40 @@ struct HousingCatalogView: View {
             .fileExporter(isPresented: $exporting, document: document, contentType: document.text.hasPrefix("{") ? .json : .commaSeparatedText, defaultFilename: "공동주택자료") { result in if case .failure(let failure) = result { error = failure.localizedDescription } }
             .onDisappear { job?.cancel() }
     }
-    private func collect(details: Bool, refresh: Bool = true) {
-        guard let s = sidos.first(where: { $0.code == sido }), let g = districts.first(where: { $0.code == district }), let d = dongs.first(where: { $0.code == dong }) else { return }
-        start { try await DeviceShareHooks.prepareRequest(); try await collectRegion(s, g, d, details: details, refresh: refresh) }
+    private func collect(details: Bool) {
+        guard let scope = selectedCollectionScope else { return }
+        start(scope: scope, details: details)
     }
-    private func start(_ operation: @escaping () async throws -> Void) {
-        store.isBusy = true; error = nil
+    private func start(scope: HousingCollectionScope, details: Bool) {
+        guard !store.isBusy else { return }
+        store.isBusy = true; error = nil; store.errorMessage = nil
+        store.collectionProgress = HousingCollectionProgress(scopeTitle: scope.title, includesDetails: details)
+        store.progress = store.collectionProgress!.text
         job = Task {
             defer { store.isBusy = false; job = nil }
-            do { try await operation(); store.progress = "수집 자료를 저장했습니다." }
-            catch is CancellationError { store.progress = "중단했습니다. 완료된 자료에서 이어서 수집할 수 있습니다." }
-            catch { self.error = error.localizedDescription }
-        }
-    }
-    private func collectRegion(_ s: HousingArea, _ g: HousingArea, _ d: HousingArea, details: Bool, refresh: Bool) async throws {
-        let code = s.code + g.code + d.code
-        var region: HousingRegion
-        if !refresh, store.regions.contains(where: { $0.code == code }) { region = try store.originalRegion(code) }
-        else { store.progress = "\(s.name) \(g.name) \(d.name) 목록 수집"; region = try await client.list(sido: s, sigungu: g, dong: d); try store.importRegion(region); region = try store.originalRegion(code) }
-        guard details else { return }
-        defer { try? store.shareRegion(code) }
-        let missingIDs = region.missingDetailIDs
-        for id in missingIDs {
-            try Task.checkCancellation()
-            region = try store.originalRegion(code)
-            guard let index = region.records.firstIndex(where: { $0.id == id }) else { continue }
-            if region.records[index].detailAt != nil { continue }
-            store.progress = "\(region.title) · 상세 \(index+1)/\(region.records.count)"
             do {
-                if region.records[index].detailAt == nil { region.records[index] = try await client.detail(region.records[index]) }
-                if region.records[index].fields["roadAddress", default: ""].isEmpty, KakaoRouteStore.shared.settings.mapFreeConfirmed, !KakaoRouteStore.shared.settings.key.isEmpty {
-                    do { if let road = try await KakaoRouteStore.shared.roadAddress(for: region.records[index]) { region.records[index].fields["roadAddress"] = road; region.records[index].issues.removeAll { $0.contains("도로명주소") } } } catch is CancellationError { throw CancellationError() } catch { region.records[index].issues.append("주소 변환: " + error.localizedDescription) }
+                try await DeviceShareHooks.prepareRequest()
+                let targets = try await HousingCollectionTargets.resolve(scope, client: client) { count in
+                    store.updateCollectionProgress { $0.discovered(count) }
                 }
-            } catch is CancellationError { throw CancellationError() } catch { region.records[index].issues = [error.localizedDescription] }
-            region.generation = max(Date().timeIntervalSince1970 * 1000,region.generation + 1); try store.importRegion(region, share: false)
-            try await Task.sleep(nanoseconds: 500_000_000)
-        }
-    }
-    private func collectNational() {
-        start {
-            try await DeviceShareHooks.prepareRequest()
-            for s in try await client.areas() {
-                for g in try await client.areas(sido: s.code) {
-                    for d in try await client.areas(sido: s.code, sigungu: g.code) {
-                        try Task.checkCancellation()
-                        do { try await collectRegion(s, g, d, details: true, refresh: true) }
-                        catch is CancellationError { throw CancellationError() }
-                        catch { store.errorMessage = "\(s.name) \(g.name) \(d.name): " + error.localizedDescription }
+                store.updateCollectionProgress { $0.setTargets(targets.map(\.id)) }
+                for target in targets {
+                    try Task.checkCancellation()
+                    do {
+                        let completed = try await store.collectRealtyRegion(target, details: details, client: client)
+                        store.updateCollectionProgress { $0.regionFinished(successful: completed) }
+                    } catch is CancellationError { throw CancellationError() }
+                    catch {
+                        store.updateCollectionProgress { $0.regionFinished(successful: false) }
+                        store.errorMessage = target.title + ": " + error.localizedDescription
                     }
                 }
-            }
+                store.updateCollectionProgress { $0.finish() }
+            } catch is CancellationError { store.updateCollectionProgress { $0.stop() } }
+            catch { self.error = error.localizedDescription; store.updateCollectionProgress { $0.fail() } }
         }
     }
+    private func collectNational() { start(scope: .nationwide, details: true) }
 }
 struct HousingExport: Codable { var version = 1; var regions: [HousingRegion]; var edits: [HousingEdit] }
 struct HousingComplexView: View {

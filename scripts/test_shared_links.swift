@@ -35,15 +35,17 @@ private func siteURL(_ longitude: String = "127.4000001", name: String = "가상
     var body = Data()
     var next: ((URLRequest) throws -> String)?
     var cancelled = false
-    func resolve(_ text: String = "[네이버지도]\n무시할 주소 999\nhttps://naver.me/fixture1") async throws -> NaverSharedLinkResolver.Result {
-        let resolver = NaverSharedLinkResolver { request in
+    func resolver() -> NaverSharedLinkResolver {
+        NaverSharedLinkResolver { request in
             self.requests.append(request)
             if self.cancelled { throw CancellationError() }
             let location = try self.next?(request) ?? self.location
             return (self.body, HTTPURLResponse(url: self.responseURL ?? request.url!, statusCode: self.status,
                 httpVersion: "HTTP/1.1", headerFields: ["Location": location])!)
         }
-        return try await resolver.resolve(NaverSharedLink.parse(text))
+    }
+    func resolve(_ text: String = "[네이버지도]\n무시할 주소 999\nhttps://naver.me/fixture1") async throws -> NaverSharedLinkResolver.Result {
+        try await resolver().resolve(NaverSharedLink.parse(text))
     }
     func pin(_ text: String = "https://naver.me/fixture1") async throws -> NaverPlaceCapture {
         guard case .pin(let value) = try await resolve(text) else { throw PlannerFailure.message("expected selected pin") }
@@ -214,6 +216,47 @@ private func siteURL(_ longitude: String = "127.4000001", name: String = "가상
             let first = try JSONSerialization.jsonObject(with: JSONEncoder().encode(copy)), second = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fresh))
             let check = try NaverPlaceBridge.call("sameSelection", ["capture": first, "fresh": second, "useCoordinate": true], as: NaverPlaceSelectionCheck.self)
             try require(copy.address == address && fresh.address == address && check.same && copy.matchesSelection(fresh), "building metadata did not round-trip")
+        }
+        await test("coordinate editing retains all response precision and ignores a front address") {
+            let f = Fixture(); f.location = pinURL("127.400000123456").absoluteString
+            guard case .coordinate(let point) = try await f.resolver().resolveCoordinate("[네이버지도]\n대전 중구 다른로 999\nhttps://naver.me/fixture1") else { throw PlannerFailure.message("expected point") }
+            try require(point.longitude == 127.400000123456 && point.latitude == 36.3000001, "link precision or front-address substitution")
+            try require(f.requests.count == 1, "unnecessary coordinate lookup")
+        }
+        await test("coordinate editing keeps two selected points with the same address distinct") {
+            let f = Fixture()
+            guard case .coordinate(let first) = try await f.resolver().resolveCoordinate(pinURL("127.4000001").absoluteString),
+                  case .coordinate(let second) = try await f.resolver().resolveCoordinate(pinURL("127.4009009").absoluteString) else { throw PlannerFailure.message("expected points") }
+            try require(first.longitude != second.longitude && f.requests.isEmpty, "same address merged or geocoded")
+        }
+        await test("coordinate editing passes a registered-place ID to the exact selected-place reader") {
+            let f = Fixture()
+            guard case .place(let target, let original) = try await f.resolver().resolveCoordinate("https://m.place.naver.com/restaurant/123456789/home") else { throw PlannerFailure.message("expected selected-place reader") }
+            try require(target.kind == .place("123456789") && original == "https://map.naver.com/p/entry/place/123456789" && f.requests.isEmpty, "place identity changed")
+        }
+        await test("coordinate editing rejects direct and shortened saved folders without importing any record") {
+            let f = Fixture()
+            do { _ = try await f.resolver().resolveCoordinate("https://map.naver.com/p/favorite/myPlace/folder/fixture"); throw PlannerFailure.message("accepted folder") }
+            catch { try require(error.localizedDescription.contains("지점 하나"), "unexpected folder error") }
+            try require(f.requests.isEmpty, "direct folder requested")
+            f.location = "https://map.naver.com/p/favorite/myPlace/folder/fixture"
+            do { _ = try await f.resolver().resolveCoordinate("https://naver.me/fixture1"); throw PlannerFailure.message("accepted shortened folder") }
+            catch { try require(error.localizedDescription.contains("지점 하나"), "unexpected shortened-folder error") }
+            try require(f.requests.count == 1, "followed folder into a list")
+        }
+        await test("coordinate editing rejects multiple links and an arbitrary map center") {
+            let f = Fixture()
+            for text in ["https://naver.me/fixture1 https://naver.me/fixture2", "https://map.naver.com/p/?c=127.4,36.3,15"] {
+                var rejected = false
+                do { _ = try await f.resolver().resolveCoordinate(text) } catch { rejected = true }
+                try require(rejected, "accepted ambiguous coordinate")
+            }
+            try require(f.requests.isEmpty, "requested ambiguous link")
+        }
+        await test("coordinate editing retains cancellation instead of returning a replacement coordinate") {
+            let f = Fixture(); f.cancelled = true
+            do { _ = try await f.resolver().resolveCoordinate("https://naver.me/fixture1"); throw PlannerFailure.message("ignored cancellation") }
+            catch is CancellationError { }
         }
         print(String(decoding: try! JSONSerialization.data(withJSONObject: ["passed": checks.filter { $0["passed"] as? Bool == true }.count, "total": checks.count, "checks": checks], options: [.sortedKeys]), as: UTF8.self))
         if checks.contains(where: { $0["passed"] as? Bool != true }) { exit(1) }

@@ -8,6 +8,7 @@ final class HousingStore: ObservableObject {
     @Published private(set) var complexes: [HousingComplex] = []
     @Published var errorMessage: String?
     @Published var progress = ""
+    @Published var collectionProgress: HousingCollectionProgress?
     @Published var isBusy = false
     @Published private(set) var hasAddressKey = false
     private var addressKey = ""
@@ -93,6 +94,51 @@ final class HousingStore: ObservableObject {
         if share { ready.insert(region.code); try DeviceShareHooks.changed() } else { ready.remove(region.code) }
     }
     func shareRegion(_ code: String) throws { ready.insert(code); try DeviceShareHooks.changed() }
+    func updateCollectionProgress(_ update: (inout HousingCollectionProgress) -> Void) {
+        guard var value = collectionProgress else { return }
+        update(&value); collectionProgress = value; progress = value.text
+    }
+    func collectRealtyRegion(_ target: HousingCollectionTarget, details: Bool,
+                             client: any RealtyHousingCollecting) async throws -> Bool {
+        let code = target.id
+        updateCollectionProgress { $0.beginRegion(id: code, title: target.title) }
+        try Task.checkCancellation()
+        let listed = try await client.list(sido: target.sido, sigungu: target.sigungu, dong: target.dong)
+        try Task.checkCancellation(); try importRegion(listed)
+        guard details else { return true }
+        defer { try? shareRegion(code) }
+        var region = try originalRegion(code)
+        let missingIDs = region.missingDetailIDs
+        updateCollectionProgress { $0.beginDetails(ids: missingIDs, previouslyCompleted: region.detailCount) }
+        for id in missingIDs {
+            try Task.checkCancellation(); region = try originalRegion(code)
+            guard let index = region.records.firstIndex(where: { $0.id == id }) else {
+                updateCollectionProgress { $0.detailFinished(id, successful: false) }; continue
+            }
+            if region.records[index].detailAt != nil {
+                updateCollectionProgress { $0.detailFinished(id, successful: true) }; continue
+            }
+            do {
+                region.records[index] = try await client.detail(region.records[index])
+                if region.records[index].fields["roadAddress", default: ""].isEmpty, KakaoRouteStore.shared.settings.mapFreeConfirmed, !KakaoRouteStore.shared.settings.key.isEmpty {
+                    do { if let road = try await KakaoRouteStore.shared.roadAddress(for: region.records[index]) { region.records[index].fields["roadAddress"] = road; region.records[index].issues.removeAll { $0.contains("도로명주소") } } }
+                    catch is CancellationError { throw CancellationError() }
+                    catch { region.records[index].issues.append("주소 변환: " + error.localizedDescription) }
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { region.records[index].issues = [error.localizedDescription] }
+            try Task.checkCancellation()
+            region.generation = max(Date().timeIntervalSince1970 * 1000, region.generation + 1)
+            try importRegion(region, share: false)
+            updateCollectionProgress { $0.detailFinished(id, successful: region.records[index].detailAt != nil) }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+        let completed = Set(try originalRegion(code).records.filter { $0.detailAt != nil }.map(\.id))
+        updateCollectionProgress { value in
+            for id in missingIDs where completed.contains(id) { value.detailFinished(id, successful: true) }
+        }
+        return missingIDs.allSatisfy(completed.contains)
+    }
     func edit(_ complex: HousingComplex, fields: [String: String], coordinate: TMapCoordinate? = nil) throws {
         var next = edits; let index = next.firstIndex { $0.id == complex.id }
         var value = index.map { next[$0] } ?? HousingEdit(id: complex.id, sourceIDs: complex.sourceIDs, regionCode: complex.regionCode)

@@ -20,14 +20,16 @@ struct NaverSearchScreen: View {
     @State private var showCustomers = false
     @State private var message = ""
     @State private var error: String?
+    @State private var submitting = false
     private var importing: Bool { browser.isOpeningSharedLink || browser.isImportingSavedList || browser.waitingForSavedFolder || browser.isReadingPlace }
+    private var searchBusy: Bool { submitting || api.isBusy || importing }
     var body: some View {
         NavigationStack {
             Form {
                 Section("가져온 장소를 저장할 곳") {
                     Picker("저장 목록", selection: $destination) {
                         ForEach(NaverImportDestination.allCases) { Text($0.title).tag($0) }
-                    }.disabled(importing || api.isBusy)
+                    }.disabled(searchBusy)
                     Text("거래처 \(customers.records.count)곳 · 평가대상지 \(sites.records.count)곳").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("장소 이름 · 주소 · 좌표 가져오기") {
@@ -35,20 +37,20 @@ struct NaverSearchScreen: View {
                         Text("검색어").tag(0)
                         Text("주소").tag(1)
                         Text("공유 링크").tag(2)
-                    }.pickerStyle(.segmented).disabled(importing || api.isBusy)
+                    }.pickerStyle(.segmented).disabled(searchBusy)
                     if mode == 0 {
-                        NativeTextField("업체명 · 지역을 함께 입력하세요", text: $query).frame(minHeight: 44)
+                        NativeTextField("업체명 · 지역을 함께 입력하세요", text: $query, returnKey: .search, onSubmit: search).frame(minHeight: 44)
                     } else if mode == 1 {
                         NativeTextField("장소 이름 · 선택 사항", text: $name).frame(minHeight: 44)
-                        NativeTextField("전체 주소 · 예: 대전 중구 유천로 35", text: $address).frame(minHeight: 44)
+                        NativeTextField("전체 주소 · 예: 대전 중구 유천로 35", text: $address, returnKey: .search, onSubmit: search).frame(minHeight: 44)
                     } else {
-                        NativeTextField("네이버지도 장소·목록 공유 링크", text: $sharedLink, keyboard: .URL).frame(minHeight: 44)
+                        NativeTextField("네이버지도 장소·목록 공유 링크", text: $sharedLink, keyboard: .URL, returnKey: .go, onSubmit: search).frame(minHeight: 44)
                         PasteButton(payloadType: String.self) { values in sharedLink = values.first ?? "" }
                         Text("네이버지도의 공유문 전체를 붙여넣으세요. 주소·업체 핀은 링크 응답의 선택 좌표를 읽습니다. 업체 주소가 응답에 없으면 공유문에 적힌 주소를 함께 보관합니다. 좌표 없는 장소 링크·저장 목록은 웹 화면을 열어 확인합니다.").font(.caption).foregroundStyle(.secondary)
                     }
-                    Button(api.isBusy || importing ? "처리 중…" : mode == 0 ? "네이버 검색" : mode == 1 ? "주소 → 좌표 변환" : "공유 링크 가져오기") { search() }
+                    Button(searchBusy ? "처리 중…" : mode == 0 ? "네이버 검색" : mode == 1 ? "주소 → 좌표 변환" : "공유 링크 가져오기") { search() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(api.isBusy || importing || enteredText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(searchBusy || enteredText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if mode != 2 {
                         Text(mode == 0 ? "검색은 최대 5곳을 반환합니다. 원하는 지점이 없으면 업체명에 지역을 더하거나 주소로 변환하세요." : "Maps Geocoding으로 주소에 맞는 좌표를 가져옵니다. 지도 화면을 띄울 필요가 없습니다.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -117,14 +119,18 @@ struct NaverSearchScreen: View {
     }
     private var enteredText: String { mode == 0 ? query : mode == 1 ? address : sharedLink }
     private func search() {
-        inputs.finishEditing(); error = nil; message = ""; results = []
+        inputs.finishEditing()
+        guard !searchBusy, !enteredText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        error = nil; message = ""; results = []
         if mode == 2 {
             do { try browser.openSharedLink(sharedLink, customers: customers, sites: sites, destination: destination) }
             catch { self.error = error.localizedDescription }
             return
         }
         let chosenMode = mode, searchQuery = query, enteredAddress = address, enteredName = name
+        submitting = true
         Task {
+            defer { submitting = false }
             do {
                 if chosenMode == 0 {
                     let found = try await api.search(searchQuery)

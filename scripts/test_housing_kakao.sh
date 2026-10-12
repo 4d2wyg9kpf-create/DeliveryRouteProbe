@@ -10,6 +10,7 @@ swiftc -parse-as-library \
   DeliveryRouteProbe.swiftpm/KakaoDistanceArchive.swift \
   DeliveryRouteProbe.swiftpm/KakaoRouteStore.swift \
   DeliveryRouteProbe.swiftpm/HousingModels.swift \
+  DeliveryRouteProbe.swiftpm/HousingCollection.swift \
   DeliveryRouteProbe.swiftpm/HousingConsolidation.swift \
   DeliveryRouteProbe.swiftpm/KaptGateway.swift \
   DeliveryRouteProbe.swiftpm/KaptHousingClient.swift \

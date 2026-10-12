@@ -1,7 +1,7 @@
 import Foundation
 
 // The mobile page's own JSON/form endpoints. No browser or WebView is opened.
-struct RealtyHousingClient {
+struct RealtyHousingClient: RealtyHousingCollecting {
     private let session: URLSession
     init() {
         let c = URLSessionConfiguration.ephemeral; c.urlCache = nil; c.timeoutIntervalForRequest = 30; c.timeoutIntervalForResource = 45

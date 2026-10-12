@@ -5,10 +5,32 @@ import Foundation
 @MainActor
 struct NaverSharedLinkResolver {
     enum Result { case pin(NaverPlaceCapture), web(NaverSharedLink.Target) }
+    enum CoordinateResult { case coordinate(TMapCoordinate), place(NaverSharedLink.Target, originalURL: String) }
     typealias Transport = (URLRequest) async throws -> (Data, HTTPURLResponse)
     private let transport: Transport
 
     init(transport: Transport? = nil) { self.transport = transport ?? Self.request }
+
+    func resolveCoordinate(_ text: String) async throws -> CoordinateResult {
+        let target = try NaverSharedLink.parse(text)
+        // Coordinate editing never imports a saved folder or changes names/addresses.
+        if case .folder = target.kind {
+            throw PlannerFailure.message("목록 대신 수정할 지점 하나의 네이버지도 공유 링크를 붙여넣어 주세요.")
+        }
+        switch try await resolve(target) {
+        case .pin(let capture):
+            guard let point = capture.coordinate, point.longitude.isFinite, point.latitude.isFinite,
+                  (124...132).contains(point.longitude), (32...40).contains(point.latitude) else {
+                throw PlannerFailure.message("링크에서 국내 지점의 좌표를 확인하지 못했습니다.")
+            }
+            return .coordinate(point)
+        case .web(let resolved):
+            guard case .place = resolved.kind else {
+                throw PlannerFailure.message("목록 대신 수정할 지점 하나의 네이버지도 공유 링크를 붙여넣어 주세요.")
+            }
+            return .place(resolved, originalURL: target.url.absoluteString)
+        }
+    }
 
     func resolve(_ target: NaverSharedLink.Target) async throws -> Result {
         let original = target.url.absoluteString
