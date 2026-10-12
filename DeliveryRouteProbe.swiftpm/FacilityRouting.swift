@@ -128,7 +128,7 @@ enum FacilityRouteRecords {
         }
     }
     static func naver(_ body: [String: Any], request: FacilityRouteRequest, now: Date = Date()) throws -> [KakaoDistanceRecord] {
-        guard body["code"] as? Int == 0, let route = body["route"] as? [String: Any], let rows = route[request.criterion.naverOption] as? [[String: Any]], !rows.isEmpty else { throw PlannerFailure.message(body["message"] as? String ?? "네이버 자동차 경로가 없습니다.") }
+        guard request.provider == .naverAPI, request.transport == .car, request.departure == nil, let code = body["code"] as? NSNumber, CFGetTypeID(code) != CFBooleanGetTypeID(), code.doubleValue == 0, let route = body["route"] as? [String: Any], let rows = route[request.criterion.naverOption] as? [[String: Any]], !rows.isEmpty else { throw PlannerFailure.message(body["message"] as? String ?? "네이버 자동차 경로가 없습니다.") }
         func integer(_ value: Any?) -> Int? {
             guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite, n.doubleValue.rounded() == n.doubleValue, (0...100_000_000).contains(n.doubleValue) else { return nil }; return n.intValue
         }

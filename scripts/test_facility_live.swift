@@ -30,7 +30,7 @@ enum PlannerFailure:LocalizedError {case message(String);var errorDescription:St
                     guard !rows.isEmpty,rows.allSatisfy({$0.durationSeconds != nil && $0.provider == provider.rawValue && (mode != .car || $0.departureTime == KakaoRouteAPI.departure(date) && $0.timeBasis == "scheduled")}) else {throw PlannerFailure.message("unverified result")}
                     let item:[String:Any]=["provider":provider.rawValue,"mode":mode.rawValue,"viewportWidth":width,"passed":true,"rows":rows.count,"distanceMeters":rows.first!.distanceMeters as Any? ?? NSNull(),"durationSeconds":rows.first!.durationSeconds!,"timeBasis":rows.first!.timeBasis ?? "", "departure":rows.first!.departureTime ?? "", "url":rows.first!.landingURL ?? "", "summary":rows.first!.rawSummary ?? ""]
                     cases.append(item);print("LIVE_ROUTE_PASS \(provider.rawValue) \(mode.rawValue) \(rows.count) rows")
-                } catch {cases.append(["provider":provider.rawValue,"mode":mode.rawValue,"viewportWidth":width,"passed":false,"error":error.localizedDescription,"lastMessage":runner.message,"url":runner.webView?.url?.absoluteString ?? ""]);print("LIVE_ROUTE_FAIL \(provider.rawValue) \(mode.rawValue): \(error.localizedDescription) / \(runner.message)")}
+                } catch {cases.append(["provider":provider.rawValue,"mode":mode.rawValue,"viewportWidth":width,"passed":false,"error":error.localizedDescription,"lastMessage":runner.message,"url":runner.webView?.url?.absoluteString ?? "", "navigationURL":runner.lastNavigationURL]);print("LIVE_ROUTE_FAIL \(provider.rawValue) \(mode.rawValue): \(error.localizedDescription) / \(runner.message)")}
                 runner.webView?.removeFromSuperview()
             }
         }

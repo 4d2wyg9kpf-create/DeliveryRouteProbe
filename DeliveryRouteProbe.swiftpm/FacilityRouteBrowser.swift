@@ -8,15 +8,17 @@ final class FacilityRouteWebRunner: NSObject, ObservableObject, WKNavigationDele
     @Published private(set) var webView: WKWebView?
     @Published private(set) var message = "웹 경로를 자동으로 조회합니다."
     @Published private(set) var desktop = false
+    private(set) var lastNavigationURL = ""
     private var activeID: String?
     private var navigationError: Error?
+    private var upgradedNavigation = false
     private var allowedHosts = Set<String>()
 
     func query(_ request: FacilityRouteRequest) async throws -> [KakaoDistanceRecord] {
         try request.validate()
         guard activeID == nil else { throw PlannerFailure.message("웹 조회가 이미 진행 중입니다.") }
         try Task.checkCancellation()
-        activeID = request.id; navigationError = nil; desktop = request.transport == .car
+        activeID = request.id; navigationError = nil; upgradedNavigation = false; desktop = request.transport == .car
         allowedHosts = request.provider == .naverWeb ? ["map.naver.com", "m.map.naver.com", "m.search.naver.com"] : ["map.kakao.com", "m.map.kakao.com"]
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -64,14 +66,28 @@ final class FacilityRouteWebRunner: NSObject, ObservableObject, WKNavigationDele
     }
     func cancel() { activeID = nil; webView?.stopLoading(); message = "웹 조회를 중단했습니다." }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let url = navigationAction.request.url, ["https", "about"].contains(url.scheme ?? "") else { decisionHandler(.cancel); return }
+        guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
+        if navigationAction.targetFrame?.isMainFrame != false { lastNavigationURL = url.absoluteString }
+        if url.scheme == "http", allowedHosts.contains(url.host ?? ""), navigationAction.targetFrame?.isMainFrame != false,
+           var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            parts.scheme = "https"
+            if let upgraded = parts.url {
+                upgradedNavigation = true; decisionHandler(.cancel)
+                webView.load(URLRequest(url: upgraded, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 45)); return
+            }
+        }
+        guard ["https", "about"].contains(url.scheme ?? "") else { decisionHandler(.cancel); return }
         if navigationAction.targetFrame?.isMainFrame != false, url.scheme == "https", !allowedHosts.contains(url.host ?? "") {
             navigationError = PlannerFailure.message("길찾기 화면이 공식 지도 경로를 벗어나 중단했습니다."); decisionHandler(.cancel); return
         }
         decisionHandler(.allow)
     }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if (error as NSError).code != NSURLErrorCancelled { navigationError = error } }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { if (error as NSError).code != NSURLErrorCancelled { navigationError = error } }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if !ignorableNavigationError(error) { navigationError = error } }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { if !ignorableNavigationError(error) { navigationError = error } }
+    private func ignorableNavigationError(_ error: Error) -> Bool {
+        let e = error as NSError
+        return e.code == NSURLErrorCancelled || (upgradedNavigation && e.domain == WKError.errorDomain && e.code == 102)
+    }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { navigationError = PlannerFailure.message("지도 웹 문서가 종료되었습니다. 이 구간을 다시 조회하세요.") }
 }
 

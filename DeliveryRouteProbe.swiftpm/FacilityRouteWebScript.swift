@@ -144,7 +144,7 @@ enum FacilityRouteWebScript {
         if(seconds==null) return pending('미래 예상시간을 기다립니다.');
         return ready([{label:chosen.label+' · 미래 예상',distanceMeters:null,referenceDistanceMeters:chosen.distanceMeters,durationSeconds:seconds,raw:value+' / '+text(dialog.querySelector('.later_depature_time_text'))+' / 현재 경로 참고 거리 '+chosen.distanceMeters+'m'}],request,state,{departureKey:d.key});
       }
-      function kakaoIdentity(url,request,state,mobile) {
+      function kakaoIdentity(url,request,state,mobile,checkMode=true) {
         const q=url.searchParams, names=mobile?['startLoc','endLoc']:['rt1','rt2'];
         if(tidy(q.get(names[0]))!==tidy(request.origin.name)||tidy(q.get(names[1]))!==tidy(request.destination.name)) return false;
         const coordinates=mobile?['sxEnc','syEnc','exEnc','eyEnc'].map(k=>q.get(k)):[q.get('rt')];
@@ -156,12 +156,19 @@ enum FacilityRouteWebScript {
         if(mobile) {
           const form=document.querySelector('#routeSearchForm');if(!form) return false;
           if(!['startLoc','endLoc','sxEnc','syEnc','exEnc','eyEnc'].every(k=>form.elements.namedItem(k)?.value===q.get(k))) return false;
-          return url.pathname===(request.mode==='walk'?'/actions/walkRoute':'/actions/publicRoute');
+          return !checkMode || url.pathname===(request.mode==='walk'?'/actions/walkRoute':'/actions/publicRoute');
         }
         const root=document.getElementById('info.route');
         return root&&tidy(root.querySelector('input[placeholder="출발지 입력"]')?.value)===tidy(request.origin.name)&&tidy(root.querySelector('input[placeholder="도착지 입력"]')?.value)===tidy(request.destination.name);
       }
       function kakaoMobile(request,state,url) {
+        const expectedPath=request.mode==='walk'?'/actions/walkRoute':'/actions/publicRoute';
+        if(['/actions/routeView','/actions/walkRoute','/actions/publicRoute'].includes(url.pathname) && url.pathname!==expectedPath && kakaoIdentity(url,request,state,true,false)) {
+          const wanted=request.mode==='walk'?'도보':'대중교통';
+          const link=all(document.querySelector('main')||document,'a').find(e=>rendered(e)&&(text(e)===wanted||text(e).startsWith(wanted+' 길찾기 결과')));
+          if(click(link,state)) return pending('카카오 모바일 '+wanted+' 경로를 조회합니다.');
+          return pending('카카오 모바일 이동방식 선택을 기다립니다.');
+        }
         if(!kakaoIdentity(url,request,state,true)) return pending('카카오 모바일 출발·도착과 이동방식을 확인합니다.');
         const root=document.querySelector('main')||document;
         if(request.mode==='walk') {

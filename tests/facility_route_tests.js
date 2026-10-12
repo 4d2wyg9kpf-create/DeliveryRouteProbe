@@ -5,6 +5,7 @@ function test(name,body){body();count++;console.log('PASS '+name);}
 test('time units are summed, not concatenated',()=>assert.equal(route.duration('1시간 23분 45초'),5025));
 test('days and minutes keep their units',()=>assert.equal(route.duration('1일 2시간 3분'),93780));
 test('a missing predicted time is not zero',()=>assert.equal(route.duration('-분'),null));
+test('negative duration is invalid',()=>assert.equal(route.duration('-10분'),null));
 test('duplicated total and leg minutes cannot be one duration',()=>assert.equal(route.duration('20분 8분 12분'),null));
 test('kilometers convert to meters without losing decimals',()=>assert.equal(route.distance('1.7km'),1700));
 test('meter grouping separators are understood',()=>assert.equal(route.distance('1,230m'),1230));
