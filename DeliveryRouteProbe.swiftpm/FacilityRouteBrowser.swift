@@ -12,14 +12,16 @@ final class FacilityRouteWebRunner: NSObject, ObservableObject, WKNavigationDele
     private var activeID: String?
     private var navigationError: Error?
     private var upgradedNavigation = false
+    private var appLinkVisited = false
     private var allowedHosts = Set<String>()
 
     func query(_ request: FacilityRouteRequest) async throws -> [KakaoDistanceRecord] {
         try request.validate()
         guard activeID == nil else { throw PlannerFailure.message("웹 조회가 이미 진행 중입니다.") }
         try Task.checkCancellation()
-        activeID = request.id; navigationError = nil; upgradedNavigation = false; desktop = request.transport == .car
+        activeID = request.id; navigationError = nil; upgradedNavigation = false; appLinkVisited = false; desktop = request.transport == .car
         allowedHosts = request.provider == .naverWeb ? ["map.naver.com", "m.map.naver.com", "m.search.naver.com"] : ["map.kakao.com", "m.map.kakao.com"]
+        if request.provider == .kakaoWeb && request.transport != .car { allowedHosts.insert("applink.map.kakao.com") }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.preferredContentMode = desktop ? .desktop : .mobile
@@ -32,13 +34,18 @@ final class FacilityRouteWebRunner: NSObject, ObservableObject, WKNavigationDele
         view.load(URLRequest(url: request.webURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: 45))
         defer { activeID = nil; view.stopLoading() }
         let deadline = ProcessInfo.processInfo.systemUptime + 150
+        var redirectedCoordinates: [String]?
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()
             guard activeID == request.id else { throw CancellationError() }
             if let navigationError { throw navigationError }
             if let url = view.url, url.scheme == "https", allowedHosts.contains(url.host ?? "") {
                 do {
-                    let raw = try await read(view, request: request)
+                    if request.provider == .kakaoWeb, let signature = try redirectCoordinates(url, request: request) {
+                        if let redirectedCoordinates, redirectedCoordinates != signature { throw PlannerFailure.message("카카오 화면의 출발·도착 좌표가 처음 조회한 지점에서 바뀌었습니다.") }
+                        redirectedCoordinates = signature
+                    }
+                    let raw = try await read(view, request: request, redirectedCoordinates: redirectedCoordinates)
                     guard let string = raw as? String, let data = string.data(using: .utf8), data.count <= 1_000_000 else { throw PlannerFailure.message("웹 요약 응답을 읽지 못했습니다.") }
                     let reply = try JSONDecoder().decode(FacilityWebReply.self, from: data)
                     if reply.status == "ready" { try Task.checkCancellation(); message = "출발·도착·이동방식과 결과를 확인했습니다."; return try FacilityRouteRecords.web(reply, request: request) }
@@ -52,14 +59,32 @@ final class FacilityRouteWebRunner: NSObject, ObservableObject, WKNavigationDele
         }
         throw PlannerFailure.message("웹 경로를 150초 안에 확인하지 못했습니다. 결과는 저장하지 않았습니다. 웹 화면을 확인한 뒤 다시 조회하세요.")
     }
-    private func read(_ view: WKWebView, request: FacilityRouteRequest) async throws -> Any {
-        try await withCheckedThrowingContinuation { continuation in
+    private func redirectCoordinates(_ url: URL, request: FacilityRouteRequest) throws -> [String]? {
+        guard let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+        let mobile = request.transport != .car, names = mobile ? ["startLoc", "endLoc"] : ["rt1", "rt2"]
+        let fields = mobile ? ["sxEnc", "syEnc", "exEnc", "eyEnc"] : ["rt"]
+        func one(_ name: String) throws -> String? {
+            let values = q.filter { $0.name == name }
+            guard values.count <= 1 else { throw PlannerFailure.message("카카오 경로의 좌표 표식이 중복되어 판독을 중단했습니다.") }
+            return values.first?.value
+        }
+        guard let first = try one(names[0]), let second = try one(names[1]) else { return nil }
+        func normalized(_ s: String) -> String { s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard normalized(first) == normalized(request.origin.name), normalized(second) == normalized(request.destination.name) else { throw PlannerFailure.message("카카오 화면의 출발·도착 장소가 요청과 다릅니다.") }
+        let values = try fields.compactMap { try one($0) }
+        guard values.count == fields.count, values.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 200 }) else { return nil }
+        return values
+    }
+    private func read(_ view: WKWebView, request: FacilityRouteRequest, redirectedCoordinates: [String]?) async throws -> Any {
+        var arguments = request.scriptArguments
+        if let redirectedCoordinates { arguments["redirectCoordinates"] = redirectedCoordinates }
+        return try await withCheckedThrowingContinuation { continuation in
             var finished = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
                 guard !finished else { return }; finished = true
                 continuation.resume(throwing: PlannerFailure.message("웹 문서의 응답이 멈췄습니다. 이 구간을 다시 조회하세요."))
             }
-            view.callAsyncJavaScript(FacilityRouteWebScript.source + "\nreturn JSON.stringify(DeliveryFacilityWeb.step(request));", arguments: ["request": request.scriptArguments], in: nil, in: .page) { result in
+            view.callAsyncJavaScript(FacilityRouteWebScript.source + "\nreturn JSON.stringify(DeliveryFacilityWeb.step(request));", arguments: ["request": arguments], in: nil, in: .page) { result in
                 guard !finished else { return }; finished = true; continuation.resume(with: result)
             }
         }
@@ -68,6 +93,8 @@ final class FacilityRouteWebRunner: NSObject, ObservableObject, WKNavigationDele
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
         if navigationAction.targetFrame?.isMainFrame != false { lastNavigationURL = url.absoluteString }
+        if url.host == "applink.map.kakao.com", allowedHosts.contains("applink.map.kakao.com") { appLinkVisited = true }
+        if appLinkVisited, ["kakaomap", "daummaps", "intent"].contains(url.scheme ?? "") { upgradedNavigation = true; decisionHandler(.cancel); return }
         if url.scheme == "http", allowedHosts.contains(url.host ?? ""), navigationAction.targetFrame?.isMainFrame != false,
            var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             parts.scheme = "https"
@@ -82,8 +109,8 @@ final class FacilityRouteWebRunner: NSObject, ObservableObject, WKNavigationDele
         }
         decisionHandler(.allow)
     }
-    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if !ignorableNavigationError(error) { navigationError = error } }
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { if !ignorableNavigationError(error) { navigationError = error } }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { if navigationError == nil && !ignorableNavigationError(error) { navigationError = error } }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { if navigationError == nil && !ignorableNavigationError(error) { navigationError = error } }
     private func ignorableNavigationError(_ error: Error) -> Bool {
         let e = error as NSError
         return e.code == NSURLErrorCancelled || (upgradedNavigation && e.domain == WKError.errorDomain && e.code == 102)

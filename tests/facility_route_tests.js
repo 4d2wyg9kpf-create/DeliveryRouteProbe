@@ -20,4 +20,8 @@ function projected(p){return[p.longitude*Math.PI/180*6378137,Math.log(Math.tan(M
 const pc=new URL(`https://map.naver.com/p/directions/${projected(req.origin)}/${projected(req.destination)}/-/car`);
 test('desktop WGS84 route projection is checked independently of pixels',()=>assert(route.naverDesktopIdentity(pc,req)));
 test('desktop route may not drift to another position',()=>assert(!route.naverDesktopIdentity(pc,{...req,origin:{...req.origin,latitude:req.origin.latitude+.0001}})));
+function appLink(r,by='foot'){const u=new URL('https://applink.map.kakao.com/route');for(const [k,v] of Object.entries({sp:r.origin.latitude+','+r.origin.longitude,ep:r.destination.latitude+','+r.destination.longitude,sn:r.origin.name,en:r.destination.name,by}))u.searchParams.set(k,v);return u;}
+test('Kakao app-link handoff preserves WGS84 endpoint order',()=>assert(route.appLinkIdentity(appLink(req),req)));
+test('Kakao app-link mode mismatch is rejected before choosing web',()=>assert(!route.appLinkIdentity(appLink(req,'publictransit'),req)));
+test('Kakao app-link coordinate drift is rejected',()=>{const u=appLink(req);u.searchParams.set('sp','37.5,127');assert(!route.appLinkIdentity(u,req))});
 console.log(`FACILITY_ROUTE_JS_CHECKS ${count}/${count}`);

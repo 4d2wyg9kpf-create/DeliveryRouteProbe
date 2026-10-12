@@ -82,6 +82,10 @@ enum PlannerFailure: LocalizedError { case message(String); var errorDescription
                 try await load(url.url!,width:320)
                 let result=try await reply(r),rows=result["candidates"] as? [[String:Any]] ?? []
                 try check(result["status"] as? String == "ready" && rows.first?["durationSeconds"] as? Int == (mode == .walk ? 5340 : 780),"Kakao mobile \(mode.rawValue) at 320px captures only total time")
+                _ = try await evaluate("const u=new URL(location.href);u.searchParams.set('sxEnc','E');history.replaceState(null,'',u);document.querySelector('#routeSearchForm [name=sxEnc]').value='E';delete window.__DeliveryFacilityRouteState;return JSON.stringify({ok:true});")
+                var frozen = r.scriptArguments; frozen["redirectCoordinates"] = ["A","B","C","D"]
+                let changed = try await evaluate(fixtureSource + "\nreturn JSON.stringify(DeliveryFacilityWeb.step(request));",args:["request":frozen])
+                try check(changed["status"] as? String == "error", "Kakao \(mode.rawValue) coordinates remain frozen after a new document state")
             }
             let date=ISO8601DateFormatter().date(from:"2026-11-01T23:00:00Z")!
             let future=FacilityRouteRequest(provider:.naverWeb,transport:.car,criterion:.distance,origin:origin,destination:destination,departure:date)

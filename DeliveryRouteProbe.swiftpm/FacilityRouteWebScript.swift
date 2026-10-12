@@ -144,13 +144,28 @@ enum FacilityRouteWebScript {
         if(seconds==null) return pending('미래 예상시간을 기다립니다.');
         return ready([{label:chosen.label+' · 미래 예상',distanceMeters:null,referenceDistanceMeters:chosen.distanceMeters,durationSeconds:seconds,raw:value+' / '+text(dialog.querySelector('.later_depature_time_text'))+' / 현재 경로 참고 거리 '+chosen.distanceMeters+'m'}],request,state,{departureKey:d.key});
       }
+      function appLinkIdentity(url,request) {
+        const q=url.searchParams, sp=(q.get('sp')||'').split(',').map(Number), ep=(q.get('ep')||'').split(',').map(Number);
+        return request.mode!=='car' && sp.length===2 && ep.length===2 &&
+          Math.abs(sp[0]-request.origin.latitude)<0.00001 && Math.abs(sp[1]-request.origin.longitude)<0.00001 &&
+          Math.abs(ep[0]-request.destination.latitude)<0.00001 && Math.abs(ep[1]-request.destination.longitude)<0.00001 &&
+          tidy(q.get('sn'))===tidy(request.origin.name) && tidy(q.get('en'))===tidy(request.destination.name) &&
+          q.get('by')===(request.mode==='walk'?'foot':'publictransit');
+      }
+      function kakaoAppLink(request,state,url) {
+        if(!appLinkIdentity(url,request)) return failure('카카오 연결 화면의 출발·도착 좌표 또는 이동방식이 다릅니다.');
+        const webLink=all(document,'a').find(e=>rendered(e)&&/설치.?없이.*지도.?보기|웹.*(?:보기|열기)/.test(text(e))&&(()=>{try{return ['map.kakao.com','m.map.kakao.com'].includes(new URL(e.href).hostname)}catch{return false}})());
+        if(click(webLink,state)) return pending('설치 없이 카카오 모바일 지도에서 경로를 엽니다.');
+        return pending('카카오 연결 화면에서 설치 없이 지도보기 버튼을 기다립니다.');
+      }
       function kakaoIdentity(url,request,state,mobile,checkMode=true) {
         const q=url.searchParams, names=mobile?['startLoc','endLoc']:['rt1','rt2'];
         if(tidy(q.get(names[0]))!==tidy(request.origin.name)||tidy(q.get(names[1]))!==tidy(request.destination.name)) return false;
         const coordinates=mobile?['sxEnc','syEnc','exEnc','eyEnc'].map(k=>q.get(k)):[q.get('rt')];
         if(coordinates.some(v=>!v)||(!mobile&&q.get('target')!=='car')) return false;
         const fingerprint=JSON.stringify(coordinates);
-        if(state.kakaoCoordinates && state.kakaoCoordinates!==fingerprint) return false;
+        if(request.redirectCoordinates && JSON.stringify(request.redirectCoordinates)!==fingerprint) throw Error('처음 조회한 카카오 출발·도착 좌표와 다릅니다.');
+        if(state.kakaoCoordinates && state.kakaoCoordinates!==fingerprint) throw Error('카카오 화면의 좌표가 변경되었습니다.');
         // Fresh WKWebView starts with the official WGS84 link; freeze the provider's redirect coordinates.
         state.kakaoCoordinates=fingerprint;
         if(mobile) {
@@ -243,16 +258,17 @@ enum FacilityRouteWebScript {
         if(!request||!request.id) return failure('조회 식별자가 없습니다.');
         if(location.href==='about:blank' || document.readyState==='loading') return pending('웹 문서를 불러옵니다.');
         const url=new URL(location.href), naver=request.provider==='naverWeb';
-        if(url.protocol!=='https:' || !(naver?['map.naver.com','m.map.naver.com','m.search.naver.com']:['map.kakao.com','m.map.kakao.com']).includes(url.hostname)) return failure('공식 지도 웹 화면이 아닙니다.');
+        if(url.protocol!=='https:' || !(naver?['map.naver.com','m.map.naver.com','m.search.naver.com']:['map.kakao.com','m.map.kakao.com','applink.map.kakao.com']).includes(url.hostname)) return failure('공식 지도 웹 화면이 아닙니다.');
         let state=window.__DeliveryFacilityRouteState;
         if(!state||state.id!==request.id) state=window.__DeliveryFacilityRouteState={id:request.id,lastAction:0,stable:null};
         if(Date.now()-state.lastAction<700) return pending('웹 화면의 변경을 기다립니다.');
         try {
           if(naver) return request.mode==='car'?naverDesktop(request,state,url):url.hostname==='m.search.naver.com'?naverMobile(request,state,url):pending('네이버 모바일 경로 화면으로 이동합니다.');
+          if(url.hostname==='applink.map.kakao.com') return kakaoAppLink(request,state,url);
           return request.mode==='car'?kakaoDesktop(request,state,url):url.hostname==='m.map.kakao.com'?kakaoMobile(request,state,url):pending('카카오 모바일 경로 화면으로 이동합니다.');
         } catch(e) {return failure('웹 결과 형식 확인 실패: '+tidy(e.message));}
       }
-      return {step,duration,distance,mobileNaverIdentity,naverDesktopIdentity};
+      return {step,duration,distance,mobileNaverIdentity,naverDesktopIdentity,appLinkIdentity};
     })();
     if(typeof module!=='undefined') module.exports=DeliveryFacilityWeb;
     """#
