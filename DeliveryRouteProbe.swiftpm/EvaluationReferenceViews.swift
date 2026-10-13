@@ -33,9 +33,16 @@ struct EvaluationReferenceView: View {
                             Text("확정 " + evaluationTimestamp(reference.createdAt)).font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    NavigationLink("이 기준으로 대상별 점수 조회") { EvaluationScoresView(reference: reference) }
+                    NavigationLink("이 기준으로 대상별 점수 조회") { EvaluationScoresView() }
+                    if store.needsReferenceUpdate(sites: sites.records.map(EvaluationSite.init)) {
+                        Text("표준 대상·원자료·평가 조건 변경됨 · 기준 갱신 필요").font(.caption).foregroundStyle(.orange)
+                        Button("기준 갱신·전체 평가지 점수 재계산") {
+                            perform { preview = try store.preview(title: reference.title + " · 갱신", sites: sites.records.map(EvaluationSite.init)) }
+                        }.buttonStyle(.borderedProminent)
+                        Text("변경 사항을 확인하고 새 기준을 확정하면 모든 평가지에 새 기준을 적용합니다. 같은 조회 조건과 항목의 원자료는 다시 수집하지 않고 재사용합니다.").font(.caption).foregroundStyle(.secondary)
+                    }
                 } else { Text("표준 대상과 원자료를 확인하고 기준을 확정하세요.").foregroundStyle(.secondary) }
-                Text("대상을 추가하거나 원자료를 수정해도 확정된 기준분포는 바뀌지 않습니다. 점수는 적용한 기준 버전과 함께 해석합니다.").font(.caption).foregroundStyle(.secondary)
+                Text("새 평가지 추가 시에는 기준을 유지합니다. 표준 대상 변경을 반영할 때는 기준분포를 갱신하고 전체 점수를 재계산합니다. 점수에는 적용한 기준 버전을 표시합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("새 기준 준비") {
                 NavigationLink("표준 대상 선택 · \(store.standardCount)곳") { EvaluationStandardPicker() }
@@ -314,7 +321,7 @@ private struct EvaluationReferenceDetailView: View {
                 Text(reference.conditions.description).font(.caption).foregroundStyle(.secondary)
                 Text("정규분포를 가정한 0~1 점수입니다. 표본을 Z점수로 바꿔도 실제 분포가 정규분포가 되는 것은 아니며, 이 점수는 전국 실제 백분위로 확정되는 값은 아닙니다.").font(.caption).foregroundStyle(.secondary)
                 if confirming {
-                    Button("이 기준분포를 확정하고 적용") {
+                    Button("새 기준 확정·전체 평가지 점수 재계산") {
                         do { try store.confirm(reference); dismiss() } catch { self.error = error.localizedDescription }
                     }.buttonStyle(.borderedProminent)
                 } else if store.active?.id != reference.id {
@@ -355,24 +362,30 @@ private struct EvaluationReferenceDetailView: View {
 private struct EvaluationScoresView: View {
     @EnvironmentObject private var store: EvaluationReferenceStore
     @EnvironmentObject private var sites: SiteTargetStore
-    let reference: EvaluationReference
     @State private var keyword = ""
     var body: some View {
-        List {
+        Group {
+          if let reference = store.active {
+           List {
             Section("적용 기준") {
                 Text(reference.title).bold(); Text("버전 ID " + reference.id).font(.caption).textSelection(.enabled)
+                if store.needsReferenceUpdate(sites: sites.records.map(EvaluationSite.init)) {
+                    Text("기준 변경 준비 중 · 현재 점수는 표시된 확정 기준으로 계산합니다. 새 기준 확정 시 전체 점수가 갱신됩니다.").font(.caption).foregroundStyle(.orange)
+                }
                 NativeTextField("대상지 이름·주소 찾기", text: $keyword).frame(minHeight: 44)
             }
             ForEach(sites.records.filter { keyword.isEmpty || ($0.name + " " + $0.address).localizedCaseInsensitiveContains(keyword) }) { site in
-                NavigationLink { EvaluationScoreDetailView(siteID: site.id, reference: reference) } label: {
+                NavigationLink { EvaluationScoreDetailView(siteID: site.id) } label: {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(site.name).bold()
-                        if let result = try? store.result(site: EvaluationSite(site), reference: reference), let total = result.total {
+                        if let result = try? store.currentResult(site: EvaluationSite(site)), let total = result.total {
                             Text("총점 \(total, specifier: "%.4f")").monospacedDigit()
                         } else { Text("원자료 확인 필요 · 총점 보류").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
             }
+           }
+          } else { Text("평가 기준을 먼저 확정하세요.") }
         }.navigationTitle("고정 기준 점수").navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -381,10 +394,11 @@ private struct EvaluationScoreDetailView: View {
     @EnvironmentObject private var store: EvaluationReferenceStore
     @EnvironmentObject private var sites: SiteTargetStore
     let siteID: String
-    let reference: EvaluationReference
     private var current: EvaluationSite? { sites.records.first { $0.id == siteID }.map(EvaluationSite.init) }
     var body: some View {
-        List {
+        Group {
+          if let reference = store.active {
+           List {
             Section {
                 Text(current?.name ?? "삭제된 평가대상지").bold()
                 Text("기준 " + reference.title).font(.caption)
@@ -392,7 +406,7 @@ private struct EvaluationScoreDetailView: View {
                 NavigationLink("이 기준의 원자료 입력·수정") { EvaluationObservationEditor(siteID: siteID, criteria: reference.criteria, conditions: reference.conditions) }
                     .disabled(current == nil)
             }
-            if let current, let result = try? store.result(site: current, reference: reference) {
+            if let current, let result = try? store.currentResult(site: current) {
                 Section("평가 점수") {
                     if let total = result.total { Text("총점 \(total, specifier: "%.4f")").bold().monospacedDigit() }
                     else { Text("총점 보류 · 미확인 항목: " + result.missing.joined(separator: ", ")).foregroundStyle(.orange) }
@@ -406,6 +420,8 @@ private struct EvaluationScoreDetailView: View {
                     Section("대분류 동일 비중 평균") { ForEach(result.majorScores.keys.sorted(), id: \.self) { key in LabeledContent(key, value: String(format: "%.4f", result.majorScores[key]!)) } }
                 }
             }
+           }
+          } else { Text("평가 기준을 먼저 확정하세요.") }
         }.navigationTitle("대상지 점수").navigationBarTitleDisplayMode(.inline)
     }
 }

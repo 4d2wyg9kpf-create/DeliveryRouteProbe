@@ -24,6 +24,7 @@ struct EvaluationArchive: Codable, Equatable {
 
 @MainActor
 final class EvaluationReferenceStore: ObservableObject {
+    static let shared = EvaluationReferenceStore()
     @Published private(set) var archive = EvaluationArchive()
     @Published var errorMessage: String?
     private let writeState: (Data) throws -> Void
@@ -125,6 +126,26 @@ final class EvaluationReferenceStore: ObservableObject {
     }
     func result(site: EvaluationSite, reference: EvaluationReference) throws -> EvaluationResult {
         try reference.evaluate(site: site, record: archive.sites[site.id])
+    }
+    func currentResult(site: EvaluationSite) throws -> EvaluationResult {
+        guard let active else { throw EvaluationFailure.message("평가 기준을 먼저 확정하세요.") }
+        return try result(site: site, reference: active)
+    }
+    func needsReferenceUpdate(sites: [EvaluationSite]) -> Bool {
+        guard let active else { return false }
+        guard archive.configuration.criteria == active.criteria, archive.configuration.conditions == active.conditions else { return true }
+        let selected = archive.sites.values.filter { $0.standardWeight != nil }
+        guard Set(selected.map { $0.site.id }) == Set(active.standards.map { $0.site.id }) else { return true }
+        let available = Dictionary(sites.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for standard in active.standards {
+            guard let current = available[standard.site.id], let record = archive.sites[standard.site.id],
+                  record.standardWeight == standard.weight,
+                  current.longitude == standard.site.longitude, current.latitude == standard.site.latitude else { return true }
+            for criterion in active.criteria {
+                guard record.value(criterion, conditions: active.conditions, site: current) == standard.values[criterion.id] else { return true }
+            }
+        }
+        return false
     }
     private func commit(_ next: EvaluationArchive) throws {
         guard writable else { throw EvaluationFailure.message("기존 보관함 오류를 해결한 뒤 평가 기준을 변경하세요.") }

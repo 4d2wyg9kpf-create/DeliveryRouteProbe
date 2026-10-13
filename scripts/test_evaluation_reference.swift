@@ -110,9 +110,26 @@ private func replica(_ snapshot: DeviceShareSnapshot) throws -> DeviceShareRepli
             try close(try store.result(site: other, reference: store.active!).total!, originalScore)
             try require(store.active == baseline, "reference refitted")
         }
+        try check("new evaluation targets do not request a reference update") {
+            try require(!store.needsReferenceUpdate(sites: three + [other, site(5)]), "nonreference target changed the reference")
+            try close(try store.currentResult(site: other).total!, originalScore)
+        }
+        try check("reference membership weights and coordinates signal a required global update") {
+            try store.setStandard(three[0], weight: 2)
+            try require(store.needsReferenceUpdate(sites: three), "changed weight not detected")
+            try store.setStandard(three[0], weight: 1)
+            try require(!store.needsReferenceUpdate(sites: three), "unchanged sample marked dirty")
+            try store.setStandard(three[2], weight: nil)
+            try require(store.needsReferenceUpdate(sites: three), "changed membership not detected")
+            try store.setStandard(three[2], weight: 1)
+            var moved = three; moved[0].longitude += 0.01
+            try require(store.needsReferenceUpdate(sites: moved), "changed standard coordinate not detected")
+            try require(!store.needsReferenceUpdate(sites: three), "restored selection remains dirty")
+        }
         try check("editing reference raw data does not refit an already confirmed version") {
             try store.saveObservations(site: three[2], criteria: [criterion], conditions: context, values: [criterion.id: 90], source: "수정한 가상 자료")
             try require(store.active == baseline && baseline.standards[2].values[criterion.id] == 30, "frozen observations overwritten")
+            try require(store.needsReferenceUpdate(sites: three), "changed reference observation not detected")
             try close(try store.result(site: other, reference: store.active!).total!, originalScore)
         }
         try check("changed membership changes only the next reference preview") {
@@ -128,7 +145,14 @@ private func replica(_ snapshot: DeviceShareSnapshot) throws -> DeviceShareRepli
             try close(revised.distributions[0].mean, 40)
             try close(revised.distributions[0].standardDeviation, sqrt(1900))
             try close(try store.result(site: other, reference: revised).total!, 0.7168602129773354)
-            try store.activate(baseline.id); try close(try store.result(site: other, reference: store.active!).total!, originalScore)
+            // All previously evaluated targets immediately use the active version, without fetching raw data again.
+            let first = try store.currentResult(site: other), second = try store.currentResult(site: three[1])
+            try require(first.referenceID == revised.id && second.referenceID == revised.id, "some targets kept an old reference")
+            try close(first.total!, 0.7168602129773354); try close(second.total!, 0.6768224022302549)
+            try require(!store.needsReferenceUpdate(sites: three), "newly confirmed sample remains dirty")
+            try store.activate(baseline.id)
+            try close(try store.currentResult(site: other).total!, originalScore)
+            try close(try store.currentResult(site: three[1]).total!, 0.5)
         }
         try check("confirmed model and raw observations survive recreation") {
             let reopened = EvaluationReferenceStore(read: { bytes }, write: { bytes = $0 })
