@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension EvaluationSite {
-    init(_ site: SiteTarget) {
+    @MainActor init(_ site: SiteTarget) {
         self.init(id: SiteTargetStore.sharingKey(site), name: site.name, address: site.address,
                   longitude: site.effectiveCoordinate.longitude, latitude: site.effectiveCoordinate.latitude)
     }
