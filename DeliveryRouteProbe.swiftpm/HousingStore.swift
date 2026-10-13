@@ -278,9 +278,10 @@ final class HousingStore: ObservableObject {
                     try await Task.detached(priority: .utility) { try disk.flush(code, reindex: true, edits: latest) }.value
                 }
                 pendingSummaries[code] = saved.0
-                updateCollectionProgress { $0.detailFinished(id, successful: saved.1.detailAt != nil); $0.recordAttempt() }
+                updateCollectionProgress { $0.detailFinished(id, successful: saved.1.detailAt != nil) }
                 if (number + 1) % 10 == 0 { try await Task.detached(priority: .utility) { try disk.flush(code) }.value }
                 await refreshCollectedUI()
+                updateCollectionProgress { $0.recordAttempt() }
                 if consecutiveFailures >= 3 { throw RealtyCollectionInterruption(reason: "상세 응답 오류가 반복되어 수집을 보류했습니다. 자료 형식과 연결 상태를 확인한 뒤 이어서 수집하세요.") }
             }
             try await Task.detached(priority: .utility) { try disk.flush(code) }.value

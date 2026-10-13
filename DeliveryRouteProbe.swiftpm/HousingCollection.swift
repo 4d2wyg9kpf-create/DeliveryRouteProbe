@@ -90,7 +90,9 @@ struct HousingCollectionProgress {
     private(set) var previouslyCompletedDetails = 0
     private(set) var inventory: [String: Set<String>] = [:]
     private(set) var inventorySealed = false
-    private(set) var allCompletedIDs = Set<String>()
+    private(set) var completedByRegion: [String: Set<String>] = [:]
+    private(set) var completedComplexCount = 0
+    private(set) var totalComplexCount: Int?
     private(set) var allFailedIDs = Set<String>()
     private(set) var durations: [TimeInterval] = []
     private(set) var attemptStartedAt: Date?
@@ -113,15 +115,17 @@ struct HousingCollectionProgress {
     mutating func recordInventory(regionID: String, ids: [String], completedIDs: Set<String>) {
         guard !inventorySealed, inventory[regionID] == nil else { return }
         let unique = Set(ids); inventory[regionID] = unique
-        for id in unique.intersection(completedIDs) { allCompletedIDs.insert(key(regionID, id)) }
+        let completed = unique.intersection(completedIDs)
+        completedByRegion[regionID] = completed; completedComplexCount += completed.count
     }
     mutating func sealInventory() {
         guard let targets = targetRegionIDs, targets.allSatisfy({ inventory[$0] != nil }) else { return }
-        inventorySealed = true
+        inventorySealed = true; totalComplexCount = inventory.values.reduce(0) { $0 + $1.count }
     }
     mutating func reconcileCompleted(regionID: String, ids: Set<String>) {
         for id in (inventory[regionID] ?? []).intersection(ids) {
-            let qualified = key(regionID, id); allCompletedIDs.insert(qualified); allFailedIDs.remove(qualified)
+            if completedByRegion[regionID, default: []].insert(id).inserted { completedComplexCount += 1 }
+            allFailedIDs.remove(key(regionID, id))
         }
     }
     mutating func beginAttempt(at: Date = Date()) { attemptStartedAt = at }
@@ -138,8 +142,10 @@ struct HousingCollectionProgress {
         else if !completedDetailIDs.contains(id) { failedDetailIDs.insert(id) }
         guard inventory[currentRegionID]?.contains(id) == true else { return }
         let qualified = key(currentRegionID, id)
-        if successful { allCompletedIDs.insert(qualified); allFailedIDs.remove(qualified) }
-        else if !allCompletedIDs.contains(qualified) { allFailedIDs.insert(qualified) }
+        if successful {
+            if completedByRegion[currentRegionID, default: []].insert(id).inserted { completedComplexCount += 1 }
+            allFailedIDs.remove(qualified)
+        } else if completedByRegion[currentRegionID]?.contains(id) != true { allFailedIDs.insert(qualified) }
     }
     mutating func regionFinished(successful: Bool) {
         guard targetRegionIDs?.contains(currentRegionID) == true else { return }
@@ -151,8 +157,6 @@ struct HousingCollectionProgress {
     mutating func fail() { phase = .failed }
     var detailTotalCount: Int? { targetDetailIDs.map { previouslyCompletedDetails + $0.count } }
     var detailCompletedCount: Int { previouslyCompletedDetails + completedDetailIDs.count }
-    var totalComplexCount: Int? { inventorySealed ? inventory.values.reduce(0) { $0 + $1.count } : nil }
-    var completedComplexCount: Int { allCompletedIDs.count }
     var remainingComplexCount: Int? { totalComplexCount.map { max(0, $0 - completedComplexCount) } }
     var fraction: Double? {
         guard let total = totalComplexCount else { return nil }

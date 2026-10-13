@@ -19,7 +19,7 @@ struct HousingRegionSummary: Codable, Identifiable {
         code = region.code; sido = region.sido; sigungu = region.sigungu; dong = region.dong
         generation = region.generation; sourceCount = region.sourceCount; detailCount = region.detailCount
         kaptCount = region.kaptRecords?.count ?? 0; kaptDetailCount = region.kaptRecords?.filter { $0.detailAt != nil }.count ?? 0
-        complexCount = HousingConsolidator.sources(region).count; manualReview = true
+        complexCount = region.records.count; manualReview = true
     }
 }
 // The nationwide catalog stays on disk. Only bounded search results are decoded.

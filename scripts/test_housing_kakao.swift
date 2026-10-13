@@ -51,6 +51,21 @@ actor RequestConcurrencyProbe {
 }
 @main struct HousingKakaoChecks {
     @MainActor static func main() async throws {
+        if CommandLine.arguments.contains("--realty-live") {
+            let client = RealtyHousingClient()
+            let sido = HousingArea(code:"11",name:"서울특별시"), sigungu = HousingArea(code:"680",name:"강남구"), dong = HousingArea(code:"10300",name:"개포동")
+            let areas = try await client.areas(sido:sido.code,sigungu:sigungu.code)
+            try require(areas.contains { $0.code == dong.code },"live legal-dong response")
+            print("PASS live paced client reads public legal-dong response"); fflush(stdout)
+            let list = try await client.list(sido:sido,sigungu:sigungu,dong:dong)
+            guard let source = list.records.first else { throw PlannerFailure.message("live apartment list empty") }
+            try require(list.sourceCount == list.records.count,"live list count")
+            print("PASS live apartment list preserves verified identifiers and full count"); fflush(stdout)
+            let detail = try await client.detail(source)
+            try require(detail.id == source.id && detail.detailAt != nil && HousingRegion.validSource(detail),"live source detail invalid")
+            print("PASS live paced client reads and validates one public apartment detail")
+            print("REALTY_LIVE_CHECKS 3/3"); return
+        }
         var passed = 0
         func check(_ name: String, _ test: () throws -> Void) throws { try test(); passed += 1; print("PASS \(name)"); fflush(stdout) }
         let a = RouteEndpoint(id: "a", name: "단지", address: "주소", coordinate: TMapCoordinate(longitude: 127.1, latitude: 36.3))
@@ -703,8 +718,8 @@ actor RequestConcurrencyProbe {
                 })
             } }; try await group.waitForAll()
         }
-        let concurrency = await probe.maximum, requests = await probe.calls
-        try check("independent clients never send overlapping requests to the source service") { try require(concurrency == 1 && requests == 8,"shared scheduler allowed concurrent transport") }
+        let concurrency = await probe.maximum, scheduledRequests = await probe.calls
+        try check("independent clients never send overlapping requests to the source service") { try require(concurrency == 1 && scheduledRequests == 8,"shared scheduler allowed concurrent transport") }
         print("Housing Kakao native checks: \(passed)/\(passed) passed")
     }
 }
