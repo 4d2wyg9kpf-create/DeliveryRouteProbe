@@ -42,6 +42,8 @@ struct BuildingReferenceArchive: Codable {
     private let writeState: (Data) throws -> Void
     private var writable = true
     private var task: Task<Void,Never>?
+    private var runID: UUID?
+    let collectionStatus = HousingCollectionStatus()
     private var snapshotData: Data?
     convenience init(directory: URL? = nil) {
         let folder = directory ?? FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0].appendingPathComponent("RouteProbe")
@@ -69,16 +71,43 @@ struct BuildingReferenceArchive: Codable {
         let result = try KaptReferenceCatalog.build(value.records)
         try writeState(data); archive = value; catalog = result; snapshotData = data
     }
-    func stop() { task?.cancel() }
+    func stop() {
+        task?.cancel()
+        if task == nil, let id = runID {
+            HousingCollectionBackground.shared.finish(id:id,success:false)
+            runID = nil; isBusy = false; HousingStore.shared.isBusy = false
+        }
+    }
     func start(api: PublicDataStore) {
         guard !isBusy else { return }
-        isBusy = true; errorMessage = nil
+        guard !HousingStore.shared.isBusy else { errorMessage = "다른 공동주택 수집이 진행 중입니다."; return }
+        let id = UUID(); runID = id
+        isBusy = true; errorMessage = nil; HousingStore.shared.isBusy = true
+        var value = HousingCollectionProgress(scopeTitle:"전국 K-apt 표준지 주소",includesDetails:true)
+        value.setTargets(["kapt-reference"]); value.beginRegion(id:"kapt-reference",title:"전국 K-apt 표준지 주소")
+        collectionStatus.value = value
+        HousingCollectionBackground.shared.begin(id:id,title:"전국 K-apt 표준지 주소",status:collectionStatus,start:{ [weak self] in
+            guard let self, self.runID == id else { return }; self.beginWork(api:api,id:id)
+        },expire:{ [weak self] in
+            self?.collectionStatus.backgroundMessage = "시스템이 수집을 중단했습니다. 저장한 목록에서 이어서 진행할 수 있습니다."
+            self?.stop()
+        })
+    }
+    private func beginWork(api: PublicDataStore, id: UUID) {
         task = Task {
-            defer { isBusy = false; task = nil; try? DeviceShareHooks.changed() }
-            do { try await collect(api:api); progress = "전국 K-apt 도로명주소 목록을 확인했습니다." }
-            catch is CancellationError { progress = "중단했습니다. 완료된 자료에서 이어서 수집합니다." }
-            catch { errorMessage = error.localizedDescription; progress = "미완료 자료는 이어서 수집할 수 있습니다." }
+            var success = false
+            defer {
+                HousingCollectionBackground.shared.finish(id:id,success:success)
+                isBusy = false; task = nil; runID = nil; HousingStore.shared.isBusy = false; try? DeviceShareHooks.changed()
+            }
+            do { try await collect(api:api); progress = "전국 K-apt 도로명주소 목록을 확인했습니다."; success = true; collectionStatus.value?.finish() }
+            catch is CancellationError { progress = "중단했습니다. 완료된 자료에서 이어서 수집합니다."; collectionStatus.value?.stop() }
+            catch { errorMessage = error.localizedDescription; progress = "미완료 자료는 이어서 수집할 수 있습니다."; collectionStatus.value?.fail() }
         }
+    }
+    private func updateBackground() {
+        guard let id = runID, let value = collectionStatus.value else { return }
+        HousingCollectionBackground.shared.update(id:id,progress:value)
     }
     func collect(api: PublicDataStore) async throws {
         var next = archive
@@ -102,11 +131,18 @@ struct BuildingReferenceArchive: Codable {
             next.records.append(contentsOf:records); next.listTotal = total; next.nextPage += 1
             next.listComplete = next.records.count == total; try commit(next); next = archive
         }
+        if var value = collectionStatus.value {
+            let completedIDs = Set(next.records.filter { $0.fetchedAt != nil }.map(\.id))
+            value.recordInventory(regionID:"kapt-reference",ids:next.records.map(\.id),completedIDs:completedIDs)
+            value.sealInventory(); value.beginDetails(ids:next.records.filter { $0.fetchedAt == nil }.map(\.id),previouslyCompleted:completedIDs.count)
+            collectionStatus.value = value; updateBackground()
+        }
         var dirty = false, completed = 0
         defer { if dirty { try? commit(next) } }
         for index in next.records.indices where next.records[index].fetchedAt == nil {
             try Task.checkCancellation()
             let record = next.records[index]
+            collectionStatus.value?.beginAttempt()
             progress = "K-apt 도로명주소 · \(index+1)/\(next.records.count) · \(record.name)"
             let basic = try KaptHousingClient.info(await api.kaptData(.basic,parameters:["kaptCode":record.id]),code:record.id)
             next.records[index].roadAddresses = [KaptGateway.text(basic,"doroJuso")]
@@ -114,6 +150,7 @@ struct BuildingReferenceArchive: Codable {
             for (name, key) in ["approvalDate":"kaptUsedate", "households":"kaptdaCnt", "buildings":"kaptDongCnt", "heating":"codeHeatNm", "corridor":"codeHallNm", "saleType":"codeSaleNm", "managementOffice":"kaptTel"] { fields[name] = KaptGateway.text(basic,key) }
             if let date = PublicDataParser.date(fields["approvalDate",default:""]) { fields["approvalDate"] = date }
             next.records[index].fields = fields; next.records[index].fetchedAt = Date(); dirty = true; completed += 1
+            collectionStatus.value?.recordAttempt(); collectionStatus.value?.detailFinished(record.id,successful:true); updateBackground()
             if completed % 10 == 0 { try commit(next); next = archive; dirty = false }
         }
         if dirty { try commit(next); next = archive; dirty = false }

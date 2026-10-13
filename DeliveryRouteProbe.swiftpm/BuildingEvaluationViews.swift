@@ -152,6 +152,7 @@ struct KaptBuildingReferenceView: View {
                 Button("전국 K-apt 목록·주소 수집 이어서") { references.start(api:api) }.disabled(references.isBusy || api.isBusy)
                 if references.isBusy { ProgressView(); Button("수집 중단") { references.stop() } }
                 Text(references.progress).font(.caption)
+                BuildingReferenceBackgroundStatus(status:references.collectionStatus)
                 Text("원본 \(references.archive.records.count)단지 · 표준 주소 \(references.catalog.addresses.count)개").font(.caption)
                 Text("주소 공란 제외 \(references.catalog.missingAddressIDs.count)단지 · 중복 주소 \(references.catalog.duplicateAddressCount)건 · 주소 미확인 \(references.catalog.unresolvedIDs.count)단지").font(.caption).foregroundStyle(.secondary)
                 Text("도로명주소가 여러 개면 각 주소를 포함하고, 다른 등록과 같은 주소는 한 번만 포함합니다. 상세 미수집을 공란으로 제외하지 않습니다.").font(.caption).foregroundStyle(.secondary)
@@ -181,6 +182,17 @@ struct KaptBuildingReferenceView: View {
             }
         }.navigationTitle("K-apt 표준지 목록").navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented:$showingSettings) { PublicDataSettingsView(store:api) }
+    }
+}
+
+private struct BuildingReferenceBackgroundStatus: View {
+    @ObservedObject var status: HousingCollectionStatus
+    var body: some View {
+        if !status.backgroundMessage.isEmpty { Text(status.backgroundMessage).font(.caption).foregroundStyle(.secondary) }
+        if let value = status.value {
+            if let fraction = value.fraction { ProgressView(value:fraction) }
+            Text(value.summary).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
