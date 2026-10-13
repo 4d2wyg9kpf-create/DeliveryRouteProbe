@@ -37,7 +37,7 @@ permissions:
 
 concurrency:
   group: delivery-ipa-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   naver-checks:

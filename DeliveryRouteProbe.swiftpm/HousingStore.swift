@@ -3,6 +3,7 @@ import Combine
 
 @MainActor
 final class HousingStore: ObservableObject {
+    static let shared = HousingStore()
     @Published private(set) var regions: [HousingRegionSummary] = []
     @Published private(set) var edits: [HousingEdit] = []
     @Published private(set) var complexes: [HousingComplex] = []

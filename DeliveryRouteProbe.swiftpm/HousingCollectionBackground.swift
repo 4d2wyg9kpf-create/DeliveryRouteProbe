@@ -39,6 +39,7 @@ final class HousingCollectionBackground {
                         task.setTaskCompleted(success: false); return
                     }
                     self.continued = continued
+                    self.endShortTask()
                     continued.progress.totalUnitCount = -1
                     continued.expirationHandler = { [weak self] in Task { @MainActor in self?.expired(id: id) } }
                     status?.backgroundMessage = "화면을 닫거나 다른 앱을 사용해도 수집을 계속합니다."
@@ -54,6 +55,7 @@ final class HousingCollectionBackground {
                     return
                 } catch { BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: name) }
             }
+            identifier = nil
         }
         status.backgroundMessage = "장시간 백그라운드 실행을 사용할 수 없습니다. 화면을 닫으면 허용된 시간만 수집하고 작업을 보관합니다."
         #else
@@ -78,14 +80,23 @@ final class HousingCollectionBackground {
         #endif
     }
     func sceneChanged(background: Bool) {
-        isBackground = background
         #if canImport(UIKit) && canImport(BackgroundTasks)
-        if !background { endShortTask(); return }
-        guard let id = runID, continued == nil, shortTask == .invalid else { return }
+        // An iPad window can leave the screen while another window is active.
+        // Only the whole application's state consumes fallback background time.
+        isBackground = UIApplication.shared.applicationState == .background
+        if !isBackground { endShortTask(); return }
+        // A successfully submitted continued request already owns background
+        // runtime, even before its launch callback reaches the main actor.
+        guard let id = runID, identifier == nil, continued == nil, shortTask == .invalid else { return }
         shortTask = UIApplication.shared.beginBackgroundTask(withName: "공동주택 수집 저장") { [weak self] in
-            Task { @MainActor in self?.expired(id: id) }
+            Task { @MainActor in
+                guard self?.identifier == nil, self?.continued == nil else { return }
+                self?.expired(id: id)
+            }
         }
         if shortTask == .invalid { expired(id: id) }
+        #else
+        isBackground = background
         #endif
     }
     func expired(id: UUID) {

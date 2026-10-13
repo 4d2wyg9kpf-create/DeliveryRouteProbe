@@ -24,7 +24,7 @@ struct DeliveryRootView: View {
     @StateObject private var customers = NaverCustomerStore.shared
     @StateObject private var tmap = TMapStore.shared
     @StateObject private var sites = SiteTargetStore()
-    @StateObject private var housing = HousingStore()
+    @StateObject private var housing = HousingStore.shared
     @StateObject private var kakao = KakaoRouteStore.shared
     @StateObject private var publicData = PublicDataStore.shared
     @StateObject private var inputs = NativeInputSession()
