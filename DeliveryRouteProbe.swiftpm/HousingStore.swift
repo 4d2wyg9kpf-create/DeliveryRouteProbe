@@ -158,6 +158,7 @@ final class HousingStore: ObservableObject {
                 catch is CancellationError { self.updateCollectionProgress { $0.stop() } }
                 catch {
                     self.errorMessage = error.localizedDescription
+                    self.collectionStatus.backgroundMessage = "수집을 보류했습니다. 저장된 작업을 이어서 수집할 수 있습니다."
                     self.collectionStatus.resumeAt = (error as? RealtyCollectionInterruption)?.resumeAt
                     self.updateCollectionProgress { $0.fail() }
                 }
@@ -167,6 +168,9 @@ final class HousingStore: ObservableObject {
                 self.resumableScopeTitle = (try? self.index?.collectionCheckpoint())?.scope.title
                 self.isBusy = false; self.collectionTask = nil; self.collectionRunID = nil
                 if succeeded { self.collectionStatus.backgroundMessage = "수집을 완료했습니다." }
+                else if self.collectionProgress?.phase == .finished {
+                    self.collectionStatus.backgroundMessage = "미완료 단지가 남아 있습니다. 보관된 수집을 이어서 진행하세요."
+                }
             }
         }, expire: { [weak self] in
             self?.collectionStatus.backgroundMessage = "시스템이 백그라운드 수집을 중단했습니다. 저장된 작업을 이어서 수집할 수 있습니다."
@@ -188,9 +192,9 @@ final class HousingStore: ObservableObject {
                             client: any RealtyHousingCollecting) async throws -> Bool {
         guard let disk = collectionDisk else { throw DeviceShareError.unavailable }
         var checkpoint = saved
-        try await DeviceShareHooks.prepareRequest()
         try await Task.detached(priority: .utility) { try disk.index.saveCollectionCheckpoint(saved, resetInventory: !resuming) }.value
         resumableScopeTitle = saved.scope.title
+        try await DeviceShareHooks.prepareRequest()
         if checkpoint.targets == nil {
             checkpoint.targets = try await HousingCollectionTargets.resolve(checkpoint.scope, client: client) { count in self.updateCollectionProgress { $0.discovered(count) } }
             let request = checkpoint

@@ -226,7 +226,7 @@ struct HousingCollectionCheckpoint: Codable {
     var targets: [HousingCollectionTarget]?
     var inventory: [String: [String]] = [:]
     func validate() throws {
-        guard version == 1, (targets?.count ?? 0) <= 20_000, inventory.count <= 20_000,
+        guard version == 1, (targets?.count ?? 0) <= 100_000, inventory.count <= 100_000,
               Set(targets?.map(\.id) ?? []).count == (targets?.count ?? 0),
               inventory.allSatisfy({ code, ids in code.range(of: #"^\d{10}$"#, options: .regularExpression) != nil && ids.count <= 100_000 && Set(ids).count == ids.count && ids.allSatisfy { $0.hasPrefix("realty:" + code.prefix(5) + ":") } }),
               inventory.keys.allSatisfy({ code in targets?.contains { $0.id == code } == true }) else { throw DeviceShareError.invalid }
