@@ -8,12 +8,14 @@ enum BuildingEvaluationError: LocalizedError {
 // Addresses identify a reference candidate; individual buildings remain distinct
 // beneath that address. Floors and units never become separate buildings.
 enum BuildingAddress {
+    private static let roadExpression = try? NSRegularExpression(pattern:#"^(.+?\s[^\s,;()/]+(?:로|길)\s+\d+(?:-\d+)?)(?=$|[\s,(])"#)
+    private static let roadTokenExpression = try? NSRegularExpression(pattern:#"[^\s,;()/]+(?:로|길)\s+\d+(?:-\d+)?"#)
     static func clean(_ value: String) -> String {
         value.precomposedStringWithCanonicalMapping.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     static func road(_ value: String) -> String? {
         let value = clean(value)
-        guard let expression = try? NSRegularExpression(pattern: #"^(.+?\s[^\s,;()/]+(?:로|길)\s+\d+(?:-\d+)?)(?=$|[\s,(])"#),
+        guard let expression = roadExpression,
               let match = expression.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
               let range = Range(match.range(at: 1), in: value) else { return nil }
         return String(value[range])
@@ -36,7 +38,7 @@ enum BuildingAddress {
     static func allPartsValid(_ value: String) -> Bool {
         let parts = parts(value)
         return !parts.isEmpty && parts.allSatisfy { part in
-            guard road(part) != nil, let expression = try? NSRegularExpression(pattern:#"[^\s,;()/]+(?:로|길)\s+\d+(?:-\d+)?"#) else { return false }
+            guard road(part) != nil, let expression = roadTokenExpression else { return false }
             return expression.numberOfMatches(in:part,range:NSRange(part.startIndex...,in:part)) == 1
         }
     }
@@ -199,6 +201,6 @@ struct KaptReferenceCatalog: Codable, Equatable {
                 } else { grouped[key] = KaptReferenceAddress(roadAddress: road, kaptIDs: [record.id], names: [record.name]) }
             }
         }
-        return Self(addresses: grouped.values.sorted { $0.id < $1.id }, missingAddressIDs: empty.sorted(), unresolvedIDs: unresolved.sorted(), duplicateAddressCount: duplicates)
+        return Self(addresses: grouped.sorted { $0.key < $1.key }.map(\.value), missingAddressIDs: empty.sorted(), unresolvedIDs: unresolved.sorted(), duplicateAddressCount: duplicates)
     }
 }
