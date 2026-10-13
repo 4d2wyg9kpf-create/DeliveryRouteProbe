@@ -2,7 +2,7 @@ import Foundation
 import CoreFoundation
 
 enum PublicDataService: String, Codable, CaseIterable, Identifiable, Hashable {
-    case stores, restaurants, cafes, bakery, catering, canteens, kaptList, kaptBasis
+    case stores, restaurants, cafes, bakery, catering, canteens, kaptList, kaptBasis, buildingLedger
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -14,6 +14,7 @@ enum PublicDataService: String, Codable, CaseIterable, Identifiable, Hashable {
         case .canteens: return "집단급식소"
         case .kaptList: return "K-apt 단지 목록"
         case .kaptBasis: return "K-apt 기본·관리시설정보"
+        case .buildingLedger: return "건축HUB 건축물대장"
         }
     }
     var portalID: String {
@@ -26,6 +27,7 @@ enum PublicDataService: String, Codable, CaseIterable, Identifiable, Hashable {
         case .canteens: return "15155168"
         case .kaptList: return "15057332"
         case .kaptBasis: return "15058453"
+        case .buildingLedger: return "15134735"
         }
     }
     var portalURL: URL { URL(string: "https://www.data.go.kr/data/\(portalID)/openapi.do")! }
@@ -39,6 +41,7 @@ enum PublicDataService: String, Codable, CaseIterable, Identifiable, Hashable {
         case .canteens: return "/1741000/group_meal_facilities/info"
         case .kaptList: return "/1613000/AptListService4/getLegaldongAptList4"
         case .kaptBasis: return "/1613000/AptBasisInfoServiceV5/getAphusBassInfoV5"
+        case .buildingLedger: return "/1613000/BldRgstHubService/getBrTitleInfo"
         }
     }
     static var licenses: [PublicDataService] { [.restaurants, .cafes, .bakery, .catering, .canteens] }

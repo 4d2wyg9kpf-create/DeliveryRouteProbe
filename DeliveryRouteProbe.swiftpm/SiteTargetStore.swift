@@ -15,6 +15,8 @@ struct SiteTarget: Codable, Identifiable {
     var capture: NaverPlaceCapture?
     var coordinateOverride: TMapCoordinate? = nil
     var housingID: String? = nil
+    var building: BuildingSelection? = nil
+    var buildingFacts: [String: BuildingFact]? = nil
     var effectiveCoordinate: TMapCoordinate { coordinateOverride ?? coordinate }
     var folders: [String]
     var addedAt: Date
@@ -37,11 +39,12 @@ final class SiteTargetStore: ObservableObject {
         do {
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 let data = try Data(contentsOf: fileURL)
-                guard data.count <= 20_000_000 else { throw PlannerFailure.message("평가대상지 보관함 크기를 확인해 주세요.") }
+                guard data.count <= 150_000_000 else { throw PlannerFailure.message("평가대상지 보관함 크기를 확인해 주세요.") }
                 let archive = try JSONDecoder().decode(SiteTargetArchive.self, from: data)
-                guard archive.version == 1, archive.records.count <= 5_000,
+                guard archive.version == 1, archive.records.count <= 100_000,
                       Set(archive.records.map(\.id)).count == archive.records.count else { throw PlannerFailure.message("평가대상지 보관함 형식이 다릅니다.") }
                 for record in archive.records {
+                    if let building = record.building { try building.validate(); guard building.longitude == record.coordinate.longitude, building.latitude == record.coordinate.latitude else { throw DeviceShareError.invalid } }
                     guard Self.valid(record.coordinate), record.coordinateOverride.map(Self.valid) ?? true else { throw DeviceShareError.invalid }
                     guard let capture = record.capture else { continue }
                     let verified = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self)
@@ -62,6 +65,7 @@ final class SiteTargetStore: ObservableObject {
         guard !title.isEmpty else { throw PlannerFailure.message("장소 이름을 입력하세요.") }
         var next = records
         let existing = try next.firstIndex { previous in
+            guard previous.building == nil else { return false }
             guard let previousCapture = previous.capture else { return false }
             if (capture.kind == "address" && capture.sharedLinkURL != nil) || (previousCapture.kind == "address" && previousCapture.sharedLinkURL != nil) {
                 return try NaverPlaceBridge.call("customerMatches", ["first": try TMapBridge.object(previousCapture), "second": try TMapBridge.object(capture)], as: Bool.self)
@@ -75,7 +79,7 @@ final class SiteTargetStore: ObservableObject {
             next[index].coordinate = coordinate; next[index].capture = capture
             if !group.isEmpty, !next[index].folders.contains(group) { next[index].folders.append(group) }
         } else {
-            guard next.count < 5_000 else { throw PlannerFailure.message("평가대상지는 최대 5,000곳까지 보관합니다.") }
+            guard next.count < 100_000 else { throw PlannerFailure.message("평가대상지는 최대 100,000곳까지 보관합니다.") }
             next.append(SiteTarget(id: UUID().uuidString, name: title, address: capture.preferredAddress,
                                    coordinate: coordinate, capture: capture, folders: group.isEmpty ? [] : [group], addedAt: Date()))
         }
@@ -96,7 +100,7 @@ final class SiteTargetStore: ObservableObject {
             next[existing].name = name; next[existing].address = address
             next[existing].coordinate = coordinate
         } else {
-            guard next.count < 5_000 else { throw DeviceShareError.invalid }
+            guard next.count < 100_000 else { throw DeviceShareError.invalid }
             next.append(SiteTarget(id: id, name: name, address: address, coordinate: coordinate, capture: nil, housingID: housingID, folders: [], addedAt: Date()))
         }
         try commit(next); return id
@@ -105,7 +109,22 @@ final class SiteTargetStore: ObservableObject {
         guard coordinate.map(Self.valid) ?? true, let index = records.firstIndex(where: { $0.id == id }) else { throw DeviceShareError.invalid }
         var next = records; next[index].coordinateOverride = coordinate; try commit(next)
     }
+    @discardableResult
+    func saveBuilding(_ selection: BuildingSelection, facts: [String: BuildingFact]) throws -> String {
+        try selection.validate()
+        let name = [selection.building.name,selection.building.dongName].filter { !$0.isEmpty }.joined(separator:" ")
+        let point = TMapCoordinate(longitude:selection.longitude,latitude:selection.latitude)
+        var next = records
+        let existing = next.firstIndex { $0.building?.identity == selection.identity }
+        let id = existing.map { next[$0].id } ?? UUID().uuidString
+        let target = SiteTarget(id:id,name:name.isEmpty ? selection.building.roadAddress : name,address:selection.building.roadAddress,
+            coordinate:point,capture:nil,building:selection,buildingFacts:facts,folders:existing.map { next[$0].folders } ?? [],addedAt:existing.map { next[$0].addedAt } ?? Date())
+        if let existing { next[existing] = target }
+        else { guard next.count < 100_000 else { throw DeviceShareError.invalid }; next.append(target) }
+        try commit(next); return id
+    }
     static func sharingKey(_ record: SiteTarget) -> String {
+        if let building = record.building { return "site/building/" + DeviceShareCodec.key(building.identity) }
         if let housingID = record.housingID { return "site/housing/" + DeviceShareCodec.key(housingID) }
         if let capture = record.capture {
             if !capture.placeID.isEmpty { return "site/place/" + capture.placeID }
@@ -126,6 +145,7 @@ final class SiteTargetStore: ObservableObject {
         for (key, entry) in replica.records where key.hasPrefix("site/") {
             guard let data = entry.value else { continue }
             var record = try DeviceShareCodec.decode(SiteTarget.self, data)
+            if let building = record.building { try building.validate(); guard building.longitude == record.coordinate.longitude, building.latitude == record.coordinate.latitude else { throw DeviceShareError.invalid } }
             guard key == Self.sharingKey(record), Self.valid(record.coordinate), record.coordinateOverride.map(Self.valid) ?? true else { throw DeviceShareError.invalid }
             if let capture = record.capture {
                 let verified = try NaverPlaceBridge.call("validate", ["capture": try TMapBridge.object(capture)], as: NaverPlaceCapture.self)
@@ -140,7 +160,7 @@ final class SiteTargetStore: ObservableObject {
     private func commit(_ next: [SiteTarget]) throws {
         guard writable else { throw PlannerFailure.message("평가대상지 보관함 오류를 해결한 뒤 저장해 주세요.") }
         let data = try JSONEncoder().encode(SiteTargetArchive(records: next))
-        guard data.count <= 20_000_000 else { throw PlannerFailure.message("평가대상지 보관함이 너무 큽니다.") }
+        guard data.count <= 150_000_000 else { throw PlannerFailure.message("평가대상지 보관함이 너무 큽니다.") }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: fileURL, options: .atomic)
         records = next; errorMessage = nil

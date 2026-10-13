@@ -18,7 +18,7 @@ enum DeviceShareCodec {
         return try encoder.encode(value)
     }
     static func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
-        guard data.count <= 25_000_000 else { throw DeviceShareError.invalid }
+        guard data.count <= 250_000_000 else { throw DeviceShareError.invalid }
         return try JSONDecoder().decode(type, from: data)
     }
     static func digest(_ data: Data) -> String {
@@ -155,7 +155,7 @@ struct DeviceShareReplica: Codable, Equatable {
     }
     func validate() throws {
         guard version == 1 else { throw DeviceShareError.newerVersion }
-        guard UUID(uuidString: deviceID) != nil, (0...1_000_000_000_000).contains(counter), records.count <= 12_000, usage.count <= 20_000 else { throw DeviceShareError.invalid }
+        guard UUID(uuidString: deviceID) != nil, (0...1_000_000_000_000).contains(counter), records.count <= 250_000, usage.count <= 250_000 else { throw DeviceShareError.invalid }
         func validStamp(_ stamp: DeviceShareStamp) -> Bool {
             UUID(uuidString: stamp.device) != nil && (1...max(1, counter)).contains(stamp.counter)
         }

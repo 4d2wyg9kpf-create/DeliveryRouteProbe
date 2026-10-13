@@ -99,6 +99,32 @@ private func sharedBusiness(_ longitude: String = "127.4000001") throws -> Naver
                 catch { try require(customers.records.count == 1 && sites.records.count == 25, "no stored corruption") }
             }
         }
+        let buildingFolder = folder.appendingPathComponent("building-fixtures")
+        let buildingSites = SiteTargetStore(directory:buildingFolder)
+        let buildingA = EvaluationBuilding(id:"fixture-registry-101",roadAddress:"대전광역시 중구 가상로 10",name:"가상 아파트",dongName:"101동",fields:["use":"아파트"],fetchedAt:Date())
+        var buildingB = buildingA; buildingB.id = "fixture-registry-102"; buildingB.dongName = "102동"
+        let entranceA = BuildingSelection(building:buildingA,choice:.firstDong,entranceSource:"가상 확인",entranceID:"fixture-a",longitude:127.4,latitude:36.3)
+        let entranceB = BuildingSelection(building:buildingB,choice:.specifiedDong,entranceSource:"가상 확인",entranceID:"fixture-b",longitude:127.4001,latitude:36.3)
+        try check("different registry buildings at one address persist as distinct evaluation targets") {
+            _ = try buildingSites.saveBuilding(entranceA,facts:[:]); _ = try buildingSites.saveBuilding(entranceB,facts:[:])
+            try require(buildingSites.records.count == 2 && SiteTargetStore.sharingKey(buildingSites.records[0]) != SiteTargetStore.sharingKey(buildingSites.records[1]),"building identities collapsed")
+        }
+        try check("same registry building refresh keeps its evaluation identity") {
+            let oldID = buildingSites.records[0].id
+            var entrance = entranceA; entrance.longitude = 127.4002
+            let newID = try buildingSites.saveBuilding(entrance,facts:["parking":BuildingFact(value:"100",source:.kapt,scope:.complex)])
+            try require(oldID == newID && buildingSites.records.count == 2 && buildingSites.records[0].effectiveCoordinate.longitude == 127.4002,"building refresh changed identity")
+        }
+        try check("registry building entrance and supplemental scope survive recreation") {
+            let restored = SiteTargetStore(directory:buildingFolder)
+            try require(restored.errorMessage == nil && restored.records.count == 2 && restored.records[0].building?.building.dongName == "101동" && restored.records[0].buildingFacts?["parking"]?.scope == .complex,"building persistence")
+        }
+        try check("blank entrance evidence cannot create a building evaluation target") {
+            var bad = entranceA; bad.entranceSource = ""
+            var rejected = false
+            do { _ = try buildingSites.saveBuilding(bad,facts:[:]) } catch { rejected = true }
+            try require(rejected && buildingSites.records.count == 2,"invalid entrance accepted or altered records")
+        }
         try check("corrupt target archive is preserved and not overwritten") {
             let url = folder.appendingPathComponent("site-targets.json"), original = Data("corrupt-fixture".utf8)
             try original.write(to: url)

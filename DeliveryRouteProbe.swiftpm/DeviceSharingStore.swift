@@ -26,7 +26,7 @@ enum DeviceShareFolderIO {
             NSFileCoordinator().coordinate(readingItemAt: file, options: [], error: &error) { url in
                 readResult = Result {
                     let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
-                    guard values.isRegularFile == true, values.isSymbolicLink != true, let size = values.fileSize, size <= 25_000_000 else { throw DeviceShareError.invalid }
+                    guard values.isRegularFile == true, values.isSymbolicLink != true, let size = values.fileSize, size <= 250_000_000 else { throw DeviceShareError.invalid }
                     return try DeviceShareReplica.decoded(Data(contentsOf: url))
                 }
             }
@@ -38,7 +38,7 @@ enum DeviceShareFolderIO {
     }
     static func write(_ replica: DeviceShareReplica, to folder: URL) throws {
         let data = try replica.encoded()
-        guard data.count <= 25_000_000 else { throw DeviceShareError.invalid }
+        guard data.count <= 250_000_000 else { throw DeviceShareError.invalid }
         let accessed = folder.startAccessingSecurityScopedResource()
         defer { if accessed { folder.stopAccessingSecurityScopedResource() } }
         var coordinationError: NSError?; var writingError: Error?
@@ -158,7 +158,7 @@ final class DeviceSharingStore: ObservableObject {
     private func persist() throws {
         guard !localError else { throw DeviceShareError.invalid }
         let data = try DeviceShareCodec.encode(checkpoint)
-        guard data.count <= 25_000_000 else { throw DeviceShareError.invalid }
+        guard data.count <= 250_000_000 else { throw DeviceShareError.invalid }
         let directory = checkpointURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var root = directory; var values = URLResourceValues(); values.isExcludedFromBackup = true

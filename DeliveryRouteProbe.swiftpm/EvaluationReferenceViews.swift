@@ -17,6 +17,7 @@ private func evaluationTimestamp(_ date: Date) -> String {
 struct EvaluationReferenceView: View {
     @EnvironmentObject private var store: EvaluationReferenceStore
     @EnvironmentObject private var sites: SiteTargetStore
+    @EnvironmentObject private var buildingReferences: BuildingReferenceStore
     @State private var editingCriterion: EvaluationCriterion?
     @State private var editingConditions = false
     @State private var title = ""
@@ -37,7 +38,7 @@ struct EvaluationReferenceView: View {
                     if store.needsReferenceUpdate(sites: sites.records.map(EvaluationSite.init)) {
                         Text("표준 대상·원자료·평가 조건 변경됨 · 기준 갱신 필요").font(.caption).foregroundStyle(.orange)
                         Button("기준 갱신·전체 평가지 점수 재계산") {
-                            perform { preview = try store.preview(title: reference.title + " · 갱신", sites: sites.records.map(EvaluationSite.init)) }
+                            perform { preview = try makePreview(title: reference.title + " · 갱신") }
                         }.buttonStyle(.borderedProminent)
                         Text("변경 사항을 확인하고 새 기준을 확정하면 모든 평가지에 새 기준을 적용합니다. 같은 조회 조건과 항목의 원자료는 다시 수집하지 않고 재사용합니다.").font(.caption).foregroundStyle(.secondary)
                     }
@@ -45,13 +46,13 @@ struct EvaluationReferenceView: View {
                 Text("새 평가지 추가 시에는 기준을 유지합니다. 표준 대상 변경을 반영할 때는 기준분포를 갱신하고 전체 점수를 재계산합니다. 점수에는 적용한 기준 버전을 표시합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("새 기준 준비") {
-                NavigationLink("표준 대상 선택 · \(store.standardCount)곳") { EvaluationStandardPicker() }
+                NavigationLink("K-apt 전체 도로명주소 표준지 · \(store.standardCount)곳") { KaptBuildingReferenceView() }
                 NavigationLink("대상별 원자료 입력·확인") {
                     EvaluationObservationList(criteria: store.archive.configuration.criteria, conditions: store.archive.configuration.conditions)
                 }
                 Button("평가 시각·조회 조건 설정") { editingConditions = true }
                 Text(evaluationTimestamp(store.archive.configuration.conditions.departure)).font(.caption)
-                Text("표준 대상은 지역·도시/농촌·주택 유형·입지 수준을 고르게 포함하도록 선정하세요. 현재는 확인한 원자료를 직접 입력하며, 전체 평가 항목의 자동 수집은 별도로 구현해야 합니다.").font(.caption).foregroundStyle(.secondary)
+                Text("표준지는 K-apt 전체 단지의 도로명주소에서 공란·중복을 제외한 목록입니다. 여러 주소는 모두 포함하며 각 주소의 기본 건물을 사용합니다. 현재는 입지 항목의 확인한 원자료를 입력합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("평가 항목 · \(store.archive.configuration.criteria.count)개") {
                 ForEach(store.archive.configuration.criteria) { criterion in
@@ -71,7 +72,7 @@ struct EvaluationReferenceView: View {
             Section("기준분포 확인·확정") {
                 NativeTextField("기준 이름 (예: 2026년 전국 기준 1)", text: $title).frame(minHeight: 44)
                 Button("선택한 표준 대상으로 기준 미리보기") {
-                    perform { preview = try store.preview(title: title, sites: sites.records.map(EvaluationSite.init)) }
+                    perform { preview = try makePreview(title: title) }
                 }.buttonStyle(.borderedProminent)
                 Text("선택한 표준 대상 모두에 현재 좌표·단위·조회 조건에 맞는 원자료가 필요합니다. 항목별 평균·표준편차와 표본을 확인한 후 확정합니다.").font(.caption).foregroundStyle(.secondary)
                 if let error = error ?? store.errorMessage { Text(error).foregroundStyle(.red).font(.caption) }
@@ -89,6 +90,11 @@ struct EvaluationReferenceView: View {
             .sheet(item: $editingCriterion) { EvaluationCriterionEditor(criterion: $0) }
             .sheet(isPresented: $editingConditions) { EvaluationConditionsEditor(conditions: store.archive.configuration.conditions) }
             .sheet(item: $preview) { reference in NavigationStack { EvaluationReferenceDetailView(reference: reference, confirming: true) } }
+    }
+    private func makePreview(title: String) throws -> EvaluationReference {
+        let standards = try buildingReferences.standardSites(sites.records).map(EvaluationSite.init)
+        try store.setStandardPopulation(standards,token:buildingReferences.populationToken)
+        return try store.preview(title:title,sites:sites.records.map(EvaluationSite.init))
     }
     private func perform(_ action: () throws -> Void) { do { try action(); error = nil } catch { self.error = error.localizedDescription } }
 }

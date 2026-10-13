@@ -10,21 +10,27 @@ struct LocationAnalysisScreen: View {
     @State private var confirmDelete = false
     @State private var editingCoordinate: SiteTarget?
     @State private var addingPoint = false
+    @State private var targetKeyword = ""
+    private var filteredTargets: [SiteTarget] { sites.records.filter { targetKeyword.isEmpty || ($0.name + " " + $0.address).localizedCaseInsensitiveContains(targetKeyword) } }
     var body: some View {
         NavigationStack {
             List {
                 Section("평가대상지 · \(sites.records.count)곳") {
+                    NavigationLink("도로명주소로 개별 건물·입구 확인") { BuildingRegisterView() }
                     NavigationLink("공동주택 목록에서 평가대상지 선택") { HousingCatalogView() }
                     Button("지도에서 새 평가대상지·시설 추가") { addingPoint = true }
                     Button("네이버검색에서 평가대상지 추가", action: openNaver)
+                    NativeTextField("건물 이름·도로명주소 찾기",text:$targetKeyword).frame(minHeight:44)
                     Text("네이버검색의 저장할 곳을 ‘입지 평가대상지 목록’으로 선택하세요. 장소를 누르면 주변의 영업 중인 상가 자료를 조회합니다.").font(.caption).foregroundStyle(.secondary)
                     if sites.records.isEmpty { Text("등록된 평가대상지가 없습니다.").foregroundStyle(.secondary) }
-                    ForEach(sites.records) { site in
+                    ForEach(Array(filteredTargets.prefix(300))) { site in
                         HStack {
                             NavigationLink { NearbyBusinessesView(site: site, store: store) } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(site.name).bold()
                                     Text(site.address).font(.caption).foregroundStyle(.secondary)
+                                    if let building = site.building { Text("개별 건물 · \(building.building.dongName.isEmpty ? "단독 건물" : building.building.dongName) · 출입구 기준").font(.caption2).foregroundStyle(.secondary) }
+                                    else { Text("건물·입구 확인 필요 · 기존 등록").font(.caption2).foregroundStyle(.orange) }
                                     Text("경도 \(site.effectiveCoordinate.longitude, specifier: "%.6f") · 위도 \(site.effectiveCoordinate.latitude, specifier: "%.6f")").font(.caption2).foregroundStyle(.secondary)
                                     if !site.folders.isEmpty { Text(site.folders.joined(separator: " · ")).font(.caption2).foregroundStyle(.secondary) }
                                 }
@@ -33,12 +39,14 @@ struct LocationAnalysisScreen: View {
                             Button(role: .destructive) { deleting = site; confirmDelete = true } label: { Image(systemName: "trash") }.buttonStyle(.borderless).accessibilityLabel("\(site.name) 평가대상지 삭제")
                         }
                     }
+                    if filteredTargets.count > 300 { Text("검색 결과 \(filteredTargets.count)곳 중 300곳 표시 · 검색어로 좁히세요.").font(.caption).foregroundStyle(.secondary) }
                     if let error = sites.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
                 }
                 Section("입지 평가") {
                     NavigationLink("표준 대상·고정 기준으로 점수 평가") { EvaluationReferenceView() }
+                    NavigationLink("K-apt 전체 도로명주소 표준지 목록") { KaptBuildingReferenceView() }
                     NavigationLink("시설까지 도보·대중교통·자동차 거리 조회") { KakaoRouteView() }
-                    Text("일부 표준 대상의 원자료로 기준분포를 확정하고 그 기준으로 평가합니다. 모든 항목의 자동 수집은 추후 추가하며 현재는 확인한 원자료를 입력합니다.").font(.caption).foregroundStyle(.secondary)
+                    Text("K-apt의 공란·중복 주소를 제외한 전체 도로명주소에서 기본 건물을 선정합니다. 건물 정보는 대장 우선이며 경로 기준점은 해당 건물의 입구입니다. 입지 항목의 원자료는 확인한 값을 입력합니다.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section { Button("공공데이터 API 설정") { showSettings = true } }
             }.navigationTitle("입지분석").navigationBarTitleDisplayMode(.inline)

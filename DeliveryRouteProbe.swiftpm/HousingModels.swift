@@ -23,6 +23,10 @@ struct HousingAddressEvidence: Codable {
     var communityCenter: String
     var relatedParcels: String
     var fetchedAt: Date
+    var administrativeCode: String? = nil
+    var parcelMain: String? = nil
+    var parcelSub: String? = nil
+    var mountain: String? = nil
 }
 struct HousingSource: Codable, Identifiable {
     var id: String

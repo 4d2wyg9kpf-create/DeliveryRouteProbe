@@ -280,6 +280,22 @@ private func replica(_ snapshot: DeviceShareSnapshot) throws -> DeviceShareRepli
             let partial = try reference.evaluate(site: other, record: record)
             try require(partial.total == nil && partial.majorScores.isEmpty && partial.scores.count == 3, "missing leaf silently changes weights")
         }
+        try check("Kapt population replaces old standard weights and stamps the reference") {
+            let populationStore = EvaluationReferenceStore(read:{nil},write:{_ in})
+            try populationStore.saveCriterion(criterion)
+            let populationConditions = populationStore.archive.configuration.conditions
+            try populationStore.setStandard(other,weight:2)
+            try populationStore.setStandardPopulation(three,token:"fixture-kapt-population")
+            try require(populationStore.standardCount == 3 && populationStore.archive.sites[other.id]?.standardWeight == nil,"old standard remained")
+            for (index,target) in three.enumerated() {
+                try populationStore.saveObservations(site:target,criteria:[criterion],conditions:populationConditions,values:[criterion.id:Double(index+1)],source:"가상 자료")
+            }
+            let reference = try populationStore.preview(title:"가상 Kapt 기준",sites:three)
+            try require(reference.populationToken == "fixture-kapt-population","population token missing")
+            try populationStore.confirm(reference)
+            try populationStore.setStandardPopulation(three,token:"fixture-kapt-population-changed")
+            try require(populationStore.needsReferenceUpdate(sites:three),"changed population not flagged")
+        }
         print("\(passed)/\(passed) fixed evaluation reference checks passed")
     }
 }

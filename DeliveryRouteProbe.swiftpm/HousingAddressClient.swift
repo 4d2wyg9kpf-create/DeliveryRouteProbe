@@ -24,7 +24,8 @@ struct HousingAddressClient {
             let labels = value("detBdNmList").components(separatedBy: CharacterSet(charactersIn:",;\n，")).map { $0.trimmingCharacters(in:.whitespacesAndNewlines) }.filter { !$0.isEmpty }
             return HousingAddressEvidence(roadAddress:value("roadAddrPart1").isEmpty ? value("roadAddr") : value("roadAddrPart1"), jibunAddress:value("jibunAddr"),
                 roadKey:[value("rnMgtSn"),value("udrtYn"),value("buldMnnm"),value("buldSlno")].joined(separator:"|"), buildingID:value("bdMgtSn"), dongNames:labels,
-                communityCenter:value("hemdNm"), relatedParcels:value("relJibun"), fetchedAt:at)
+                communityCenter:value("hemdNm"), relatedParcels:value("relJibun"), fetchedAt:at,
+                administrativeCode:value("admCd"), parcelMain:value("lnbrMnnm"), parcelSub:value("lnbrSlno"), mountain:value("mtYn"))
         }
         guard addresses.allSatisfy({ !$0.buildingID.isEmpty && !$0.roadAddress.isEmpty && !$0.roadKey.hasPrefix("|") }) else { throw DeviceShareError.invalid }
         return (addresses,total)

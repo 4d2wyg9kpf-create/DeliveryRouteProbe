@@ -5,6 +5,7 @@ struct EvaluationConfiguration: Codable, Equatable {
     var conditions = EvaluationConditions()
     var criteria: [EvaluationCriterion] = []
     var activeReferenceID: String?
+    var populationToken: String? = nil
     func validate() throws { try conditions.validate(); try EvaluationReference.validateCriteria(criteria) }
 }
 struct EvaluationArchive: Codable, Equatable {
@@ -13,7 +14,7 @@ struct EvaluationArchive: Codable, Equatable {
     var sites: [String: EvaluationSiteRecord] = [:]
     var references: [EvaluationReference] = []
     func validate() throws {
-        guard version == 1, sites.count <= 5_000, references.count <= 50,
+        guard version == 1, sites.count <= 100_000, references.count <= 50,
               Set(references.map(\.id)).count == references.count else { throw EvaluationFailure.message("평가 기준 보관함 형식을 확인하세요.") }
         try configuration.validate()
         for (key, record) in sites { try record.validate(); guard key == record.site.id else { throw DeviceShareError.invalid } }
@@ -49,7 +50,7 @@ final class EvaluationReferenceStore: ObservableObject {
         writeState = write
         do {
             if let data = try read() {
-                guard data.count <= 25_000_000 else { throw DeviceShareError.invalid }
+                guard data.count <= 250_000_000 else { throw DeviceShareError.invalid }
                 let value = try JSONDecoder().decode(EvaluationArchive.self, from: data)
                 try value.validate(); archive = value; initialized = true
             }
@@ -62,11 +63,23 @@ final class EvaluationReferenceStore: ObservableObject {
         var record = next.sites[site.id] ?? EvaluationSiteRecord(site: site)
         record.site = site; record.standardWeight = weight; try record.validate()
         next.sites[site.id] = record
-        guard next.sites.count <= 5_000 else { throw EvaluationFailure.message("평가 원자료는 최대 5,000곳까지 보관합니다.") }
+        guard next.sites.count <= 100_000 else { throw EvaluationFailure.message("평가 원자료는 최대 100,000곳까지 보관합니다.") }
         try commit(next)
     }
     func removeMissingStandard(_ id: String) throws {
         var next = archive; next.sites[id]?.standardWeight = nil; try commit(next)
+    }
+    func setStandardPopulation(_ sites: [EvaluationSite], token: String) throws {
+        guard !token.isEmpty, token.utf8.count <= 128, sites.count >= 2, sites.count <= 100_000,
+              Set(sites.map(\.id)).count == sites.count else { throw EvaluationFailure.message("K-apt 표준지의 건물·입구 확인을 완료하세요.") }
+        var next = archive
+        for id in next.sites.keys { next.sites[id]?.standardWeight = nil }
+        for site in sites {
+            try site.validate()
+            var record = next.sites[site.id] ?? EvaluationSiteRecord(site:site)
+            record.site = site; record.standardWeight = 1; next.sites[site.id] = record
+        }
+        next.configuration.populationToken = token; try commit(next)
     }
     func saveCriterion(_ value: EvaluationCriterion) throws {
         try value.validate()
@@ -107,12 +120,13 @@ final class EvaluationReferenceStore: ObservableObject {
             } else { record.observations.removeValue(forKey: key) }
         }
         try record.validate(); next.sites[site.id] = record
-        guard next.sites.count <= 5_000 else { throw EvaluationFailure.message("평가 원자료는 최대 5,000곳까지 보관합니다.") }
+        guard next.sites.count <= 100_000 else { throw EvaluationFailure.message("평가 원자료는 최대 100,000곳까지 보관합니다.") }
         try commit(next)
     }
     func preview(title: String, sites: [EvaluationSite]) throws -> EvaluationReference {
-        try EvaluationReference.freeze(title: title, conditions: archive.configuration.conditions,
+        var reference = try EvaluationReference.freeze(title: title, conditions: archive.configuration.conditions,
             criteria: archive.configuration.criteria, sites: sites, records: archive.sites)
+        reference.populationToken = archive.configuration.populationToken; return reference
     }
     func confirm(_ reference: EvaluationReference) throws {
         guard archive.references.count < 50, !archive.references.contains(where: { $0.id == reference.id }) else { throw EvaluationFailure.message("기준 버전은 최대 50개까지 보관합니다.") }
@@ -133,6 +147,7 @@ final class EvaluationReferenceStore: ObservableObject {
     }
     func needsReferenceUpdate(sites: [EvaluationSite]) -> Bool {
         guard let active else { return false }
+        guard active.populationToken == archive.configuration.populationToken else { return true }
         guard archive.configuration.criteria == active.criteria, archive.configuration.conditions == active.conditions else { return true }
         let selected = archive.sites.values.filter { $0.standardWeight != nil }
         guard Set(selected.map { $0.site.id }) == Set(active.standards.map { $0.site.id }) else { return true }
@@ -150,7 +165,7 @@ final class EvaluationReferenceStore: ObservableObject {
     private func commit(_ next: EvaluationArchive) throws {
         guard writable else { throw EvaluationFailure.message("기존 보관함 오류를 해결한 뒤 평가 기준을 변경하세요.") }
         let data = try DeviceShareCodec.encode(next)
-        guard data.count <= 25_000_000 else { throw EvaluationFailure.message("평가 기준 보관함이 너무 큽니다. 원자료를 백업하세요.") }
+        guard data.count <= 250_000_000 else { throw EvaluationFailure.message("평가 기준 보관함이 너무 큽니다. 원자료를 백업하세요.") }
         try writeState(data)
         archive = next; initialized = true; errorMessage = nil
         try DeviceShareHooks.changed()
@@ -208,13 +223,13 @@ extension EvaluationReferenceStore {
             guard let data = entry.value else { continue }
             let header = try DeviceShareCodec.decode(EvaluationReferenceHeader.self, data)
             let prefix = "setting/evaluation/reference/" + header.id
-            guard key == prefix + "/header", UUID(uuidString: header.id) != nil, (1...84).contains(header.parts) else { throw DeviceShareError.invalid }
+            guard key == prefix + "/header", UUID(uuidString: header.id) != nil, (1...834).contains(header.parts) else { throw DeviceShareError.invalid }
             var payload = Data()
             for index in 0..<header.parts {
                 guard let part = try replica.value(prefix + "/part/\(index)", as: Data.self), !part.isEmpty, part.count <= 300_000 else { throw DeviceShareError.invalid }
                 payload.append(part)
             }
-            guard payload.count <= 25_000_000, DeviceShareCodec.digest(payload) == header.digest else { throw DeviceShareError.invalid }
+            guard payload.count <= 250_000_000, DeviceShareCodec.digest(payload) == header.digest else { throw DeviceShareError.invalid }
             if let old = next.references.first(where: { $0.id == header.id }) {
                 guard try DeviceShareCodec.encode(old) == payload else { throw EvaluationFailure.message("같은 기준 버전의 다른 내용이 공유되어 기존 기준을 보존합니다.") }
             } else {
@@ -225,7 +240,7 @@ extension EvaluationReferenceStore {
         }
         next.references.sort { $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt }
         try next.configuration.validate()
-        guard next.sites.count <= 5_000, next.references.count <= 50,
+        guard next.sites.count <= 100_000, next.references.count <= 50,
               next.configuration.activeReferenceID.map({ id in next.references.contains { $0.id == id } }) ?? true else { throw DeviceShareError.invalid }
         if next != archive { try commit(next) }
     }

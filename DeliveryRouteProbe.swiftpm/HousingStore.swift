@@ -84,6 +84,43 @@ final class HousingStore: ObservableObject {
     func originalRegion(_ code: String) throws -> HousingRegion {
         guard let collectionDisk else { throw DeviceShareError.unavailable }; return try collectionDisk.read(code)
     }
+    func buildingAddresses(_ roadAddress: String) async throws -> [HousingAddressEvidence] {
+        let source = HousingSource(id: "address-query", aptCode: "", noticeDate: "", regionCode: "", fields: ["roadAddress": roadAddress])
+        return try await HousingAddressClient().lookup(source, key: addressKey).addresses ?? []
+    }
+    func buildingSupplements(roadAddress: String, regionCode: String? = nil) throws -> [HousingSource] {
+        guard let key = BuildingAddress.key(roadAddress) else { return [] }
+        return try regions.filter { regionCode == nil || $0.code == regionCode }.flatMap { summary -> [HousingSource] in
+            let region = try originalRegion(summary.code)
+            return (region.records + (region.kaptRecords ?? [])).filter { source in
+                BuildingAddress.split(source.fields["roadAddress", default: ""]).contains { BuildingAddress.key($0) == key }
+            }
+        }
+    }
+    func refreshBuildingRealty(roadAddress: String, regionCode: String, client: RealtyHousingClient = RealtyHousingClient()) async throws -> [String:String] {
+        guard !isBusy else { throw BuildingEvaluationError.message("공시가격 수집 작업 완료 후 보충할 수 있습니다.") }
+        isBusy = true; defer { isBusy = false }
+        var region: HousingRegion
+        if regions.contains(where: { $0.code == regionCode }) { region = try originalRegion(regionCode) }
+        else {
+            guard regionCode.range(of:#"^\d{10}$"#,options:.regularExpression) != nil else { throw DeviceShareError.invalid }
+            let sidoCode = String(regionCode.prefix(2)), sigunguCode = String(regionCode.dropFirst(2).prefix(3)), dongCode = String(regionCode.suffix(5))
+            guard let sido = try await client.areas().first(where: { $0.code == sidoCode }),
+                  let sigungu = try await client.areas(sido:sidoCode).first(where: { $0.code == sigunguCode }),
+                  let dong = try await client.areas(sido:sidoCode,sigungu:sigunguCode).first(where: { $0.code == dongCode }) else {
+                throw BuildingEvaluationError.message("공시가격 법정동을 확인하지 못했습니다.")
+            }
+            region = try await client.list(sido:sido,sigungu:sigungu,dong:dong)
+        }
+        let key = BuildingAddress.key(roadAddress)
+        for index in region.records.indices where region.records[index].detailAt == nil {
+            guard BuildingAddress.split(region.records[index].fields["roadAddress",default:""]).contains(where:{ BuildingAddress.key($0) == key }) else { continue }
+            region.records[index] = try await client.detail(region.records[index])
+            region.generation = max(Date().timeIntervalSince1970*1000,region.generation+1)
+            try importRegion(region)
+        }
+        return BuildingFacts.consensus(try buildingSupplements(roadAddress:roadAddress,regionCode:regionCode).filter { !$0.isKapt }.map(\.fields))
+    }
     func exportRegions(_ code: String) throws -> [HousingRegion] {
         let selected = regions.filter { code.isEmpty || $0.code == code }
         guard !code.isEmpty || selected.reduce(0, { $0 + $1.sourceCount }) <= 20_000 else { throw PlannerFailure.message("큰 자료는 법정동을 선택해 나누어 내보내세요.") }

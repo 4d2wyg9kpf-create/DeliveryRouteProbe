@@ -205,9 +205,7 @@ struct HousingComplexView: View {
                     }
                     Button("지도에서 좌표 지정·수정") { showMap = true }
                     if let c = complex.coordinate { Text("\(c.latitude, specifier: "%.8f"), \(c.longitude, specifier: "%.8f")").font(.caption) }
-                    Button("평가대상지에 추가·갱신") {
-                        do { guard let c = complex.coordinate else { throw PlannerFailure.message("지도에서 좌표를 먼저 지정하세요.") }; _ = try sites.saveManual(name: complex.name, address: complex.address, coordinate: c, housingID: complex.id) } catch { self.error = error.localizedDescription }
-                    }
+                    NavigationLink("개별 건물·출입구 확인 후 평가대상에 등록") { BuildingRegisterView(roadAddress:complex.address) }
                 }
                 Section("단지 범위 가공") {
                     Button("주소 기반 통합 후보 직접 확인") { reviewingMerge = true }

@@ -26,6 +26,7 @@ on:
       - 'scripts/test_public_data_live_clock.*'
       - 'scripts/test_place_destinations.*'
       - 'scripts/test_evaluation_reference.*'
+      - 'scripts/test_building_evaluation.*'
       - 'tests/naver_api_tests.js'
       - 'tests/shared_pin_tests.js'
       - 'tests/delivery_flow_tests.js'
@@ -51,6 +52,8 @@ jobs:
           persist-credentials: false
       - name: Verify housing parsing, editable coordinates, source preservation and Kakao routing request gates
         run: bash scripts/test_housing_kakao.sh
+      - name: Verify individual buildings, entrance gates, source priority and Kapt reference addresses
+        run: bash scripts/test_building_evaluation.sh
       - name: Verify frozen reference distributions, stable scores, hierarchy, versions and shared persistence
         run: bash scripts/test_evaluation_reference.sh
       - name: Verify one public apartment using the paced production URLSession client

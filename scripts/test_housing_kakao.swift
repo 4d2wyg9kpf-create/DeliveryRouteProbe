@@ -3,6 +3,7 @@ import Darwin
 import Combine
 
 struct TMapCoordinate: Codable, Equatable { var longitude: Double; var latitude: Double; var poiID: String?; var detailAddress: String? }
+struct SiteTarget { var building: BuildingSelection? }
 enum PlannerFailure: LocalizedError { case message(String); var errorDescription: String? { if case .message(let value) = self { return value }; return nil } }
 func require(_ value: Bool, _ text: String) throws { if !value { throw PlannerFailure.message(text) } }
 func rejects(_ action: () throws -> Void) throws { do { try action() } catch { return }; throw PlannerFailure.message("expected rejection") }
@@ -425,6 +426,84 @@ actor RequestConcurrencyProbe {
         try check("repeated K-apt collection queries only missing detail while retaining originals and explicit grouping") {
             let stored = try collector.originalRegion(manual.code)
             try require(collectionRequests == 7 && stored.kaptRecords?.count == 2 && stored.kaptRecords?.allSatisfy { $0.detailAt != nil } == true && collector.complexes.count == 2,"existing K-apt details fetched again or sources duplicated")
+        }
+        let fixtureAddress = HousingAddressEvidence(roadAddress:"대전광역시 중구 가상로 10",jibunAddress:"대전광역시 중구 가상동 1",roadKey:"fixture",buildingID:"fixture-address",dongNames:["101동"],communityCenter:"",relatedParcels:"",fetchedAt:Date(),administrativeCode:"3014010100",parcelMain:"1",parcelSub:"0",mountain:"0")
+        let ledgerRow: [String:Any] = ["mgmBldrgstPk":"fixture-registry-101","newPlatPlc":fixtureAddress.roadAddress,"sigunguCd":"30140","bjdongCd":"10100","platGbCd":"0","bun":"0001","ji":"0000","mainAtchGbCd":"0","bldNm":"가상 아파트","dongNm":"101동","mainPurpsCdNm":"공동주택","etcPurps":"아파트","hhldCnt":"10","grndFlrCnt":"15","indrMechUtcnt":"0","oudrMechUtcnt":"0","indrAutoUtcnt":"0","oudrAutoUtcnt":"0"]
+        let ledgerData = try json(["response":["header":["resultCode":"00"],"body":["items":["item":ledgerRow],"pageNo":1,"totalCount":1]]])
+        let ledgerBuilding = try BuildingLedgerClient.parse(ledgerData,address:fixtureAddress,page:1).buildings[0]
+        try check("building registry request uses verified parcel and current Hub endpoint") {
+            let parameters = try BuildingLedgerClient.parameters(fixtureAddress,page:1)
+            let request = try KaptGateway.request(.buildingTitle,key:"fixture-key",parameters:parameters)
+            let items = URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!
+            try require(request.url?.path == "/1613000/BldRgstHubService/getBrTitleInfo" && parameters["bun"] == "0001" && items.contains { $0.name == "_type" && $0.value == "json" },"Hub endpoint or parcel mismatch")
+        }
+        try check("title parser keeps per-building zero and correct dong identity") {
+            try require(ledgerBuilding.id == "fixture-registry-101" && ledgerBuilding.dongName == "101동" && ledgerBuilding.fields["households"] == "10" && ledgerBuilding.fields["parking"] == "0","registry mapped incorrectly")
+        }
+        try check("title parser rejects a different returned parcel") {
+            var wrong = ledgerRow; wrong["bun"] = "0002"
+            let data = try json(["response":["header":["resultCode":"00"],"body":["items":[wrong],"pageNo":1,"totalCount":1]]])
+            try rejects { _ = try BuildingLedgerClient.parse(data,address:fixtureAddress,page:1) }
+        }
+        try check("title parser does not include another road address or accessory building") {
+            var other = ledgerRow; other["newPlatPlc"] = "대전광역시 중구 가상로 20"
+            var accessory = ledgerRow; accessory["mainAtchGbCd"] = "1"
+            let data = try json(["response":["header":["resultCode":"00"],"body":["items":[other,accessory],"pageNo":1,"totalCount":2]]])
+            try require(try BuildingLedgerClient.parse(data,address:fixtureAddress,page:1).buildings.isEmpty,"non-target building included")
+        }
+        try check("title pagination cannot silently drop a building") {
+            let data = try json(["response":["header":["resultCode":"00"],"body":["items":[ledgerRow],"pageNo":1,"totalCount":2]]])
+            try rejects { _ = try BuildingLedgerClient.parse(data,address:fixtureAddress,page:1) }
+        }
+        try check("national Kapt request does not require a legal dong") {
+            let request = try KaptGateway.request(.all,key:"fixture-key",parameters:["pageNo":"1"])
+            try require(request.url?.path == "/1613000/AptListService4/getTotalAptList4" && request.url?.query?.contains("bjdCode") == false,"national inventory scoped by dong")
+        }
+        var referenceState: Data?, referenceRequests = 0
+        let referenceAPI = PublicDataStore(read:{nil},write:{_ in},transport:{ request in
+            if request.httpMethod == "HEAD" { return (Data(),HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:["Date":"Sun, 11 Oct 2026 10:00:00 GMT"])!) }
+            referenceRequests += 1
+            let data: Data
+            if request.url!.path.contains("getTotalAptList") {
+                data = try json(["response":["header":["resultCode":"00"],"body":["items":[["kaptCode":"A1","kaptName":"가상 등록1"],["kaptCode":"A2","kaptName":"가상 등록2"]],"pageNo":1,"totalCount":2]]])
+            } else {
+                let code = URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!.first { $0.name == "kaptCode" }!.value!
+                data = try json(["response":["header":["resultCode":"00"],"body":["item":["kaptCode":code,"doroJuso":code == "A1" ? fixtureAddress.roadAddress : "","kaptdaCnt":"100"]]]])
+            }
+            return (data,HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:[:])!)
+        })
+        try require(referenceAPI.saveSettings(key:"fixture-key",approved:["kaptList","kaptBasis"],limits:["kaptList":20,"kaptBasis":20]),"national reference settings")
+        let referenceStore = BuildingReferenceStore(read:{referenceState},write:{referenceState = $0})
+        try await referenceStore.collect(api:referenceAPI)
+        try check("national catalog preserves blank originals and produces a complete address inventory") {
+            try require(referenceStore.archive.listComplete && referenceStore.archive.records.count == 2 && referenceStore.catalog.addresses.count == 1 && referenceStore.catalog.missingAddressIDs == ["A2"] && referenceStore.catalog.complete,"national catalog rules")
+        }
+        try await referenceStore.collect(api:referenceAPI)
+        try check("completed reference address collection resumes without fetching old details") {
+            try require(referenceRequests == 3,"old Kapt data refetched")
+        }
+        try check("national reference catalog survives persistence and refuses missing entrances") {
+            let restored = BuildingReferenceStore(read:{referenceState},write:{referenceState = $0})
+            try require(restored.catalog.addresses.count == 1 && restored.errorMessage == nil,"reference persistence")
+            try rejects { _ = try restored.standardSites([]) }
+            let selection = BuildingSelection(building:ledgerBuilding,choice:.firstDong,entranceSource:"가상 확인",entranceID:"fixture-entry",longitude:127.4,latitude:36.3)
+            try require(try restored.standardSites([SiteTarget(building:selection)]).count == 1,"verified default entrance missing")
+        }
+        try check("concurrent reference devices preserve details from both devices") {
+            let original = referenceStore.archive
+            var a = original, b = original
+            a.records[0].fetchedAt = nil; a.records[0].roadAddresses = []
+            b.records[1].fetchedAt = nil; b.records[1].roadAddresses = []
+            let merged = try BuildingReferenceArchive.merge(a,b)
+            try require(merged.records.allSatisfy { $0.fetchedAt != nil },"one device lost detail")
+        }
+        try check("shared reference catalog pieces verify checksums and restore all addresses") {
+            let snapshot = try referenceStore.sharingSnapshot()
+            var replica = DeviceShareReplica(deviceID:UUID().uuidString), observed: [String:Data] = [:]
+            try replica.capture(snapshot,observed:&observed)
+            let target = BuildingReferenceStore(read:{nil},write:{_ in})
+            try target.applySharing(replica)
+            try require(target.archive.records.count == 2 && target.catalog.addresses.count == 1,"reference sharing")
         }
         var publicState: Data?, publicRequests = 0
         let gateway = PublicDataStore(read:{ publicState },write:{ publicState = $0 },transport:{ request in

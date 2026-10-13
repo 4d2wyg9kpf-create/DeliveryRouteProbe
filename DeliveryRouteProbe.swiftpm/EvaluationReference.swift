@@ -164,6 +164,7 @@ struct EvaluationDistribution: Codable, Equatable {
 }
 
 struct EvaluationReference: Codable, Equatable, Identifiable {
+    var populationToken: String? = nil
     var id = UUID().uuidString
     var algorithmVersion = 1
     var title: String
@@ -181,7 +182,7 @@ struct EvaluationReference: Codable, Equatable, Identifiable {
         guard Set(sites.map(\.id)).count == sites.count else { throw EvaluationFailure.message("평가대상지가 중복되었습니다.") }
         let available = Dictionary(uniqueKeysWithValues: sites.map { ($0.id, $0) })
         let selected = records.values.filter { $0.standardWeight != nil }.sorted { $0.site.id < $1.site.id }
-        guard selected.count >= 2, selected.count <= 5_000 else { throw EvaluationFailure.message("표준 대상을 2곳 이상 선택하세요.") }
+        guard selected.count >= 2, selected.count <= 100_000 else { throw EvaluationFailure.message("표준 대상을 2곳 이상 선택하세요.") }
         let standards = try selected.map { record -> EvaluationStandard in
             guard let site = available[record.site.id] else { throw EvaluationFailure.message("표준 대상 ‘\(record.site.name)’이 평가대상지 목록에 없습니다. 표준 선택을 확인하세요.") }
             try site.validate(); try record.validate()
@@ -208,7 +209,7 @@ struct EvaluationReference: Codable, Equatable, Identifiable {
 
     func validate() throws {
         guard UUID(uuidString: id) != nil, algorithmVersion == 1, !title.isEmpty, title.utf8.count <= 200,
-              createdAt.timeIntervalSince1970.isFinite, (2...5_000).contains(standards.count),
+              createdAt.timeIntervalSince1970.isFinite, (2...100_000).contains(standards.count),
               !distributions.isEmpty, Set(standards.map { $0.site.id }).count == standards.count else {
             throw EvaluationFailure.message("저장된 평가 기준 형식을 확인하세요.")
         }

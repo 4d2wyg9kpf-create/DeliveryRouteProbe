@@ -312,10 +312,10 @@ final class PublicDataStore: ObservableObject {
         let request = try KaptGateway.request(action, key: state.serviceKey, parameters: parameters)
         try reserve(action.service)
         let (data, response) = try await send(request); try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse, http.url?.host == "apis.data.go.kr", http.url?.scheme == "https", data.count <= 8_000_000 else { throw PublicDataFailure.message("K-apt 응답 출처·크기를 확인하지 못했습니다.") }
+        guard let http = response as? HTTPURLResponse, http.url?.host == "apis.data.go.kr", http.url?.scheme == "https", data.count <= 8_000_000 else { throw PublicDataFailure.message("공공데이터 응답 출처·크기를 확인하지 못했습니다.") }
         do {
             _ = try KaptGateway.body(data)
-            guard http.statusCode == 200 else { throw PublicDataFailure.message("K-apt HTTP 오류 \(http.statusCode)") }
+            guard http.statusCode == 200 else { throw PublicDataFailure.message("\(action.service.title) HTTP 오류 \(http.statusCode)") }
             return data
         } catch PublicDataFailure.provider(let code) {
             if ["22", "-10"].contains(code), let now {

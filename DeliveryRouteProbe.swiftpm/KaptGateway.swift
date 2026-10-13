@@ -1,11 +1,15 @@
 import Foundation
 
 enum KaptRequest {
-    case list, basic, facilities
-    var service: PublicDataService { self == .list ? .kaptList : .kaptBasis }
+    case list, all, basic, facilities, buildingTitle
+    var service: PublicDataService {
+        switch self { case .list, .all: return .kaptList; case .buildingTitle: return .buildingLedger; default: return .kaptBasis }
+    }
     var path: String {
         switch self {
         case .list: return "/1613000/AptListService4/getLegaldongAptList4"
+        case .all: return "/1613000/AptListService4/getTotalAptList4"
+        case .buildingTitle: return "/1613000/BldRgstHubService/getBrTitleInfo"
         case .basic: return "/1613000/AptBasisInfoServiceV5/getAphusBassInfoV5"
         case .facilities: return "/1613000/AptBasisInfoServiceV5/getAphusDtlInfoV5"
         }
@@ -15,9 +19,16 @@ enum KaptGateway {
     static func request(_ action: KaptRequest, key: String, parameters: [String: String]) throws -> URLRequest {
         guard !key.isEmpty else { throw PublicDataFailure.message("공공데이터 인증키와 K-apt API 활용승인을 먼저 설정하세요.") }
         var values = parameters
-        if action == .list {
-            guard values["bjdCode"]?.range(of: #"^\d{10}$"#, options: .regularExpression) != nil, let page = Int(values["pageNo"] ?? ""), (1...100_000).contains(page) else { throw DeviceShareError.invalid }
+        if action == .list || action == .all {
+            guard action == .all || values["bjdCode"]?.range(of: #"^\d{10}$"#, options: .regularExpression) != nil,
+                  let page = Int(values["pageNo"] ?? ""), (1...100_000).contains(page) else { throw DeviceShareError.invalid }
             values["numOfRows"] = "100"
+        } else if action == .buildingTitle {
+            for (name, length) in [("sigunguCd",5),("bjdongCd",5),("bun",4),("ji",4)] {
+                guard values[name]?.range(of: "^\\d{\(length)}$", options: .regularExpression) != nil else { throw DeviceShareError.invalid }
+            }
+            guard ["0","1","2"].contains(values["platGbCd"] ?? ""), let page = Int(values["pageNo"] ?? ""), (1...10_000).contains(page) else { throw DeviceShareError.invalid }
+            values["numOfRows"] = "100"; values["_type"] = "json"
         } else {
             guard values["kaptCode"]?.range(of: #"^[A-Za-z0-9]{1,40}$"#, options: .regularExpression) != nil else { throw DeviceShareError.invalid }
         }
