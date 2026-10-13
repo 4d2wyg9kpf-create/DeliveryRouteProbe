@@ -5,4 +5,6 @@
     <key>CFBundleDisplayName</key><string>DeliveryRoute</string>
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+<key>UIBackgroundModes</key><array><string>processing</string></array>
+    <key>BGTaskSchedulerPermittedIdentifiers</key><array><string>kr.deliverytools.routeprobe.housing.*</string></array>
 </dict></plist>

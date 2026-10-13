@@ -3,9 +3,12 @@ import Foundation
 // The mobile page's own JSON/form endpoints. No browser or WebView is opened.
 struct RealtyHousingClient: RealtyHousingCollecting {
     private let session: URLSession
-    init() {
+    private let scheduler: RealtyRequestScheduler
+    private let transport: RealtyRequestScheduler.Transport?
+    init(scheduler: RealtyRequestScheduler = .shared, transport: RealtyRequestScheduler.Transport? = nil) {
         let c = URLSessionConfiguration.ephemeral; c.urlCache = nil; c.timeoutIntervalForRequest = 30; c.timeoutIntervalForResource = 45
         session = URLSession(configuration: c)
+        self.scheduler = scheduler; self.transport = transport
     }
     func post(_ path: String, _ values: [String: String]) async throws -> Data {
         try Task.checkCancellation()
@@ -15,9 +18,8 @@ struct RealtyHousingClient: RealtyHousingCollecting {
         request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
         var form = URLComponents(); form.queryItems = values.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
         request.httpBody = Data((form.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").utf8)
-        let (data, response) = try await session.data(for: request); try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.url?.host == "www.realtyprice.kr", data.count <= 50_000_000 else { throw PlannerFailure.message("공시가격 모바일 자료를 읽지 못했습니다. 잠시 뒤 다시 시도하세요.") }
-        return data
+        let session = session
+        return try await scheduler.data(for: request, transport: transport ?? { try await session.data(for: $0) })
     }
     static func rows(_ data: Data) throws -> [[String: Any]] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -95,7 +97,8 @@ struct RealtyHousingClient: RealtyHousingCollecting {
         var next = try Self.parseDetail(html, source: source)
         next.noticeDate = notice
         let select = Self.matches(html, #"<select[^>]*id=['\"]sel_dong['\"][^>]*>(.*?)</select>"#).first ?? ""
-        let dongs = Self.matches(select, #"<option[^>]*value=['\"]([^'\"]+)['\"]"#)
+        var seenDongs = Set<String>()
+        let dongs = Self.matches(select, #"<option[^>]*value=['\"]([^'\"]+)['\"]"#).filter { seenDongs.insert($0).inserted }
         var found = false
         for dong in dongs {
             var form = ["notice_date": notice, "apt_code": source.aptCode, "dong_code": dong]

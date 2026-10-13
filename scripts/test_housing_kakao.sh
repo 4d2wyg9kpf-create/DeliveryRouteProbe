@@ -11,6 +11,9 @@ swiftc -parse-as-library \
   DeliveryRouteProbe.swiftpm/KakaoRouteStore.swift \
   DeliveryRouteProbe.swiftpm/HousingModels.swift \
   DeliveryRouteProbe.swiftpm/HousingCollection.swift \
+  DeliveryRouteProbe.swiftpm/HousingCollectionBackground.swift \
+  DeliveryRouteProbe.swiftpm/HousingCollectionDisk.swift \
+  DeliveryRouteProbe.swiftpm/RealtyRequestScheduler.swift \
   DeliveryRouteProbe.swiftpm/HousingConsolidation.swift \
   DeliveryRouteProbe.swiftpm/KaptGateway.swift \
   DeliveryRouteProbe.swiftpm/KaptHousingClient.swift \

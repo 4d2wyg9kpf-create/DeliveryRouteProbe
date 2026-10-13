@@ -8,12 +8,23 @@ final class HousingStore: ObservableObject {
     @Published private(set) var complexes: [HousingComplex] = []
     @Published var errorMessage: String?
     @Published var progress = ""
-    @Published var collectionProgress: HousingCollectionProgress?
+    let collectionStatus = HousingCollectionStatus()
+    var collectionProgress: HousingCollectionProgress? {
+        get { collectionStatus.value }
+        set { collectionStatus.value = newValue }
+    }
     @Published var isBusy = false
+    @Published private(set) var resumableScopeTitle: String?
     @Published private(set) var hasAddressKey = false
     private var addressKey = ""
     private let directory: URL
     private var index: HousingIndex?
+    private var collectionDisk: HousingCollectionDisk?
+    private var collectionTask: Task<Void, Never>?
+    private var collectionRunID: UUID?
+    private var pendingSummaries: [String: HousingRegionSummary] = [:]
+    private var lastCollectionRefresh = Date.distantPast
+    private var editsRevision = 0
     private var searchRegion = ""
     private var searchKeyword = ""
     private var syncFolderIdentity = ""
@@ -24,6 +35,7 @@ final class HousingStore: ObservableObject {
         self.directory = directory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("RouteProbe/Housing", isDirectory: true)
         do {
             index = try HousingIndex(directory: self.directory)
+            collectionDisk = HousingCollectionDisk(directory: self.directory, index: index!)
             regions = try index!.summaries()
             if FileManager.default.fileExists(atPath: self.directory.path) {
                 for file in try FileManager.default.contentsOfDirectory(at: self.directory, includingPropertiesForKeys: nil) where file.lastPathComponent.hasPrefix("region-") && file.pathExtension == "json" {
@@ -34,6 +46,7 @@ final class HousingStore: ObservableObject {
                 if FileManager.default.fileExists(atPath: file.path) { edits = try DeviceShareCodec.decode([HousingEdit].self, Data(contentsOf: file)); try Self.validate(edits) }
                 // Migrate the previous raw-only index. Raw files and edits are
                 // retained; explicit user links are the only grouping decisions.
+                try collectionDisk!.recover(edits: edits)
                 for summary in regions where summary.manualReview != true || edits.contains(where: { $0.regionCode == summary.code }) {
                     let region = try originalRegion(summary.code); try index!.replace(region, edits: edits)
                 }
@@ -45,6 +58,7 @@ final class HousingStore: ObservableObject {
                 let seed = try Self.decode(Data(HousingSeed.source.utf8)); try importRegion(seed, share: false)
             }
             ready = Set(regions.map(\.code)); publish()
+            if let checkpoint = try index?.collectionCheckpoint() { resumableScopeTitle = checkpoint.scope.title }
         } catch { writable = false; errorMessage = "공동주택 보관 자료를 읽지 못했습니다. 기존 자료는 보존했습니다. " + error.localizedDescription }
     }
     private func publish() {
@@ -56,14 +70,19 @@ final class HousingStore: ObservableObject {
     }
     func search(region: String, keyword: String) async {
         searchRegion = region; searchKeyword = keyword
-        let edits = edits, directory = directory, ids = Set(edits.flatMap(\.sourceIDs))
+        let edits = edits, revision = editsRevision, directory = directory, ids = Set(edits.flatMap(\.sourceIDs))
         do {
-            let sources = try await Task.detached(priority: .utility) { try HousingIndex.search(directory: directory, region: region, keyword: keyword, sourceIDs: ids) }.value
-            guard searchRegion == region, searchKeyword == keyword else { return }
-            complexes = HousingCatalog.effective(sources: sources, edits: edits).filter { (region.isEmpty || $0.regionCode == region || $0.originals.contains { $0.regionCode == region }) && (keyword.isEmpty || $0.searchText.localizedCaseInsensitiveContains(keyword)) }
+            let result = try await Task.detached(priority: .utility) {
+                let sources = try HousingIndex.search(directory: directory, region: region, keyword: keyword, sourceIDs: ids)
+                return HousingCatalog.effective(sources: sources, edits: edits).filter { (region.isEmpty || $0.regionCode == region || $0.originals.contains { $0.regionCode == region }) && (keyword.isEmpty || $0.searchText.localizedCaseInsensitiveContains(keyword)) }
+            }.value
+            guard searchRegion == region, searchKeyword == keyword, editsRevision == revision else { return }
+            complexes = result
         } catch { errorMessage = error.localizedDescription }
     }
-    func originalRegion(_ code: String) throws -> HousingRegion { try Self.decode(Data(contentsOf: directory.appendingPathComponent("region-" + code + ".json"))) }
+    func originalRegion(_ code: String) throws -> HousingRegion {
+        guard let collectionDisk else { throw DeviceShareError.unavailable }; return try collectionDisk.read(code)
+    }
     func exportRegions(_ code: String) throws -> [HousingRegion] {
         let selected = regions.filter { code.isEmpty || $0.code == code }
         guard !code.isEmpty || selected.reduce(0, { $0 + $1.sourceCount }) <= 20_000 else { throw PlannerFailure.message("큰 자료는 법정동을 선택해 나누어 내보내세요.") }
@@ -78,65 +97,203 @@ final class HousingStore: ObservableObject {
               edits.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 200 && $0.sourceIDs.count <= 500 && ($0.mergedIDs?.count ?? 0) <= 500 && !($0.mergedIDs ?? []).contains($0.id) && $0.fields.count <= 100 && ($0.note?.utf8.count ?? 0) <= 20_000 && $0.fields.values.allSatisfy({ $0.utf8.count <= 20_000 }) && ($0.coordinate.map(KakaoRouteAPI.valid) ?? true) }) else { throw DeviceShareError.invalid }
     }
     func importRegion(_ incoming: HousingRegion, share: Bool = true) throws {
-        var region = incoming
-        guard writable else { throw DeviceShareError.unavailable }; try region.validate()
-        let existing = regions.first { $0.code == region.code }
-        if existing != nil {
-            let local = try originalRegion(region.code), merged = try local.merging(region)
-            if try DeviceShareCodec.encode(merged) == DeviceShareCodec.encode(local) { return }
-            region = merged
-            if merged.generation <= local.generation { region.generation = max(Date().timeIntervalSince1970 * 1000, local.generation + 1) }
-        }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try DeviceShareCodec.encode(region).write(to: directory.appendingPathComponent("region-" + region.code + ".json"), options: .atomic)
-        try index?.replace(region, edits: edits)
-        regions.removeAll { $0.code == region.code }; regions.append(HousingRegionSummary(region)); publish()
-        if share { ready.insert(region.code); try DeviceShareHooks.changed() } else { ready.remove(region.code) }
+        guard writable, let collectionDisk else { throw DeviceShareError.unavailable }
+        let summary = try collectionDisk.merge(incoming, edits: edits)
+        regions.removeAll { $0.code == summary.code }; regions.append(summary); publish()
+        if share { ready.insert(summary.code); try DeviceShareHooks.changed() } else { ready.remove(summary.code) }
     }
     func shareRegion(_ code: String) throws { ready.insert(code); try DeviceShareHooks.changed() }
     func updateCollectionProgress(_ update: (inout HousingCollectionProgress) -> Void) {
         guard var value = collectionProgress else { return }
-        update(&value); collectionProgress = value; progress = value.text
+        update(&value); collectionProgress = value
+        if let id = collectionRunID { HousingCollectionBackground.shared.update(id: id, progress: value) }
+    }
+    private func importCollectedRegion(_ incoming: HousingRegion) async throws -> HousingRegion {
+        guard writable, let disk = collectionDisk else { throw DeviceShareError.unavailable }
+        let changes = edits, revision = editsRevision
+        let region = try await Task.detached(priority: .utility) {
+            _ = try disk.merge(incoming, edits: changes); return try disk.read(incoming.code)
+        }.value
+        if editsRevision != revision {
+            let latest = edits
+            try await Task.detached(priority: .utility) { try disk.flush(incoming.code, reindex: true, edits: latest) }.value
+        }
+        pendingSummaries[incoming.code] = HousingRegionSummary(region); ready.insert(incoming.code)
+        return region
+    }
+    private func refreshCollectedUI(force: Bool = false) async {
+        guard force || Date().timeIntervalSince(lastCollectionRefresh) >= 3 else { return }
+        lastCollectionRefresh = Date()
+        let changes = pendingSummaries; pendingSummaries.removeAll()
+        if !changes.isEmpty {
+            let current = regions
+            regions = await Task.detached(priority: .utility) {
+                var values = Dictionary(current.map { ($0.code, $0) }, uniquingKeysWith: { a, b in b.generation >= a.generation ? b : a })
+                for (code, value) in changes where value.generation >= (values[code]?.generation ?? 0) { values[code] = value }
+                return values.values.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            }.value
+        }
+        await search(region: searchRegion, keyword: searchKeyword)
+    }
+    func startRealtyCollection(scope: HousingCollectionScope, details: Bool, client: any RealtyHousingCollecting = RealtyHousingClient()) {
+        startRealtyJob(HousingCollectionCheckpoint(scope: scope, includesDetails: details), resuming: false, client: client)
+    }
+    func resumeRealtyCollection(client: any RealtyHousingCollecting = RealtyHousingClient()) {
+        do {
+            guard let checkpoint = try index?.collectionCheckpoint() else { resumableScopeTitle = nil; return }
+            startRealtyJob(checkpoint, resuming: true, client: client)
+        } catch { errorMessage = error.localizedDescription }
+    }
+    private func startRealtyJob(_ checkpoint: HousingCollectionCheckpoint, resuming: Bool, client: any RealtyHousingCollecting) {
+        guard !isBusy, writable else { return }
+        let id = UUID(); collectionRunID = id; isBusy = true; errorMessage = nil
+        collectionProgress = HousingCollectionProgress(scopeTitle: checkpoint.scope.title, includesDetails: checkpoint.includesDetails)
+        collectionStatus.resumeAt = nil; lastCollectionRefresh = .distantPast
+        HousingCollectionBackground.shared.begin(id: id, title: checkpoint.scope.title, status: collectionStatus, start: { [weak self] in
+            guard let self, self.collectionRunID == id else { return }
+            self.collectionTask = Task { [weak self] in
+                guard let self else { return }
+                var succeeded = false
+                do { succeeded = try await self.runRealtyCollection(checkpoint, resuming: resuming, client: client) }
+                catch is CancellationError { self.updateCollectionProgress { $0.stop() } }
+                catch {
+                    self.errorMessage = error.localizedDescription
+                    self.collectionStatus.resumeAt = (error as? RealtyCollectionInterruption)?.resumeAt
+                    self.updateCollectionProgress { $0.fail() }
+                }
+                await self.refreshCollectedUI(force: true)
+                try? DeviceShareHooks.changed()
+                HousingCollectionBackground.shared.finish(id: id, success: succeeded)
+                self.resumableScopeTitle = (try? self.index?.collectionCheckpoint())?.scope.title
+                self.isBusy = false; self.collectionTask = nil; self.collectionRunID = nil
+                if succeeded { self.collectionStatus.backgroundMessage = "수집을 완료했습니다." }
+            }
+        }, expire: { [weak self] in
+            self?.collectionStatus.backgroundMessage = "시스템이 백그라운드 수집을 중단했습니다. 저장된 작업을 이어서 수집할 수 있습니다."
+            self?.stopRealtyCollection(system: true)
+        })
+    }
+    func stopRealtyCollection(system: Bool = false) {
+        if !system { collectionStatus.backgroundMessage = "수집을 중단하고 작업을 보관합니다." }
+        if let task = collectionTask { task.cancel() }
+        else if let id = collectionRunID {
+            HousingCollectionBackground.shared.finish(id: id, success: false)
+            collectionRunID = nil; isBusy = false; updateCollectionProgress { $0.stop() }
+        }
+    }
+    func waitForRealtyCollection() async { await collectionTask?.value }
+    // Kept independently of any View task, so tab switches and navigation do
+    // not cancel the user's job. The durable inventory also survives relaunch.
+    func runRealtyCollection(_ saved: HousingCollectionCheckpoint, resuming: Bool,
+                            client: any RealtyHousingCollecting) async throws -> Bool {
+        guard let disk = collectionDisk else { throw DeviceShareError.unavailable }
+        var checkpoint = saved
+        try await DeviceShareHooks.prepareRequest()
+        try await Task.detached(priority: .utility) { try disk.index.saveCollectionCheckpoint(saved, resetInventory: !resuming) }.value
+        resumableScopeTitle = saved.scope.title
+        if checkpoint.targets == nil {
+            checkpoint.targets = try await HousingCollectionTargets.resolve(checkpoint.scope, client: client) { count in self.updateCollectionProgress { $0.discovered(count) } }
+            let request = checkpoint
+            try await Task.detached(priority: .utility) { try disk.index.saveCollectionCheckpoint(request, resetInventory: false) }.value
+        }
+        let targets = checkpoint.targets ?? []
+        updateCollectionProgress { $0.setTargets(targets.map(\.id)) }
+        for target in targets {
+            try Task.checkCancellation()
+            updateCollectionProgress { $0.beginRegion(id: target.id, title: target.title) }
+            let region: HousingRegion
+            if checkpoint.inventory[target.id] != nil {
+                region = try await Task.detached(priority: .utility) { try disk.read(target.id) }.value
+            } else {
+                let listed = try await client.list(sido: target.sido, sigungu: target.sigungu, dong: target.dong)
+                try Task.checkCancellation(); region = try await importCollectedRegion(listed)
+                let ids = region.records.map(\.id)
+                try await Task.detached(priority: .utility) { try disk.index.recordCollectionInventory(region: target.id, ids: ids) }.value
+                checkpoint.inventory[target.id] = ids
+            }
+            let ids = checkpoint.inventory[target.id] ?? []
+            let completed = Set(region.records.filter { $0.detailAt != nil }.map(\.id))
+            updateCollectionProgress { $0.recordInventory(regionID: target.id, ids: ids, completedIDs: completed) }
+            await refreshCollectedUI()
+        }
+        updateCollectionProgress { $0.sealInventory() }
+        var complete = true
+        if checkpoint.includesDetails {
+            for target in targets {
+                try Task.checkCancellation()
+                let success = try await collectRealtyRegion(target, details: true, client: client, inventoryIDs: checkpoint.inventory[target.id])
+                updateCollectionProgress { $0.regionFinished(successful: success) }; complete = complete && success
+            }
+        }
+        updateCollectionProgress { $0.finish() }
+        if complete {
+            try await Task.detached(priority: .utility) { try disk.index.clearCollectionCheckpoint() }.value
+            resumableScopeTitle = nil
+        }
+        return complete
     }
     func collectRealtyRegion(_ target: HousingCollectionTarget, details: Bool,
-                             client: any RealtyHousingCollecting) async throws -> Bool {
+                             client: any RealtyHousingCollecting, inventoryIDs: [String]? = nil) async throws -> Bool {
+        guard let disk = collectionDisk else { throw DeviceShareError.unavailable }
         let code = target.id
         updateCollectionProgress { $0.beginRegion(id: code, title: target.title) }
         try Task.checkCancellation()
-        let listed = try await client.list(sido: target.sido, sigungu: target.sigungu, dong: target.dong)
-        try Task.checkCancellation(); try importRegion(listed)
+        let region: HousingRegion
+        if inventoryIDs == nil {
+            let listed = try await client.list(sido: target.sido, sigungu: target.sigungu, dong: target.dong)
+            try Task.checkCancellation(); region = try await importCollectedRegion(listed)
+            let completed = Set(region.records.filter { $0.detailAt != nil }.map(\.id))
+            updateCollectionProgress { $0.recordInventory(regionID: code, ids: region.records.map(\.id), completedIDs: completed); $0.sealInventory() }
+        } else { region = try await Task.detached(priority: .utility) { try disk.read(code) }.value }
         guard details else { return true }
-        defer { try? shareRegion(code) }
-        var region = try originalRegion(code)
-        let missingIDs = region.missingDetailIDs
-        updateCollectionProgress { $0.beginDetails(ids: missingIDs, previouslyCompleted: region.detailCount) }
-        for id in missingIDs {
-            try Task.checkCancellation(); region = try originalRegion(code)
-            guard let index = region.records.firstIndex(where: { $0.id == id }) else {
-                updateCollectionProgress { $0.detailFinished(id, successful: false) }; continue
-            }
-            if region.records[index].detailAt != nil {
-                updateCollectionProgress { $0.detailFinished(id, successful: true) }; continue
-            }
-            do {
-                region.records[index] = try await client.detail(region.records[index])
-                if region.records[index].fields["roadAddress", default: ""].isEmpty, KakaoRouteStore.shared.settings.mapFreeConfirmed, !KakaoRouteStore.shared.settings.key.isEmpty {
-                    do { if let road = try await KakaoRouteStore.shared.roadAddress(for: region.records[index]) { region.records[index].fields["roadAddress"] = road; region.records[index].issues.removeAll { $0.contains("도로명주소") } } }
-                    catch is CancellationError { throw CancellationError() }
-                    catch { region.records[index].issues.append("주소 변환: " + error.localizedDescription) }
+        let selected = Set(inventoryIDs ?? region.records.map(\.id))
+        let completeIDs = Set(region.records.filter { $0.detailAt != nil && selected.contains($0.id) }.map(\.id))
+        let missingIDs = (inventoryIDs ?? region.records.map(\.id)).filter { !completeIDs.contains($0) }
+        updateCollectionProgress { $0.reconcileCompleted(regionID: code, ids: completeIDs); $0.beginDetails(ids: missingIDs, previouslyCompleted: completeIDs.count) }
+        var consecutiveFailures = 0
+        do {
+            for (number, id) in missingIDs.enumerated() {
+                try Task.checkCancellation()
+                guard var source = try await Task.detached(priority: .utility, operation: { try disk.source(id, code: code) }).value else {
+                    updateCollectionProgress { $0.detailFinished(id, successful: false) }; continue
                 }
-            } catch is CancellationError { throw CancellationError() }
-            catch { region.records[index].issues = [error.localizedDescription] }
-            try Task.checkCancellation()
-            region.generation = max(Date().timeIntervalSince1970 * 1000, region.generation + 1)
-            try importRegion(region, share: false)
-            updateCollectionProgress { $0.detailFinished(id, successful: region.records[index].detailAt != nil) }
-            try await Task.sleep(nanoseconds: 500_000_000)
+                if source.detailAt != nil { updateCollectionProgress { $0.detailFinished(id, successful: true) }; continue }
+                updateCollectionProgress { $0.beginAttempt() }
+                do {
+                    source = try await client.detail(source)
+                    if source.fields["roadAddress", default: ""].isEmpty, KakaoRouteStore.shared.settings.mapFreeConfirmed, !KakaoRouteStore.shared.settings.key.isEmpty {
+                        do { if let road = try await KakaoRouteStore.shared.roadAddress(for: source) { source.fields["roadAddress"] = road; source.issues.removeAll { $0.contains("도로명주소") } } }
+                        catch is CancellationError { throw CancellationError() }
+                        catch { source.issues.append("주소 변환: " + error.localizedDescription) }
+                    }
+                    consecutiveFailures = 0
+                } catch is CancellationError { throw CancellationError() }
+                catch let error as RealtyCollectionInterruption { throw error }
+                catch { source.issues = [error.localizedDescription]; consecutiveFailures += 1 }
+                try Task.checkCancellation()
+                let changes = edits, updated = source, revision = editsRevision
+                let saved = try await Task.detached(priority: .utility) { try disk.save(updated, edits: changes) }.value
+                if editsRevision != revision {
+                    let latest = edits
+                    try await Task.detached(priority: .utility) { try disk.flush(code, reindex: true, edits: latest) }.value
+                }
+                pendingSummaries[code] = saved.0
+                updateCollectionProgress { $0.detailFinished(id, successful: saved.1.detailAt != nil); $0.recordAttempt() }
+                if (number + 1) % 10 == 0 { try await Task.detached(priority: .utility) { try disk.flush(code) }.value }
+                await refreshCollectedUI()
+                if consecutiveFailures >= 3 { throw RealtyCollectionInterruption(reason: "상세 응답 오류가 반복되어 수집을 보류했습니다. 자료 형식과 연결 상태를 확인한 뒤 이어서 수집하세요.") }
+            }
+            try await Task.detached(priority: .utility) { try disk.flush(code) }.value
+        } catch {
+            try? await Task.detached(priority: .utility) { try disk.flush(code) }.value
+            ready.insert(code); await refreshCollectedUI(force: true); throw error
         }
-        let completed = Set(try originalRegion(code).records.filter { $0.detailAt != nil }.map(\.id))
+        let final = try await Task.detached(priority: .utility) { try disk.read(code) }.value
+        let completed = Set(final.records.filter { $0.detailAt != nil }.map(\.id))
         updateCollectionProgress { value in
             for id in missingIDs where completed.contains(id) { value.detailFinished(id, successful: true) }
         }
+        ready.insert(code); await refreshCollectedUI(force: collectionRunID == nil)
         return missingIDs.allSatisfy(completed.contains)
     }
     func edit(_ complex: HousingComplex, fields: [String: String], coordinate: TMapCoordinate? = nil) throws {
@@ -203,9 +360,9 @@ final class HousingStore: ObservableObject {
         let codes = Set(changed.compactMap { newer[$0]?.regionCode ?? old[$0]?.regionCode })
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try DeviceShareCodec.encode(next).write(to: directory.appendingPathComponent("edits.json"), options: .atomic)
-        edits = next
+        edits = next; editsRevision += 1
         // Source corrections update search text; grouping stays explicitly chosen.
-        for summary in regions where codes.contains(summary.code) { try index?.replace(originalRegion(summary.code), edits: edits) }
+        for summary in regions where codes.contains(summary.code) { try collectionDisk?.flush(summary.code, reindex: true, edits: edits) }
         regions = try index?.summaries() ?? regions; publish(); try DeviceShareHooks.changed()
     }
     func sharingSnapshot() throws -> DeviceShareSnapshot {
@@ -320,22 +477,26 @@ final class HousingStore: ObservableObject {
     // Immutable source snapshots are separate from the small per-device edit replicas.
     // Different collectors never overwrite the same shared source file.
     func synchronizeSources(_ folder: URL) async throws {
-        guard writable else { throw DeviceShareError.unavailable }
+        guard writable, let disk = collectionDisk else { throw DeviceShareError.unavailable }
         if syncFolderIdentity != folder.absoluteString { published.removeAll(); ready.formUnion(regions.map(\.code)); syncFolderIdentity = folder.absoluteString }
         let current = Dictionary(regions.map { ($0.code, $0.generation) }, uniquingKeysWith: max)
         let incoming = try await Task.detached(priority: .utility) { try HousingFolderIO.read(folder, current: current) }.value
         for name in incoming {
             let region = try await Task.detached(priority: .utility) { try HousingFolderIO.readFile(name, folder: folder) }.value
-            try importRegion(region, share: false)
+            _ = try await importCollectedRegion(region)
         }
         for summary in regions where ready.contains(summary.code) {
-            let data = try DeviceShareCodec.encode(originalRegion(summary.code))
-            let key = summary.code + "-" + String(Int(summary.generation)) + "-" + DeviceShareCodec.digest(data).prefix(12)
+            let snapshot = try await Task.detached(priority: .utility) { () -> (HousingRegion, Data) in
+                let region = try disk.read(summary.code); return (region, try DeviceShareCodec.encode(region))
+            }.value
+            let data = snapshot.1, generation = snapshot.0.generation
+            let key = summary.code + "-" + String(Int(generation)) + "-" + DeviceShareCodec.digest(data).prefix(12)
             guard !published.contains(key) else { continue }
             try await Task.detached(priority: .utility) { try HousingFolderIO.write([(key, data)], folder: folder) }.value
             published.insert(key)
-            if regions.first(where: { $0.code == summary.code })?.generation == summary.generation { ready.remove(summary.code) }
+            if (try disk.index.summary(summary.code))?.generation == generation { ready.remove(summary.code) }
         }
+        await refreshCollectedUI()
     }
 }
 enum HousingFolderIO {

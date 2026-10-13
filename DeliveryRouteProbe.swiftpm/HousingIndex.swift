@@ -26,6 +26,7 @@ struct HousingRegionSummary: Codable, Identifiable {
 final class HousingIndex {
     let url: URL
     private var db: OpaquePointer?
+    private let lock = NSRecursiveLock()
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     init(directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -38,6 +39,9 @@ final class HousingIndex {
         try run("CREATE INDEX IF NOT EXISTS sources_region_name ON sources(region,name)")
         try run("CREATE TABLE IF NOT EXISTS raw_sources(id TEXT PRIMARY KEY, region TEXT NOT NULL, data BLOB NOT NULL)")
         try run("CREATE INDEX IF NOT EXISTS raw_sources_region ON raw_sources(region)")
+        try run("CREATE TABLE IF NOT EXISTS collection_journal(region TEXT NOT NULL, id TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(region,id))")
+        try run("CREATE TABLE IF NOT EXISTS collection_job(id INTEGER PRIMARY KEY CHECK(id=1), data BLOB NOT NULL)")
+        try run("CREATE TABLE IF NOT EXISTS collection_inventory(region TEXT PRIMARY KEY, data BLOB NOT NULL)")
     }
     deinit { sqlite3_close(db) }
     private func run(_ sql: String) throws { guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw DeviceShareError.unavailable } }
@@ -56,12 +60,14 @@ final class HousingIndex {
         guard count >= 0, count <= 50_000_000, let bytes = sqlite3_column_blob(statement,column) else { throw DeviceShareError.invalid }; return Data(bytes: bytes,count: Int(count))
     }
     func summaries() throws -> [HousingRegionSummary] {
+        lock.lock(); defer { lock.unlock() }
         let s = try statement("SELECT data FROM regions ORDER BY code"); defer { sqlite3_finalize(s) }
         var records: [HousingRegionSummary] = []; var status = sqlite3_step(s)
         while status == SQLITE_ROW { records.append(try JSONDecoder().decode(HousingRegionSummary.self, from: Self.blob(s))); status = sqlite3_step(s) }
         guard status == SQLITE_DONE else { throw DeviceShareError.unavailable }; return records
     }
     func replace(_ region: HousingRegion, edits: [HousingEdit] = []) throws {
+        lock.lock(); defer { lock.unlock() }
         try run("BEGIN IMMEDIATE")
         do {
             let remove = try statement("DELETE FROM sources WHERE region=?"); defer { sqlite3_finalize(remove) }
@@ -89,6 +95,7 @@ final class HousingIndex {
         } catch { try? run("ROLLBACK"); throw error }
     }
     func search(region: String, keyword: String, sourceIDs: Set<String>) throws -> [HousingSource] {
+        lock.lock(); defer { lock.unlock() }
         let s = try statement("SELECT data FROM sources WHERE (?='' OR region=?) AND (?='' OR instr(lower(name),lower(?))>0 OR instr(lower(address),lower(?))>0) ORDER BY name LIMIT 2000")
         defer { sqlite3_finalize(s) }
         for (i,value) in [region,region,keyword,keyword,keyword].enumerated() { try bind(value,at: Int32(i+1),to: s) }
@@ -104,5 +111,95 @@ final class HousingIndex {
     }
     static func search(directory: URL, region: String, keyword: String, sourceIDs: Set<String>) throws -> [HousingSource] {
         try HousingIndex(directory: directory).search(region: region, keyword: keyword, sourceIDs: sourceIDs)
+    }
+    func rawSource(_ id: String, region: String) throws -> HousingSource? {
+        lock.lock(); defer { lock.unlock() }
+        let s = try statement("SELECT data FROM raw_sources WHERE id=? AND region=?"); defer { sqlite3_finalize(s) }
+        try bind(id, at: 1, to: s); try bind(region, at: 2, to: s)
+        let status = sqlite3_step(s)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw DeviceShareError.unavailable }
+        return try JSONDecoder().decode(HousingSource.self, from: Self.blob(s))
+    }
+    func summary(_ code: String) throws -> HousingRegionSummary? {
+        lock.lock(); defer { lock.unlock() }
+        let s = try statement("SELECT data FROM regions WHERE code=?"); defer { sqlite3_finalize(s) }
+        try bind(code, at: 1, to: s); let status = sqlite3_step(s)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw DeviceShareError.unavailable }
+        return try JSONDecoder().decode(HousingRegionSummary.self, from: Self.blob(s))
+    }
+    // A single transaction durably saves the original, search row and count.
+    // Full regional JSON snapshots are checkpointed separately, off the UI thread.
+    func saveCollectedSource(_ source: HousingSource, indexed: HousingSource, summary: HousingRegionSummary) throws {
+        lock.lock(); defer { lock.unlock() }; try run("BEGIN IMMEDIATE")
+        do {
+            for table in ["raw_sources", "collection_journal"] {
+                let s = try statement("INSERT OR REPLACE INTO " + table + "(id,region,data) VALUES(?,?,?)"); defer { sqlite3_finalize(s) }
+                try bind(source.id, at: 1, to: s); try bind(source.regionCode, at: 2, to: s); try bind(DeviceShareCodec.encode(source), at: 3, to: s)
+                guard sqlite3_step(s) == SQLITE_DONE else { throw DeviceShareError.unavailable }
+            }
+            let s = try statement("INSERT OR REPLACE INTO sources(id,region,name,address,data) VALUES(?,?,?,?,?)"); defer { sqlite3_finalize(s) }
+            try bind(indexed.id, at: 1, to: s); try bind(indexed.regionCode, at: 2, to: s)
+            try bind(indexed.fields["name"] ?? "", at: 3, to: s); try bind(indexed.fields.values.joined(separator: " "), at: 4, to: s)
+            try bind(DeviceShareCodec.encode(indexed), at: 5, to: s)
+            guard sqlite3_step(s) == SQLITE_DONE else { throw DeviceShareError.unavailable }
+            let m = try statement("INSERT OR REPLACE INTO regions(code,data) VALUES(?,?)"); defer { sqlite3_finalize(m) }
+            try bind(summary.code, at: 1, to: m); try bind(DeviceShareCodec.encode(summary), at: 2, to: m)
+            guard sqlite3_step(m) == SQLITE_DONE else { throw DeviceShareError.unavailable }; try run("COMMIT")
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+    func journal(_ code: String) throws -> [HousingSource] {
+        lock.lock(); defer { lock.unlock() }
+        let s = try statement("SELECT data FROM collection_journal WHERE region=?"); defer { sqlite3_finalize(s) }; try bind(code, at: 1, to: s)
+        var rows: [HousingSource] = [], status = sqlite3_step(s)
+        while status == SQLITE_ROW { rows.append(try JSONDecoder().decode(HousingSource.self, from: Self.blob(s))); status = sqlite3_step(s) }
+        guard status == SQLITE_DONE else { throw DeviceShareError.unavailable }; return rows
+    }
+    func journalRegions() throws -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        let s = try statement("SELECT DISTINCT region FROM collection_journal"); defer { sqlite3_finalize(s) }
+        var rows: [String] = [], status = sqlite3_step(s)
+        while status == SQLITE_ROW { guard let p = sqlite3_column_text(s, 0) else { throw DeviceShareError.invalid }; rows.append(String(cString: p)); status = sqlite3_step(s) }
+        guard status == SQLITE_DONE else { throw DeviceShareError.unavailable }; return rows
+    }
+    func clearJournal(_ code: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        let s = try statement("DELETE FROM collection_journal WHERE region=?"); defer { sqlite3_finalize(s) }; try bind(code, at: 1, to: s)
+        guard sqlite3_step(s) == SQLITE_DONE else { throw DeviceShareError.unavailable }
+    }
+    func saveCollectionCheckpoint(_ checkpoint: HousingCollectionCheckpoint, resetInventory: Bool) throws {
+        lock.lock(); defer { lock.unlock() }; try checkpoint.validate(); try run("BEGIN IMMEDIATE")
+        do {
+            if resetInventory { try run("DELETE FROM collection_inventory") }
+            var request = checkpoint; request.inventory = [:]
+            let s = try statement("INSERT OR REPLACE INTO collection_job(id,data) VALUES(1,?)"); defer { sqlite3_finalize(s) }
+            try bind(DeviceShareCodec.encode(request), at: 1, to: s)
+            guard sqlite3_step(s) == SQLITE_DONE else { throw DeviceShareError.unavailable }; try run("COMMIT")
+        } catch { try? run("ROLLBACK"); throw error }
+    }
+    func recordCollectionInventory(region: String, ids: [String]) throws {
+        lock.lock(); defer { lock.unlock() }
+        let s = try statement("INSERT OR REPLACE INTO collection_inventory(region,data) VALUES(?,?)"); defer { sqlite3_finalize(s) }
+        try bind(region, at: 1, to: s); try bind(DeviceShareCodec.encode(ids), at: 2, to: s)
+        guard sqlite3_step(s) == SQLITE_DONE else { throw DeviceShareError.unavailable }
+    }
+    func collectionCheckpoint() throws -> HousingCollectionCheckpoint? {
+        lock.lock(); defer { lock.unlock() }
+        let j = try statement("SELECT data FROM collection_job WHERE id=1"); defer { sqlite3_finalize(j) }; let status = sqlite3_step(j)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw DeviceShareError.unavailable }
+        var result = try JSONDecoder().decode(HousingCollectionCheckpoint.self, from: Self.blob(j))
+        let s = try statement("SELECT region,data FROM collection_inventory"); defer { sqlite3_finalize(s) }; var row = sqlite3_step(s)
+        while row == SQLITE_ROW {
+            guard let code = sqlite3_column_text(s, 0) else { throw DeviceShareError.invalid }
+            result.inventory[String(cString: code)] = try JSONDecoder().decode([String].self, from: Self.blob(s, column: 1)); row = sqlite3_step(s)
+        }
+        guard row == SQLITE_DONE else { throw DeviceShareError.unavailable }; try result.validate(); return result
+    }
+    func clearCollectionCheckpoint() throws {
+        lock.lock(); defer { lock.unlock() }; try run("BEGIN IMMEDIATE")
+        do { try run("DELETE FROM collection_inventory"); try run("DELETE FROM collection_job"); try run("COMMIT") }
+        catch { try? run("ROLLBACK"); throw error }
     }
 }

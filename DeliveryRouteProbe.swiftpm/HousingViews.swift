@@ -26,7 +26,6 @@ struct HousingCatalogView: View {
     @State private var importing = false
     @State private var exporting = false
     @State private var document = DataTextDocument()
-    @State private var job: Task<Void, Never>?
     @State private var error: String?
     private let client = RealtyHousingClient()
     private var regionCode: String { sido + district + dong }
@@ -44,13 +43,14 @@ struct HousingCatalogView: View {
         }
     }
     var body: some View {
+        let rows = filtered
         List {
             Section("공동주택 찾기") {
                 NativeTextField("단지명 · 도로명주소 · 지번주소 검색", text: $keyword)
                 Picker("시도", selection: $sido) { Text("선택").tag(""); ForEach(sidos) { Text($0.name).tag($0.code) } }.disabled(store.isBusy)
                 Picker("시군구", selection: $district) { Text("선택").tag(""); ForEach(districts) { Text($0.name).tag($0.code) } }.disabled(store.isBusy)
                 Picker("법정동 · 리", selection: $dong) { Text("전체 보관 자료").tag(""); ForEach(dongs) { Text($0.name).tag($0.code) } }.disabled(store.isBusy)
-                Text("보관 지역 \(store.regions.count)곳 · 원본 \(store.regions.reduce(0) { $0 + $1.sourceCount })건 · 표시 \(filtered.count)건").font(.caption)
+                Text("보관 지역 \(store.regions.count)곳 · 원본 \(store.regions.reduce(0) { $0 + $1.sourceCount })건 · 표시 \(rows.count)건").font(.caption)
                 Text("전국 수집 완료 여부는 보관 지역별로 확인하세요. 검색 결과는 최대 2,000건을 읽습니다. 미수집 지역과 상세 미수집 항목은 빈칸으로 표시합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("원본 수집 · 공유") {
@@ -59,13 +59,12 @@ struct HousingCatalogView: View {
                 Button("\(selectedCollectionScope?.buttonPrefix ?? "선택 지역") 신규단지 추가·미완료 상세 수집") { collect(details: true) }.disabled(selectedCollectionScope == nil || store.isBusy)
                 Button("전국 신규단지 추가·미완료 상세 수집") { collectNational() }.disabled(store.isBusy)
                 Text("모바일 목록을 확인해 신규 단지를 추가하고 상세 미완료 항목만 수집합니다. 공시 연도가 바뀌어도 기존 상세와 사용자 수정·통합은 유지합니다. 전체 목록 저장에는 2,000건 제한이 없으며, 기존 단지의 최신 상세는 단지 화면에서 직접 수집하세요.").font(.caption).foregroundStyle(.secondary)
-                if let progress = store.collectionProgress {
-                    if store.isBusy {
-                        if let fraction = progress.fraction { ProgressView(value: fraction) } else { ProgressView() }
-                    }
-                    Text(progress.text).font(.caption)
-                } else if store.isBusy { ProgressView(); Text(store.progress).font(.caption) }
-                if store.isBusy { Button("수집 중단") { job?.cancel() } }
+                HousingCollectionStatusView(status: store.collectionStatus, busy: store.isBusy)
+                if store.isBusy { Button("수집 중단") { store.stopRealtyCollection() } }
+                else if let title = store.resumableScopeTitle {
+                    Button("\(title) 보관된 수집 이어서 하기") { store.resumeRealtyCollection() }
+                }
+                Text("전체 단지 목록을 먼저 확인한 후 단지 기준 진행률과 예상 시간을 표시합니다. 앱이 작업을 보관하므로 다른 화면으로 이동해도 계속 수집합니다. 백그라운드 실행은 iOS 26 이상에서 지원하며, 시스템이 중단하면 저장된 작업을 이어서 수집하세요.").font(.caption).foregroundStyle(.secondary)
                 Text("시도만 선택하면 해당 시도 전체, 시군구까지만 선택하면 해당 시군구 전체를 수집합니다. 상세 수집은 새 단지와 미완료 단지만 처리합니다.").font(.caption).foregroundStyle(.secondary)
                 NavigationLink("기기 간 공유 폴더 설정") { DeviceSharingSettingsView() }
                 Button("JSON 자료 가져오기") { importing = true }.disabled(store.isBusy)
@@ -89,10 +88,10 @@ struct HousingCatalogView: View {
                     }
                 }
             }
-            Section("단지 목록 · \(filtered.count)건") {
+            Section("단지 목록 · \(rows.count)건") {
                 Button("새 단지 추가") { adding = true }
                 if selected.count > 1 { Button("선택한 \(selected.count)개를 하나로 합치기") { merging = true } }
-                ForEach(Array(filtered.prefix(500))) { complex in
+                ForEach(Array(rows.prefix(500))) { complex in
                     HStack {
                         Button { if selected.contains(complex.id) { selected.remove(complex.id) } else { selected.insert(complex.id) } } label: { Image(systemName: selected.contains(complex.id) ? "checkmark.circle.fill" : "circle") }.buttonStyle(.borderless)
                         NavigationLink { HousingComplexView(complexID: complex.id) } label: {
@@ -103,7 +102,7 @@ struct HousingCatalogView: View {
                         }
                     }
                 }
-                if filtered.count > 500 { Text("500건까지 표시합니다. 법정동이나 검색어로 범위를 좁히세요.").font(.caption) }
+                if rows.count > 500 { Text("500건까지 표시합니다. 법정동이나 검색어로 범위를 좁히세요.").font(.caption) }
             }
         }.navigationTitle("공동주택 목록").navigationBarTitleDisplayMode(.inline)
             .task { do { sidos = try await client.areas() } catch { self.error = error.localizedDescription; sidos = Array(Set(store.regions.map(\.sido))).sorted { $0.name < $1.name } } }
@@ -142,42 +141,37 @@ struct HousingCatalogView: View {
                 } catch { self.error = error.localizedDescription }
             }
             .fileExporter(isPresented: $exporting, document: document, contentType: document.text.hasPrefix("{") ? .json : .commaSeparatedText, defaultFilename: "공동주택자료") { result in if case .failure(let failure) = result { error = failure.localizedDescription } }
-            .onDisappear { job?.cancel() }
     }
     private func collect(details: Bool) {
         guard let scope = selectedCollectionScope else { return }
         start(scope: scope, details: details)
     }
     private func start(scope: HousingCollectionScope, details: Bool) {
-        guard !store.isBusy else { return }
-        store.isBusy = true; error = nil; store.errorMessage = nil
-        store.collectionProgress = HousingCollectionProgress(scopeTitle: scope.title, includesDetails: details)
-        store.progress = store.collectionProgress!.text
-        job = Task {
-            defer { store.isBusy = false; job = nil }
-            do {
-                try await DeviceShareHooks.prepareRequest()
-                let targets = try await HousingCollectionTargets.resolve(scope, client: client) { count in
-                    store.updateCollectionProgress { $0.discovered(count) }
-                }
-                store.updateCollectionProgress { $0.setTargets(targets.map(\.id)) }
-                for target in targets {
-                    try Task.checkCancellation()
-                    do {
-                        let completed = try await store.collectRealtyRegion(target, details: details, client: client)
-                        store.updateCollectionProgress { $0.regionFinished(successful: completed) }
-                    } catch is CancellationError { throw CancellationError() }
-                    catch {
-                        store.updateCollectionProgress { $0.regionFinished(successful: false) }
-                        store.errorMessage = target.title + ": " + error.localizedDescription
-                    }
-                }
-                store.updateCollectionProgress { $0.finish() }
-            } catch is CancellationError { store.updateCollectionProgress { $0.stop() } }
-            catch { self.error = error.localizedDescription; store.updateCollectionProgress { $0.fail() } }
-        }
+        error = nil; store.startRealtyCollection(scope: scope, details: details, client: client)
     }
     private func collectNational() { start(scope: .nationwide, details: true) }
+}
+// Progress/ETA redraw only these rows, not the scrolling apartment catalog.
+struct HousingCollectionStatusView: View {
+    @ObservedObject var status: HousingCollectionStatus
+    let busy: Bool
+    var body: some View {
+        if let progress = status.value {
+            if busy {
+                if let fraction = progress.fraction { ProgressView(value: fraction) }
+                else { ProgressView() }
+            }
+            Text(progress.text).font(.caption).monospacedDigit()
+            TimelineView(.periodic(from: .now, by: 2)) { context in
+                let estimate = progress.estimateText(at: context.date)
+                if !estimate.isEmpty { Text(estimate).font(.caption).foregroundStyle(.secondary).monospacedDigit() }
+            }
+        }
+        if !status.backgroundMessage.isEmpty { Text(status.backgroundMessage).font(.caption).foregroundStyle(.secondary) }
+        if let date = status.resumeAt {
+            Text("다시 수집 가능한 시각: \(date.formatted(date: .numeric, time: .shortened))").font(.caption).foregroundStyle(.orange)
+        }
+    }
 }
 struct HousingExport: Codable { var version = 1; var regions: [HousingRegion]; var edits: [HousingEdit] }
 struct HousingComplexView: View {

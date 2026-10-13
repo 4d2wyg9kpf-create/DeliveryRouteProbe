@@ -6,7 +6,7 @@ protocol RealtyHousingCollecting {
     func detail(_ source: HousingSource) async throws -> HousingSource
 }
 
-enum HousingCollectionScope {
+enum HousingCollectionScope: Codable {
     case nationwide
     case province(HousingArea)
     case district(HousingArea, HousingArea)
@@ -29,7 +29,7 @@ enum HousingCollectionScope {
     }
 }
 
-struct HousingCollectionTarget: Identifiable {
+struct HousingCollectionTarget: Identifiable, Codable {
     let sido: HousingArea
     let sigungu: HousingArea
     let dong: HousingArea
@@ -71,8 +71,8 @@ enum HousingCollectionTargets {
     }
 }
 
-// Freeze the scope's legal-dong denominator before collecting any apartment
-// lists. Detail counts belong to the active dong's initial missing-ID snapshot.
+// Inventory first, then freeze the apartment denominator for the entire job.
+// A source ID is qualified by region so overlapping source lists cannot skew it.
 struct HousingCollectionProgress {
     enum Phase { case discovering, list, details, finished, stopped, failed }
     let scopeTitle: String
@@ -88,6 +88,14 @@ struct HousingCollectionProgress {
     private(set) var completedDetailIDs = Set<String>()
     private(set) var failedDetailIDs = Set<String>()
     private(set) var previouslyCompletedDetails = 0
+    private(set) var inventory: [String: Set<String>] = [:]
+    private(set) var inventorySealed = false
+    private(set) var allCompletedIDs = Set<String>()
+    private(set) var allFailedIDs = Set<String>()
+    private(set) var durations: [TimeInterval] = []
+    private(set) var attemptStartedAt: Date?
+
+    private func key(_ region: String, _ id: String) -> String { region + "/" + id }
 
     mutating func discovered(_ count: Int) { discoveredRegions = max(discoveredRegions, count) }
     mutating func setTargets(_ ids: [String]) {
@@ -102,10 +110,36 @@ struct HousingCollectionProgress {
         guard targetDetailIDs == nil else { return }
         targetDetailIDs = Set(ids); previouslyCompletedDetails = max(0, previouslyCompleted); phase = .details
     }
+    mutating func recordInventory(regionID: String, ids: [String], completedIDs: Set<String>) {
+        guard !inventorySealed, inventory[regionID] == nil else { return }
+        let unique = Set(ids); inventory[regionID] = unique
+        for id in unique.intersection(completedIDs) { allCompletedIDs.insert(key(regionID, id)) }
+    }
+    mutating func sealInventory() {
+        guard let targets = targetRegionIDs, targets.allSatisfy({ inventory[$0] != nil }) else { return }
+        inventorySealed = true
+    }
+    mutating func reconcileCompleted(regionID: String, ids: Set<String>) {
+        for id in (inventory[regionID] ?? []).intersection(ids) {
+            let qualified = key(regionID, id); allCompletedIDs.insert(qualified); allFailedIDs.remove(qualified)
+        }
+    }
+    mutating func beginAttempt(at: Date = Date()) { attemptStartedAt = at }
+    mutating func recordAttempt(at: Date = Date()) {
+        if let start = attemptStartedAt {
+            let duration = at.timeIntervalSince(start)
+            if duration.isFinite, duration > 0 { durations.append(duration); durations = Array(durations.suffix(20)) }
+        }
+        attemptStartedAt = nil
+    }
     mutating func detailFinished(_ id: String, successful: Bool) {
         guard targetDetailIDs?.contains(id) == true else { return }
         if successful { completedDetailIDs.insert(id); failedDetailIDs.remove(id) }
         else if !completedDetailIDs.contains(id) { failedDetailIDs.insert(id) }
+        guard inventory[currentRegionID]?.contains(id) == true else { return }
+        let qualified = key(currentRegionID, id)
+        if successful { allCompletedIDs.insert(qualified); allFailedIDs.remove(qualified) }
+        else if !allCompletedIDs.contains(qualified) { allFailedIDs.insert(qualified) }
     }
     mutating func regionFinished(successful: Bool) {
         guard targetRegionIDs?.contains(currentRegionID) == true else { return }
@@ -117,9 +151,13 @@ struct HousingCollectionProgress {
     mutating func fail() { phase = .failed }
     var detailTotalCount: Int? { targetDetailIDs.map { previouslyCompletedDetails + $0.count } }
     var detailCompletedCount: Int { previouslyCompletedDetails + completedDetailIDs.count }
+    var totalComplexCount: Int? { inventorySealed ? inventory.values.reduce(0) { $0 + $1.count } : nil }
+    var completedComplexCount: Int { allCompletedIDs.count }
+    var remainingComplexCount: Int? { totalComplexCount.map { max(0, $0 - completedComplexCount) } }
     var fraction: Double? {
-        guard let total = targetRegionIDs?.count, total > 0 else { return nil }
-        return Double(completedRegionIDs.count) / Double(total)
+        guard let total = totalComplexCount else { return nil }
+        if !includesDetails { return phase == .finished ? 1 : nil }
+        return total == 0 ? 1 : min(1, Double(completedComplexCount) / Double(total))
     }
     var percentage: String? {
         guard let fraction else { return nil }
@@ -131,10 +169,35 @@ struct HousingCollectionProgress {
         guard let total = targetRegionIDs?.count else {
             return "\(scopeTitle) · 수집 대상 법정동 확인 중 \(discoveredRegions)곳"
         }
-        var text = "\(scopeTitle) · 법정동 \(includesDetails ? "수집" : "목록 확인") 완료 \(completedRegionIDs.count)/\(total)"
+        guard let complexTotal = totalComplexCount else {
+            let known = inventory.values.reduce(0) { $0 + $1.count }
+            return "\(scopeTitle) · 전체 단지 수 확인 중 · 현재 \(known)단지\n목록 확인 \(inventory.count)/\(total)곳"
+        }
+        var text = includesDetails ? "\(scopeTitle) · 단지 완료 \(completedComplexCount)/\(complexTotal)" : "\(scopeTitle) · 단지 목록 확인 \(complexTotal)건"
         if let percentage { text += " (\(percentage))" }
-        if !failedRegionIDs.isEmpty { text += " · 미완료 \(failedRegionIDs.count)곳" }
+        if !allFailedIDs.isEmpty { text += " · 상세 미완료 \(allFailedIDs.count)단지" }
         return text
+    }
+    func estimatedRemaining(at now: Date = Date()) -> TimeInterval? {
+        guard includesDetails, let remaining = remainingComplexCount else { return nil }
+        if remaining == 0 { return 0 }
+        guard durations.count >= 3, allFailedIDs.isEmpty, phase == .details else { return nil }
+        let average = durations.reduce(0, +) / Double(durations.count)
+        let current = attemptStartedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0
+        return max(average, average * Double(remaining) - min(current, average))
+    }
+    func estimateText(at now: Date = Date()) -> String {
+        if !includesDetails { return "" }
+        if phase == .stopped || phase == .failed { return "예상 남은 시간: 수집을 재개하면 다시 계산합니다." }
+        if remainingComplexCount == 0 { return "예상 남은 시간: 0분" }
+        if !allFailedIDs.isEmpty { return "예상 남은 시간: 미완료 단지 재수집 후 다시 계산합니다." }
+        guard let seconds = estimatedRemaining(at: now) else {
+            return inventorySealed ? "예상 남은 시간: 처리 속도 확인 중" : "예상 남은 시간: 전체 단지 수 확인 후 계산합니다."
+        }
+        let minutes = max(1, Int(ceil(seconds / 60)))
+        let duration = minutes >= 1440 ? "\(minutes / 1440)일 \((minutes % 1440) / 60)시간" : minutes >= 60 ? "\(minutes / 60)시간 \(minutes % 60)분" : "\(minutes)분"
+        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR"); f.dateFormat = "M/d HH:mm"
+        return "예상 남은 시간: 약 \(duration) · 완료 약 \(f.string(from: now.addingTimeInterval(seconds)))"
     }
     var text: String {
         switch phase {
@@ -149,5 +212,19 @@ struct HousingCollectionProgress {
         case .stopped: return "수집 중단 · " + summary + "\n저장된 자료에서 다시 이어갈 수 있습니다."
         case .failed: return "수집 보류 · " + summary + "\n저장된 자료를 유지했습니다."
         }
+    }
+}
+
+struct HousingCollectionCheckpoint: Codable {
+    var version = 1
+    var scope: HousingCollectionScope
+    var includesDetails: Bool
+    var targets: [HousingCollectionTarget]?
+    var inventory: [String: [String]] = [:]
+    func validate() throws {
+        guard version == 1, (targets?.count ?? 0) <= 20_000, inventory.count <= 20_000,
+              Set(targets?.map(\.id) ?? []).count == (targets?.count ?? 0),
+              inventory.allSatisfy({ code, ids in code.range(of: #"^\d{10}$"#, options: .regularExpression) != nil && ids.count <= 100_000 && Set(ids).count == ids.count && ids.allSatisfy { $0.hasPrefix("realty:" + code.prefix(5) + ":") } }),
+              inventory.keys.allSatisfy({ code in targets?.contains { $0.id == code } == true }) else { throw DeviceShareError.invalid }
     }
 }

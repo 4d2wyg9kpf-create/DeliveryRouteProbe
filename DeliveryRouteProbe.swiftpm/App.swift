@@ -75,6 +75,8 @@ struct DeliveryRootView: View {
         .onChange(of: selectedTab) { _, _ in inputs.finishEditing() }
         .onChange(of: scenePhase) { _, phase in
             DeviceSharingStore.shared.setActive(phase == .active)
+            if phase == .background { HousingCollectionBackground.shared.sceneChanged(background: true) }
+            else if phase == .active { HousingCollectionBackground.shared.sceneChanged(background: false) }
             if phase != .active { planner.saveNow() }
             else { Task { await tmap.refreshClock() } }
         }

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Combine
 
 struct TMapCoordinate: Codable, Equatable { var longitude: Double; var latitude: Double; var poiID: String?; var detailAddress: String? }
 enum PlannerFailure: LocalizedError { case message(String); var errorDescription: String? { if case .message(let value) = self { return value }; return nil } }
@@ -10,25 +11,43 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
     var areaMap: [String: [HousingArea]] = [:]
     var areaCalls: [String] = []
     var listRegion: HousingRegion?
+    var listRegions: [String: HousingRegion] = [:]
     var listCalls = 0
     var detailCalls: [String] = []
     var failedIDs = Set<String>()
     var cancelledIDs = Set<String>()
     var onDetail: ((HousingSource) -> Void)?
+    var interruptionIDs = Set<String>()
     func areas(sido: String, sigungu: String) async throws -> [HousingArea] {
         let key = sido + "/" + sigungu; areaCalls.append(key); return areaMap[key] ?? []
     }
     func list(sido: HousingArea, sigungu: HousingArea, dong: HousingArea) async throws -> HousingRegion {
         listCalls += 1
-        guard let region = listRegion, region.code == sido.code + sigungu.code + dong.code else { throw PlannerFailure.message("fixture list mismatch") }
+        let code = sido.code + sigungu.code + dong.code
+        guard let region = listRegions[code] ?? listRegion, region.code == code else { throw PlannerFailure.message("fixture list mismatch") }
         return region
     }
     func detail(_ source: HousingSource) async throws -> HousingSource {
         detailCalls.append(source.id); onDetail?(source)
         if cancelledIDs.contains(source.id) { throw CancellationError() }
+        if interruptionIDs.contains(source.id) { throw RealtyCollectionInterruption(reason: "fixture server restriction", resumeAt: Date().addingTimeInterval(600)) }
         if failedIDs.contains(source.id) { throw PlannerFailure.message("fixture detail failure") }
         var value = source; value.detailAt = Date(); return value
     }
+}
+final class RequestTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ date: Date) { value = date }
+    func now() -> Date { lock.lock(); defer { lock.unlock() }; return value }
+    func advance(_ seconds: TimeInterval) { lock.lock(); defer { lock.unlock() }; value.addTimeInterval(seconds) }
+}
+actor RequestConcurrencyProbe {
+    private(set) var active = 0
+    private(set) var maximum = 0
+    private(set) var calls = 0
+    func enter() { active += 1; maximum = max(maximum, active); calls += 1 }
+    func leave() { active -= 1 }
 }
 @main struct HousingKakaoChecks {
     @MainActor static func main() async throws {
@@ -424,6 +443,8 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
             var progress = HousingCollectionProgress(scopeTitle:"전국",includesDetails:true)
             progress.discovered(1); try require(progress.fraction == nil && progress.percentage == nil,"premature completion rate")
             progress.setTargets(nationwideTargets.map(\.id)); progress.setTargets(["unrelated"])
+            progress.recordInventory(regionID:nationwideTargets[0].id,ids:["a"],completedIDs:["a"])
+            progress.recordInventory(regionID:nationwideTargets[1].id,ids:["b"],completedIDs:[]); progress.sealInventory()
             progress.beginRegion(id:nationwideTargets[0].id,title:"첫 지역"); progress.regionFinished(successful:true)
             progress.beginRegion(id:nationwideTargets[1].id,title:"둘째 지역"); progress.regionFinished(successful:false)
             progress.finish()
@@ -431,8 +452,10 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         }
         try check("large incomplete scope cannot round up to 100 percent") {
             var progress = HousingCollectionProgress(scopeTitle:"전국",includesDetails:true)
-            let ids = (0..<5000).map(String.init); progress.setTargets(ids)
-            for id in ids.dropLast() { progress.beginRegion(id:id,title:id); progress.regionFinished(successful:true) }
+            let ids = (0..<5000).map(String.init); progress.setTargets(["region"])
+            progress.recordInventory(regionID:"region",ids:ids,completedIDs:[]); progress.sealInventory()
+            progress.beginRegion(id:"region",title:"region"); progress.beginDetails(ids:ids,previouslyCompleted:0)
+            for id in ids.dropLast() { progress.detailFinished(id,successful:true) }
             try require(progress.percentage == "99.9%", "rounded unfinished collection to 100%")
         }
         var realtyList = manual; realtyList.kaptRecords = nil; realtyList.kaptListAt = nil
@@ -472,7 +495,7 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         let completeFailed = try await failureStore.collectRealtyRegion(realtyTarget,details:true,client:failing)
         failureStore.updateCollectionProgress { $0.regionFinished(successful:completeFailed); $0.finish() }
         try check("failed detail is retained as pending and never inflates either completion numerator") {
-            try require(!completeFailed && failureStore.collectionProgress?.detailCompletedCount == 3 && failureStore.collectionProgress?.detailTotalCount == 4 && failureStore.collectionProgress?.failedDetailIDs.count == 1 && failureStore.collectionProgress?.fraction == 0,"failed attempt counted as completed")
+            try require(!completeFailed && failureStore.collectionProgress?.detailCompletedCount == 3 && failureStore.collectionProgress?.detailTotalCount == 4 && failureStore.collectionProgress?.failedDetailIDs.count == 1 && failureStore.collectionProgress?.fraction == 0.75,"failed attempt counted as completed")
         }
         let stopStore = HousingStore(directory:folder.appendingPathComponent("realty-progress-stop"),seedIfEmpty:false)
         let stopping = HousingCollectionFixture(); stopping.listRegion = realtyList; stopping.cancelledIDs = [realtyList.records[1].id]
@@ -481,7 +504,7 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         do { _ = try await stopStore.collectRealtyRegion(realtyTarget,details:true,client:stopping); throw PlannerFailure.message("ignored cancellation") }
         catch is CancellationError { stopStore.updateCollectionProgress { $0.stop() } }
         try check("stopping collection keeps successful detail and does not claim completion") {
-            try require(try stopStore.originalRegion(realtyTarget.id).detailCount == 1 && stopStore.collectionProgress?.detailCompletedCount == 1 && stopStore.collectionProgress?.fraction == 0,"stop discarded records or marked scope complete")
+            try require(try stopStore.originalRegion(realtyTarget.id).detailCount == 1 && stopStore.collectionProgress?.detailCompletedCount == 1 && stopStore.collectionProgress?.fraction == 0.25,"stop discarded records or marked scope complete")
         }
         stopping.cancelledIDs = []; let previousStopCalls = stopping.detailCalls.count
         stopStore.collectionProgress = HousingCollectionProgress(scopeTitle:"법정동",includesDetails:true)
@@ -495,6 +518,193 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         try check("list-only confirmation stays separate and never requests detail") {
             try require(realty.detailCalls.count == callsBeforeListOnly,"list-only action requested detail")
         }
+        try check("whole-job progress weights apartments rather than equally weighting dongs") {
+            var p = HousingCollectionProgress(scopeTitle:"전국",includesDetails:true)
+            p.setTargets(["small","large"])
+            p.recordInventory(regionID:"small",ids:["one"],completedIDs:[])
+            try require(p.fraction == nil,"invented total before all lists")
+            p.recordInventory(regionID:"large",ids:(0..<9).map(String.init),completedIDs:[]); p.sealInventory()
+            p.beginRegion(id:"small",title:"작은 지역"); p.beginDetails(ids:["one"],previouslyCompleted:0)
+            p.detailFinished("one",successful:true); p.regionFinished(successful:true)
+            try require(p.totalComplexCount == 10 && p.completedComplexCount == 1 && p.fraction == 0.1,"dong count substituted for apartment progress")
+            p.beginRegion(id:"large",title:"큰 지역"); p.beginDetails(ids:(0..<9).map(String.init),previouslyCompleted:0)
+            p.detailFinished("0",successful:true); p.detailFinished("0",successful:true); p.detailFinished("unknown",successful:true)
+            try require(p.completedComplexCount == 2 && p.fraction == 0.2,"numerator reset, duplicated or accepted an unknown apartment")
+        }
+        try check("same source label in two regions remains two planned apartments") {
+            var p = HousingCollectionProgress(scopeTitle:"시도",includesDetails:true); p.setTargets(["a","b"])
+            p.recordInventory(regionID:"a",ids:["same"],completedIDs:["same"])
+            p.recordInventory(regionID:"b",ids:["same"],completedIDs:[]); p.sealInventory()
+            try require(p.totalComplexCount == 2 && p.completedComplexCount == 1 && p.fraction == 0.5,"overlapping source identifier changed denominator")
+        }
+        try check("estimate learns real detail durations without treating existing saved details as new speed samples") {
+            var p = HousingCollectionProgress(scopeTitle:"시도",includesDetails:true); p.setTargets(["a"])
+            let ids = (0..<100).map(String.init)
+            p.recordInventory(regionID:"a",ids:ids,completedIDs:Set(ids.prefix(60))); p.sealInventory()
+            p.beginRegion(id:"a",title:"지역"); p.beginDetails(ids:Array(ids.dropFirst(60)),previouslyCompleted:60)
+            try require(p.estimatedRemaining(at:now) == nil,"estimate invented before samples")
+            for n in 0..<3 {
+                let date = now.addingTimeInterval(Double(n * 2)); p.beginAttempt(at:date)
+                p.detailFinished(String(60+n),successful:true); p.recordAttempt(at:date.addingTimeInterval(2))
+            }
+            try require(p.completedComplexCount == 63 && p.estimatedRemaining(at:now.addingTimeInterval(6)) == 74,"ETA used list discovery, saved count or wrong throughput")
+            p.detailFinished("63",successful:false)
+            try require(p.estimatedRemaining(at:now) == nil && p.completedComplexCount == 63,"failed detail produced a false completion time")
+        }
+        try check("remote completion reconciles without moving the frozen denominator or fetching it again") {
+            var p = HousingCollectionProgress(scopeTitle:"법정동",includesDetails:true); p.setTargets(["a"])
+            p.recordInventory(regionID:"a",ids:["1","2"],completedIDs:[]); p.sealInventory()
+            p.reconcileCompleted(regionID:"a",ids:["1","not-planned"])
+            p.recordInventory(regionID:"a",ids:["3"],completedIDs:["3"])
+            try require(p.totalComplexCount == 2 && p.completedComplexCount == 1,"background merge changed the plan")
+            p.stop(); try require(p.estimatedRemaining(at:now) == nil,"stopped ETA continued counting wall time")
+        }
+        var smallRegion = realtyList; smallRegion.records = [realtyList.records[0]]; smallRegion.sourceCount = 1
+        smallRegion.records[0].aptCode = "small"; smallRegion.records[0].id = "realty:11680:small"; smallRegion.records[0].detailAt = nil
+        var largeRegion = smallRegion; largeRegion.dong = d2; largeRegion.code = "1168011000"
+        largeRegion.records = (0..<9).map { number in
+            var row = smallRegion.records[0]; row.regionCode = largeRegion.code; row.aptCode = "large\(number)"; row.id = "realty:11680:" + row.aptCode; return row
+        }; largeRegion.sourceCount = 9
+        let multi = HousingCollectionFixture(); multi.areaMap = ["11/680":[d1,d2]]
+        multi.listRegions = [smallRegion.code:smallRegion,largeRegion.code:largeRegion]
+        let multiFolder = folder.appendingPathComponent("whole-job-resume")
+        let multiStore = HousingStore(directory:multiFolder,seedIfEmpty:false)
+        multiStore.collectionProgress = HousingCollectionProgress(scopeTitle:"시군구",includesDetails:true)
+        var wholeCounts: [Int] = [], wholeTotals: [Int] = [], listCounts: [Int] = []
+        multi.onDetail = { _ in
+            wholeCounts.append(multiStore.collectionProgress!.completedComplexCount)
+            wholeTotals.append(multiStore.collectionProgress!.totalComplexCount ?? -1); listCounts.append(multi.listCalls)
+        }
+        multi.cancelledIDs = [largeRegion.records[1].id]
+        let multiRequest = HousingCollectionCheckpoint(scope:.district(s1,g1),includesDetails:true)
+        do { _ = try await multiStore.runRealtyCollection(multiRequest,resuming:false,client:multi); throw PlannerFailure.message("expected stop") }
+        catch is CancellationError {}
+        try check("scope inventory is collected before any detail and apartment progress spans region boundaries") {
+            try require(wholeCounts == [0,1,2] && wholeTotals == [10,10,10] && listCounts == [2,2,2],"scope inventory incomplete or numerator restarted")
+        }
+        let reopened = HousingStore(directory:multiFolder,seedIfEmpty:false)
+        multi.cancelledIDs = []; multi.onDetail = nil
+        let callsBeforeResume = multi.detailCalls.count, listsBeforeResume = multi.listCalls, areasBeforeResume = multi.areaCalls.count
+        reopened.resumeRealtyCollection(client:multi); await reopened.waitForRealtyCollection()
+        try check("relaunch resumes the durable scope and inventory without repeating completed network work") {
+            try require(reopened.resumableScopeTitle == nil && reopened.collectionProgress?.totalComplexCount == 10 && reopened.collectionProgress?.completedComplexCount == 10 && multi.detailCalls.count == callsBeforeResume + 8 && multi.listCalls == listsBeforeResume && multi.areaCalls.count == areasBeforeResume,"restart repeated inventory or completed details")
+        }
+        let incompleteInventory = HousingCollectionFixture(); incompleteInventory.areaMap = multi.areaMap
+        incompleteInventory.listRegions = [smallRegion.code:smallRegion]
+        let inventoryStore = HousingStore(directory:folder.appendingPathComponent("inventory-failure"),seedIfEmpty:false)
+        inventoryStore.collectionProgress = HousingCollectionProgress(scopeTitle:"시군구",includesDetails:true)
+        do { _ = try await inventoryStore.runRealtyCollection(multiRequest,resuming:false,client:incompleteInventory); throw PlannerFailure.message("ignored missing list") }
+        catch { try require(error.localizedDescription.contains("fixture list mismatch"),"wrong list failure") }
+        try check("an unavailable list leaves totals unknown instead of claiming a partial scope is complete") {
+            try require(inventoryStore.collectionProgress?.totalComplexCount == nil && inventoryStore.collectionProgress?.fraction == nil && incompleteInventory.detailCalls.isEmpty,"invented nationwide total after a missing list")
+        }
+        let journalFolder = folder.appendingPathComponent("journal-recovery")
+        let journalStore = HousingStore(directory:journalFolder,seedIfEmpty:false); try journalStore.importRegion(realtyList,share:false)
+        let journalIndex = try HousingIndex(directory:journalFolder)
+        let journalDisk = HousingCollectionDisk(directory:journalFolder,index:journalIndex)
+        let originalFile = journalFolder.appendingPathComponent("region-" + realtyList.code + ".json"), originalBytes = try Data(contentsOf:originalFile)
+        let journalSaved = try await Task.detached(priority:.utility) { () -> Bool in
+            var row = realtyList.records[0]; row.detailAt = now; row.fields["parking"] = "77"
+            _ = try journalDisk.save(row,edits:[]); return !Thread.isMainThread
+        }.value
+        try check("one durable detail updates just its index row without rewriting regional JSON on the UI thread") {
+            try require(journalSaved && (try Data(contentsOf:originalFile)) == originalBytes && (try journalDisk.read(realtyList.code)).detailCount == 1 && (try journalIndex.rawSource(realtyList.records[0].id,region:realtyList.code))?.fields["parking"] == "77","detail journal not durable or full snapshot rewritten")
+        }
+        let recovered = HousingStore(directory:journalFolder,seedIfEmpty:false)
+        try check("termination before JSON checkpoint replays saved details and retains exact completion count") {
+            let raw = try recovered.originalRegion(realtyList.code)
+            try require(raw.detailCount == 1 && raw.records.first { $0.id == realtyList.records[0].id }?.fields["parking"] == "77" && (try journalIndex.journal(realtyList.code)).isEmpty,"journal lost during launch recovery")
+        }
+        var older = realtyList; older.generation += 1
+        try recovered.importRegion(older,share:false)
+        try check("old imported lists cannot overwrite a recovered saved detail") { try require(try recovered.originalRegion(realtyList.code).detailCount == 1,"old list overwrote journal") }
+        let batchFixture = HousingCollectionFixture()
+        var batchRegion = smallRegion
+        batchRegion.records = (0..<30).map { n in var row = smallRegion.records[0]; row.aptCode = "batch\(n)"; row.id = "realty:11680:" + row.aptCode; return row }; batchRegion.sourceCount = 30
+        batchFixture.listRegion = batchRegion
+        let batchStore = HousingStore(directory:folder.appendingPathComponent("ui-refresh"),seedIfEmpty:false)
+        batchStore.collectionProgress = HousingCollectionProgress(scopeTitle:"지역",includesDetails:true); batchStore.updateCollectionProgress { $0.setTargets([batchRegion.code]) }
+        var catalogNotifications = 0
+        let subscription = batchStore.objectWillChange.sink { catalogNotifications += 1 }
+        _ = try await batchStore.collectRealtyRegion(realtyTarget,details:true,client:batchFixture)
+        subscription.cancel()
+        try check("fast collection does not invalidate the scrolling catalog for every progress update") {
+            try require(batchStore.collectionProgress?.completedComplexCount == 30 && catalogNotifications < 15,"scrolling catalog redrawn for every source or progress update")
+        }
+        let restricted = HousingCollectionFixture(); restricted.listRegion = batchRegion; restricted.interruptionIDs = [batchRegion.records[1].id]
+        let restrictedStore = HousingStore(directory:folder.appendingPathComponent("server-stop"),seedIfEmpty:false)
+        restrictedStore.collectionProgress = HousingCollectionProgress(scopeTitle:"지역",includesDetails:true); restrictedStore.updateCollectionProgress { $0.setTargets([batchRegion.code]) }
+        do { _ = try await restrictedStore.collectRealtyRegion(realtyTarget,details:true,client:restricted); throw PlannerFailure.message("ignored restriction") }
+        catch is RealtyCollectionInterruption {}
+        try check("server restriction stops the scope instead of requesting every remaining apartment") {
+            try require(restricted.detailCalls.count == 2 && (try restrictedStore.originalRegion(batchRegion.code)).detailCount == 1,"continued collection after server restriction")
+        }
+        let background = HousingCollectionBackground(), backgroundStatus = HousingCollectionStatus()
+        let oldID = UUID(), activeID = UUID(); var started = 0, expired = 0
+        background.begin(id:oldID,title:"작업",status:backgroundStatus,start:{ started += 1 },expire:{ expired += 1 })
+        background.finish(id:oldID,success:true)
+        background.begin(id:activeID,title:"작업",status:backgroundStatus,start:{ started += 1 },expire:{ expired += 1 })
+        background.expired(id:oldID); background.expired(id:activeID); background.expired(id:activeID)
+        try check("late background expiration cannot cancel a newer job and active expiration happens once") {
+            try require(started == 2 && expired == 1,"background task identity or double expiration")
+        }
+        let request = URLRequest(url:URL(string:"https://www.realtyprice.kr/notice/m/town/detail.do")!)
+        func response(_ status: Int, _ headers: [String:String] = [:]) -> HTTPURLResponse { HTTPURLResponse(url:request.url!,statusCode:status,httpVersion:nil,headerFields:headers)! }
+        try check("Retry-After supports seconds and HTTP date while never shortening server delay") {
+            let p = RealtyRequestPolicy()
+            try require(p.retryDate(status:429,attempt:0,header:"45",now:now).timeIntervalSince(now) == 45,"server delay shortened")
+            let f = DateFormatter(); f.locale = Locale(identifier:"en_US_POSIX"); f.timeZone = TimeZone(secondsFromGMT:0); f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
+            try require(RealtyRequestPolicy.retryAfter(f.string(from:now.addingTimeInterval(90)),now:now)?.timeIntervalSince(now) == 90,"HTTP date not honored")
+            try require(p.retryDate(status:503,attempt:1,header:"invalid",now:now).timeIntervalSince(now) == 10,"bounded exponential retry missing")
+        }
+        let pacingClock = RequestTestClock(now)
+        let pacing = RealtyRequestScheduler(now:{ pacingClock.now() },sleep:{ pacingClock.advance($0) })
+        var starts: [Date] = []
+        for _ in 0..<4 { _ = try await pacing.data(for:request,transport:{ _ in starts.append(pacingClock.now()); return (Data("ok".utf8),response(200)) }) }
+        try check("all requests obey the shared minimum start interval without apartment-sized burst") {
+            try require(zip(starts,starts.dropFirst()).allSatisfy { $1.timeIntervalSince($0) >= 0.349 },"request pacing lost between endpoints")
+        }
+        let retryClock = RequestTestClock(now), retryGate = RealtyRequestScheduler(now:{ retryClock.now() },sleep:{ retryClock.advance($0) })
+        var retryCalls = 0
+        _ = try await retryGate.data(for:request,transport:{ _ in retryCalls += 1; return (Data(),retryCalls == 1 ? response(429,["Retry-After":"45"]) : response(200)) })
+        try check("rate limited request waits for Retry-After before its bounded retry") { try require(retryCalls == 2 && retryClock.now().timeIntervalSince(now) >= 45,"429 retried too early") }
+        let longClock = RequestTestClock(now), longGate = RealtyRequestScheduler(now:{ longClock.now() },sleep:{ longClock.advance($0) })
+        var longCalls = 0
+        for _ in 0..<2 {
+            do { _ = try await longGate.data(for:request,transport:{ _ in longCalls += 1; return (Data(),response(429,["Retry-After":"900"])) }); throw PlannerFailure.message("ignored long cooldown") }
+            catch is RealtyCollectionInterruption {}
+        }
+        try check("long server cooldown prevents a newly requested job from sending again") { try require(longCalls == 1 && longClock.now() == now,"long server delay bypassed") }
+        let errorClock = RequestTestClock(now), errorGate = RealtyRequestScheduler(now:{ errorClock.now() },sleep:{ errorClock.advance($0) })
+        var errorCalls = 0
+        do { _ = try await errorGate.data(for:request,transport:{ _ in errorCalls += 1; return (Data(),response(503)) }); throw PlannerFailure.message("ignored persistent outage") }
+        catch is RealtyCollectionInterruption {}
+        try check("persistent outage retries at most twice and then suspends") { try require(errorCalls == 3 && errorClock.now().timeIntervalSince(now) >= 15,"unbounded outage requests") }
+        let forbiddenGate = RealtyRequestScheduler(policy:RealtyRequestPolicy(minimumInterval:0))
+        var forbiddenCalls = 0
+        do { _ = try await forbiddenGate.data(for:request,transport:{ _ in forbiddenCalls += 1; return (Data(),response(403)) }); throw PlannerFailure.message("ignored forbidden response") }
+        catch is RealtyCollectionInterruption {}
+        try check("access denial stops without changing cookies or trying other apartments") { try require(forbiddenCalls == 1,"403 retried") }
+        let challengeGate = RealtyRequestScheduler(policy:RealtyRequestPolicy(minimumInterval:0))
+        do { _ = try await challengeGate.data(for:request,transport:{ _ in (Data("<html>CAPTCHA</html>".utf8),response(200)) }); throw PlannerFailure.message("challenge parsed as detail") }
+        catch is RealtyCollectionInterruption {}
+        try check("a challenge response is an explicit interruption even with HTTP 200") { try require(true,"challenge") }
+        let cancelledGate = RealtyRequestScheduler(policy:RealtyRequestPolicy(minimumInterval:0))
+        var cancelledCalls = 0
+        do { _ = try await cancelledGate.data(for:request,transport:{ _ in cancelledCalls += 1; throw URLError(.cancelled) }); throw PlannerFailure.message("cancelled transport retried") }
+        catch is CancellationError {}
+        try check("cancellation stops network retries immediately") { try require(cancelledCalls == 1,"cancel retried") }
+        let probe = RequestConcurrencyProbe(), serialGate = RealtyRequestScheduler(policy:RealtyRequestPolicy(minimumInterval:0.005))
+        try await withThrowingTaskGroup(of:Void.self) { group in
+            for _ in 0..<8 { group.addTask {
+                _ = try await serialGate.data(for:request,transport:{ r in
+                    await probe.enter(); try await Task.sleep(nanoseconds:5_000_000); await probe.leave()
+                    return (Data(),HTTPURLResponse(url:r.url!,statusCode:200,httpVersion:nil,headerFields:nil)!)
+                })
+            } }; try await group.waitForAll()
+        }
+        let concurrency = await probe.maximum, requests = await probe.calls
+        try check("independent clients never send overlapping requests to the source service") { try require(concurrency == 1 && requests == 8,"shared scheduler allowed concurrent transport") }
         print("Housing Kakao native checks: \(passed)/\(passed) passed")
     }
 }

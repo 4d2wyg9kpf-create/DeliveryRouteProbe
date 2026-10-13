@@ -9,6 +9,8 @@ on:
       - 'DeliveryRouteProbe.xcodeproj/**'
       - 'native/**'
       - 'scripts/build_ios.sh'
+      - 'scripts/select_xcode.py'
+      - 'scripts/test_housing_kakao.*'
       - 'scripts/package_unsigned_ipa.py'
       - 'scripts/test_facility_routes.*'
       - 'scripts/test_facility_live.*'
@@ -100,6 +102,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Select stable Xcode with iOS 26 background task support
+        run: python3 scripts/select_xcode.py
       - name: Build device app and package unsigned IPA
         run: bash scripts/build_ios.sh unsigned
       - name: Upload IPA and its verification report
