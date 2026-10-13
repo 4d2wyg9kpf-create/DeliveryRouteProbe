@@ -24,6 +24,7 @@ struct DeliveryRootView: View {
     @StateObject private var customers = NaverCustomerStore.shared
     @StateObject private var tmap = TMapStore.shared
     @StateObject private var sites = SiteTargetStore()
+    @StateObject private var evaluation = EvaluationReferenceStore()
     @StateObject private var housing = HousingStore.shared
     @StateObject private var kakao = KakaoRouteStore.shared
     @StateObject private var publicData = PublicDataStore.shared
@@ -46,6 +47,7 @@ struct DeliveryRootView: View {
         .environmentObject(inputs)
         .environmentObject(customers)
         .environmentObject(sites)
+        .environmentObject(evaluation)
         .environmentObject(housing)
         .onAppear {
             do { if customers.needsPlanMigration { try customers.remember(planner.plan) } }
@@ -56,6 +58,7 @@ struct DeliveryRootView: View {
                 result.append(try publicData.sharingSnapshot())
                 result.append(try customers.sharingSnapshot())
                 result.append(try sites.sharingSnapshot())
+                result.append(try evaluation.sharingSnapshot())
                 result.append(try housing.sharingSnapshot())
                 result.append(try kakao.sharingSnapshot())
                 result.append(try LicenseExclusionStore.shared.sharingSnapshot())
@@ -66,6 +69,7 @@ struct DeliveryRootView: View {
                 try publicData.applySharing(replica)
                 try customers.applySharing(replica)
                 try sites.applySharing(replica)
+                try evaluation.applySharing(replica)
                 try housing.applySharing(replica)
                 try kakao.applySharing(replica)
                 try LicenseExclusionStore.shared.applySharing(replica)

@@ -25,6 +25,7 @@ on:
       - 'scripts/test_public_data.*'
       - 'scripts/test_public_data_live_clock.*'
       - 'scripts/test_place_destinations.*'
+      - 'scripts/test_evaluation_reference.*'
       - 'tests/naver_api_tests.js'
       - 'tests/shared_pin_tests.js'
       - 'tests/delivery_flow_tests.js'
@@ -50,6 +51,8 @@ jobs:
           persist-credentials: false
       - name: Verify housing parsing, editable coordinates, source preservation and Kakao routing request gates
         run: bash scripts/test_housing_kakao.sh
+      - name: Verify frozen reference distributions, stable scores, hierarchy, versions and shared persistence
+        run: bash scripts/test_evaluation_reference.sh
       - name: Verify one public apartment using the paced production URLSession client
         # External reachability is recorded separately from deterministic checks.
         continue-on-error: true

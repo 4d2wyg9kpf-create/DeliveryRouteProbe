@@ -36,8 +36,9 @@ struct LocationAnalysisScreen: View {
                     if let error = sites.errorMessage { Text(error).font(.caption).foregroundStyle(.red) }
                 }
                 Section("입지 평가") {
+                    NavigationLink("표준 대상·고정 기준으로 점수 평가") { EvaluationReferenceView() }
                     NavigationLink("시설까지 도보·대중교통·자동차 거리 조회") { KakaoRouteView() }
-                    Text("평가대상지와 시설을 목록에 등록하고 거리·시간을 조회해 CSV로 내보낼 수 있습니다. 점수·비교 방법은 추후 추가합니다.").font(.caption).foregroundStyle(.secondary)
+                    Text("일부 표준 대상의 원자료로 기준분포를 확정하고 그 기준으로 평가합니다. 모든 항목의 자동 수집은 추후 추가하며 현재는 확인한 원자료를 입력합니다.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section { Button("공공데이터 API 설정") { showSettings = true } }
             }.navigationTitle("입지분석").navigationBarTitleDisplayMode(.inline)
