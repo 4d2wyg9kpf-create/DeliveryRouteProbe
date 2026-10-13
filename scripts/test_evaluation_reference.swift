@@ -125,7 +125,9 @@ private func replica(_ snapshot: DeviceShareSnapshot) throws -> DeviceShareRepli
             let revised = try store.preview(title: "가상 전국 기준 2", sites: three)
             try store.confirm(revised)
             try require(revised.id != baseline.id && store.archive.references.count == 2 && store.active?.id == revised.id, "version identity")
-            try require(abs(try store.result(site: other, reference: revised).total! - originalScore) > 0.05, "new reference unchanged")
+            try close(revised.distributions[0].mean, 40)
+            try close(revised.distributions[0].standardDeviation, sqrt(1900))
+            try close(try store.result(site: other, reference: revised).total!, 0.7168602129773354)
             try store.activate(baseline.id); try close(try store.result(site: other, reference: store.active!).total!, originalScore)
         }
         try check("confirmed model and raw observations survive recreation") {
