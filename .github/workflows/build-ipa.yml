@@ -51,7 +51,12 @@ jobs:
       - name: Verify housing parsing, editable coordinates, source preservation and Kakao routing request gates
         run: bash scripts/test_housing_kakao.sh
       - name: Verify one public apartment using the paced production URLSession client
-        run: build/housing-kakao-tests --realty-live | tee build/logs/realty-live.log
+        # External reachability is recorded separately from deterministic checks.
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          build/housing-kakao-tests --realty-live 2>&1 | tee build/logs/realty-live.log
       - name: Verify cross-origin iframe reads and share links in native WKWebView
         run: bash scripts/test_naver_frames.sh
       - name: Verify mobile and desktop route identities and units

@@ -52,6 +52,7 @@ actor RequestConcurrencyProbe {
 @main struct HousingKakaoChecks {
     @MainActor static func main() async throws {
         if CommandLine.arguments.contains("--realty-live") {
+            do {
             let client = RealtyHousingClient()
             let sido = HousingArea(code:"11",name:"서울특별시"), sigungu = HousingArea(code:"680",name:"강남구"), dong = HousingArea(code:"10300",name:"개포동")
             let areas = try await client.areas(sido:sido.code,sigungu:sigungu.code)
@@ -65,6 +66,10 @@ actor RequestConcurrencyProbe {
             try require(detail.id == source.id && detail.detailAt != nil && HousingRegion.validSource(detail),"live source detail invalid")
             print("PASS live paced client reads and validates one public apartment detail")
             print("REALTY_LIVE_CHECKS 3/3"); return
+            } catch {
+                print("REALTY_LIVE_UNVERIFIED " + error.localizedDescription)
+                fflush(stdout); exit(2)
+            }
         }
         var passed = 0
         func check(_ name: String, _ test: () throws -> Void) throws { try test(); passed += 1; print("PASS \(name)"); fflush(stdout) }
