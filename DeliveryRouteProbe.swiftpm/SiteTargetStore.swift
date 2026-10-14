@@ -148,6 +148,20 @@ final class SiteTargetStore: ObservableObject {
         }
         if try DeviceShareCodec.encode(next) != DeviceShareCodec.encode(records) { try commit(next) }
     }
+    func applyKaptProfiles(_ profiles: [String:BuildingComplexProfile]) throws {
+        var next = records
+        for index in next.indices {
+            guard let selection = next[index].building else { continue }
+            if let profile = profiles[selection.identity], profile.binding.buildingScopeKey == selection.building.complexScopeKey {
+                next[index].complexBinding = profile.binding; next[index].managedComplex = profile.complex; next[index].buildingFacts = profile.facts
+                try Self.validateComplex(next[index])
+            } else {
+                next[index].complexBinding = nil; next[index].managedComplex = nil
+                next[index].buildingFacts = BuildingFacts.resolve(registry:selection.building.fields,realty:[:],kapt:[:],apartment:false)
+            }
+        }
+        if try DeviceShareCodec.encode(next) != DeviceShareCodec.encode(records) { try commit(next) }
+    }
     static func sharingKey(_ record: SiteTarget) -> String {
         if let building = record.building { return "site/building/" + DeviceShareCodec.key(building.identity) }
         if let housingID = record.housingID { return "site/housing/" + DeviceShareCodec.key(housingID) }

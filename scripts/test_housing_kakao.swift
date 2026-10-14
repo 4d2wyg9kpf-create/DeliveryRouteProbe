@@ -536,14 +536,22 @@ actor RequestConcurrencyProbe {
         }
         try await referenceStore.collect(api:referenceAPI)
         try check("completed reference address collection resumes without fetching old details") {
-            try require(referenceRequests == 3,"old Kapt data refetched")
+            try require(referenceRequests == 4,"old Kapt data refetched or blank facility collected")
         }
         try check("national reference catalog survives persistence and refuses missing entrances") {
             let restored = BuildingReferenceStore(read:{referenceState},write:{referenceState = $0})
             try require(restored.catalog.addresses.count == 1 && restored.errorMessage == nil,"reference persistence")
             try rejects { _ = try restored.standardSites([]) }
             let selection = BuildingSelection(building:ledgerBuilding,choice:.firstDong,entranceSource:"가상 확인",entranceID:"fixture-entry",longitude:127.4,latitude:36.3)
-            try require(try restored.standardSites([SiteTarget(building:selection)]).count == 1,"verified default entrance missing")
+            try rejects { _ = try restored.standardSites([SiteTarget(building:selection)]) }
+            var price = HousingSource(id:"realty:30170:FIXTURE",aptCode:"FIXTURE",noticeDate:"20260101",regionCode:"3017011300",fields:["name":"가상 공시가격","roadAddress":fixtureAddress.roadAddress])
+            price.detailAt = Date(); try restored.mergeConcordance(KaptConcordance(sources:[price]))
+            try restored.saveObservation(KaptRegistryObservation(roadAddress:fixtureAddress.roadAddress,buildings:[ledgerBuilding],groups:[],fetchedAt:Date()))
+            let record = restored.archive.records[0]
+            let decision = KaptLinkDecision(id:"fixture-approval",kaptID:record.id,disposition:.accepted,realtyIDs:[price.id],reason:"가상 직접 검증",kaptScopeKey:record.source.scopeKey,
+                realtyScopeKeys:[price.id:KaptConcordance.sourceKey(price)],memberBuildings:[selection.identity:ledgerBuilding.complexScopeKey],standardBuildingIdentity:selection.identity,wholeKaptScope:true,updatedAt:Date())
+            try restored.saveLink(decision)
+            try require(try restored.standardSites([SiteTarget(building:selection)]).count == 1,"approved Kapt standard missing")
         }
         try check("concurrent reference devices preserve details from both devices") {
             let original = referenceStore.archive

@@ -14,6 +14,8 @@ swiftc -parse-as-library \
   DeliveryRouteProbe.swiftpm/BuildingLedgerClient.swift \
   DeliveryRouteProbe.swiftpm/BuildingSupplementClient.swift \
   DeliveryRouteProbe.swiftpm/BuildingReferenceStore.swift \
+  DeliveryRouteProbe.swiftpm/KaptConcordance.swift \
+  DeliveryRouteProbe.swiftpm/RealtyAddressSearchClient.swift \
   DeliveryRouteProbe.swiftpm/HousingModels.swift \
   DeliveryRouteProbe.swiftpm/HousingCollection.swift \
   DeliveryRouteProbe.swiftpm/HousingCollectionBackground.swift \

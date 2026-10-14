@@ -74,12 +74,12 @@ struct DeliveryRootView: View {
                 try sites.applySharing(replica)
                 try evaluation.applySharing(replica)
                 try buildingReferences.applySharing(replica)
-                try sites.applyComplexReviews(buildingReferences.complexReviews)
+                try sites.applyKaptProfiles(buildingReferences.profiles(sites.records.compactMap { $0.building?.building }))
                 try housing.applySharing(replica)
                 try kakao.applySharing(replica)
                 try LicenseExclusionStore.shared.applySharing(replica)
             }, catalogSync: { folder in try await housing.synchronizeSources(folder) })
-            do { try sites.applyComplexReviews(buildingReferences.complexReviews) }
+            do { try sites.applyKaptProfiles(buildingReferences.profiles(sites.records.compactMap { $0.building?.building })) }
             catch { sites.errorMessage = error.localizedDescription }
             InputDiagnostics.shared.start()
         }

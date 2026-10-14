@@ -381,3 +381,10 @@ struct BuildingComplexReview: Codable, Equatable, Identifiable {
 extension EvaluationBuilding {
     var complexScopeKey: String { BuildingComplexReview.key([id,roadKey,name,dongName,parentRegistryID ?? "",parcelID ?? ""]) }
 }
+
+// Resolved by a verified K-apt identity, then applied to saved buildings.
+struct BuildingComplexProfile {
+    var binding: BuildingComplexBinding
+    var complex: ManagedBuildingComplex
+    var facts: [String:BuildingFact]
+}

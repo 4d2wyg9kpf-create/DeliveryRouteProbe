@@ -22,14 +22,11 @@ struct BuildingRegisterView: View {
     @State private var loading = false
     @State private var query: Task<Void,Never>?
     @State private var message: String?
-    @State private var review: BuildingComplexReview?
-    @State private var showingReview = false
     @State private var confirmedDefault = false
     @State private var expectedDongs: [String] = []
     init(roadAddress: String = "", dong: String = "") { _roadAddress = State(initialValue:roadAddress); _dong = State(initialValue:dong) }
     private var sharedComplex: ManagedBuildingComplex? {
-        guard let selected, let binding = review?.binding(selected) else { return nil }
-        return references.managedComplexes[binding.complexID]
+        guard let selected else { return nil }; return references.profile(selected)?.complex
     }
     private var canConfirmDefault: Bool {
         guard defaultBuildingID == nil, let selected, !BuildingAddress.dongKey(selected.dongName).isEmpty else { return false }
@@ -52,10 +49,8 @@ struct BuildingRegisterView: View {
                         Text("건물을 선택하세요").tag("")
                         ForEach(buildings) { building in Text("\(building.name) \(building.dongName) · \(building.id)").tag(building.id) }
                     }
-                    if let review {
-                        Button("K-apt 등록 비교·중복 판별·건물 소속 확인") { showingReview = true }.disabled(loading)
-                        Text(review.usable ? "등록 판별 저장됨 · 소속 미확인 건물은 공용 정보 보류" : "단지 판별 미확인 · 공용 정보 보류").font(.caption).foregroundStyle(review.usable ? Color.secondary : Color.orange)
-                    }
+                    NavigationLink("K-apt 단지 연결·건물 소속 검증") { KaptPrimaryCatalogView() }
+                    Text("단지 목록에서 이 건물의 소속을 직접 검증하면 공용 정보를 적용합니다.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if let building = selected {
@@ -119,25 +114,20 @@ struct BuildingRegisterView: View {
                     point = value; entranceConfirmed = false
                 }
             }
-            .sheet(isPresented:$showingReview) {
-                if let review { BuildingComplexReviewView(review:review) { saved in
-                    self.review = saved; if let selected { facts = saved.individualFacts(selected) }
-                    message = "단지 판별과 건물 소속을 저장했습니다. 같은 관리단지의 기존 건물 정보도 갱신했습니다."
-                } }
-            }
             .onDisappear { query?.cancel() }
+            .onAppear { if let selected { facts = references.profile(selected)?.facts ?? BuildingFacts.resolve(registry:selected.fields,realty:[:],kapt:[:],apartment:false) } }
     }
     private func chooseBuilding(_ id: String) {
         guard let building = buildings.first(where:{ $0.id == id }) else { selected = nil; return }
         selected = building; choice = .specifiedDong; point = nil; entranceConfirmed = false; confirmedDefault = false
-        facts = review?.individualFacts(building) ?? BuildingFacts.resolve(registry:building.fields,realty:[:],kapt:[:],apartment:false)
+        facts = references.profile(building)?.facts ?? BuildingFacts.resolve(registry:building.fields,realty:[:],kapt:[:],apartment:false)
         if let previous = sites.records.first(where:{ $0.building?.identity == building.roadKey + "|" + building.id }) {
             point = previous.effectiveCoordinate; entranceSource = previous.building?.entranceSource ?? entranceSource; entranceConfirmed = true
             if previous.building?.isDefaultForAddress == true && defaultBuildingID == nil { confirmedDefault = true }
         }
     }
     private func load() {
-        inputs.finishEditing(); loading = true; message = nil; selected = nil; review = nil; buildings = []
+        inputs.finishEditing(); loading = true; message = nil; selected = nil; buildings = []
         defaultBuildingID = nil; confirmedDefault = false; point = nil; entranceConfirmed = false
         let requestedRoad = roadAddress, requestedDong = dong
         query = Task {
@@ -167,55 +157,13 @@ struct BuildingRegisterView: View {
                 let values = all.values.sorted { BuildingAddress.dongLess($0.dongName,$1.dongName) }
                 buildings = values; expectedDongs = addresses.flatMap(\.dongNames)
                 defaultBuildingID = try? BuildingSelector.choose(values,roadAddress:requestedRoad,expectedDongNames:expectedDongs).0.id
-                let regions = Array(Set(addresses.compactMap(\.administrativeCode))).sorted()
-                var price: [String:BuildingComplexSource] = [:]
-                for region in regions {
-                    for source in try housing.buildingSupplements(roadAddress:requestedRoad,regionCode:region).filter({ !$0.isKapt }) {
-                        price[source.id] = BuildingSupplementClient.source(source)
-                    }
-                    do {
-                        for source in try await housing.refreshBuildingRealty(roadAddress:requestedRoad,regionCode:region) { price[source.id] = BuildingSupplementClient.source(source) }
-                    } catch is CancellationError { throw CancellationError() }
-                    catch { issues.append("공시가격 보충: " + error.localizedDescription) }
-                }
-                do {
-                    var candidates = try await BuildingSupplementClient.kapt(roadAddress:requestedRoad,regions:regions,
-                        knownCodes:references.connectedKaptCodes(requestedRoad),jibunAddresses:addresses.map(\.jibunAddress),api:api)
-                    var comparedRegions = Set(regions), comparedRoads = Set([BuildingAddress.key(requestedRoad) ?? ""])
-                    var pendingRoads = candidates.flatMap(\.roadAddresses), cursor = 0, comparisonComplete = true
-                    var comparedParcels = addresses.map(\.jibunAddress)
-                    while cursor < pendingRoads.count && comparedRoads.count <= 100 {
-                        let otherRoad = pendingRoads[cursor]; cursor += 1
-                        guard let key = BuildingAddress.key(otherRoad), comparedRoads.insert(key).inserted else { continue }
-                        do {
-                            let related = try await housing.buildingAddresses(otherRoad)
-                            comparedParcels.append(contentsOf:related.map(\.jibunAddress))
-                            let newRegions = Set(related.compactMap(\.administrativeCode)).subtracting(comparedRegions)
-                            if !newRegions.isEmpty {
-                                candidates = try await BuildingSupplementClient.kapt(roadAddress:requestedRoad,regions:newRegions.sorted(),
-                                    knownCodes:references.connectedKaptCodes(otherRoad),jibunAddresses:comparedParcels,cached:candidates,api:api)
-                                comparedRegions.formUnion(newRegions); pendingRoads.append(contentsOf:candidates.flatMap(\.roadAddresses))
-                            }
-                        } catch is CancellationError { throw CancellationError() }
-                        catch { comparisonComplete = false; issues.append("연결 주소의 단지 비교 미완료: " + otherRoad + " · " + error.localizedDescription) }
-                    }
-                    if cursor < pendingRoads.count { comparisonComplete = false; issues.append("연결 주소가 많아 비교를 보류했습니다.") }
-                    if !candidates.isEmpty {
-                        var draft = try BuildingComplexReview.draft(roadAddress:requestedRoad,buildings:values,groups:groups.values.sorted { $0.id < $1.id },
-                            candidates:candidates,realty:price.values.sorted { $0.id < $1.id },previous:references.complexReview(requestedRoad))
-                        draft.comparisonComplete = comparisonComplete
-                        if !comparisonComplete { draft.confirmed = false; draft.automatic = false }
-                        draft = draft.reusingManagementDecision(references.complexReviews)
-                        try references.saveComplexReview(draft); try sites.applyComplexReviews(references.complexReviews)
-                        review = references.complexReview(requestedRoad)
-                    }
-                } catch is CancellationError { throw CancellationError() }
-                catch { issues.append("K-apt 단지 판별: " + error.localizedDescription) }
+                try references.saveObservation(KaptRegistryObservation(roadAddress:requestedRoad,buildings:values,groups:groups.values.sorted { $0.id < $1.id },fetchedAt:Date()))
+                try sites.applyKaptProfiles(references.profiles(sites.records.compactMap { $0.building?.building }))
                 do {
                     let (building,reason) = try BuildingSelector.choose(values,roadAddress:requestedRoad,dong:requestedDong,expectedDongNames:expectedDongs)
                     chooseBuilding(building.id); choice = reason
                 } catch { issues.append(error.localizedDescription) }
-                message = (["개별 건물의 출입구와 관리단지 소속을 확인하세요."] + issues).joined(separator:"\n")
+                message = (["개별 건물의 출입구를 저장한 뒤 K-apt 목록에서 연결·건물 소속을 검증하세요."] + issues).joined(separator:"\n")
             } catch is CancellationError { message = "조회를 중단했습니다." }
             catch { message = error.localizedDescription }
         }
@@ -227,73 +175,14 @@ struct BuildingRegisterView: View {
             let selection = BuildingSelection(building:building,choice:choice,entranceSource:BuildingAddress.clean(entranceSource),
                 entranceID:"confirmed:" + UUID().uuidString,longitude:point.longitude,latitude:point.latitude,defaultForAddress:defaultBuildingID == building.id || (canConfirmDefault && confirmedDefault))
             _ = try sites.saveBuilding(selection,facts:facts)
-            try sites.applyComplexReviews(references.complexReviews)
+            try sites.applyKaptProfiles(references.profiles(sites.records.compactMap { $0.building?.building }))
             message = "선택한 개별 건물과 출입구를 저장했습니다."
         } catch { message = error.localizedDescription }
     }
 }
 
 struct KaptBuildingReferenceView: View {
-    @EnvironmentObject private var references: BuildingReferenceStore
-    @EnvironmentObject private var sites: SiteTargetStore
-    @EnvironmentObject private var evaluation: EvaluationReferenceStore
-    @ObservedObject private var api = PublicDataStore.shared
-    @State private var keyword = ""
-    @State private var showingSettings = false
-    @State private var message: String?
-    @State private var limit = 100
-    private var filtered: [KaptReferenceAddress] {
-        references.standardAddresses.filter { keyword.isEmpty || ($0.roadAddress + " " + $0.names.joined(separator:" ")).localizedCaseInsensitiveContains(keyword) }
-    }
-    var body: some View {
-        List {
-            Section("K-apt 전체 도로명주소 → 표준지 목록") {
-                Button("공공데이터 키·K-apt 활용승인") { showingSettings = true }
-                Button("전국 K-apt 목록·주소 수집 이어서") { references.start(api:api) }.disabled(references.isBusy || api.isBusy)
-                if references.isBusy { ProgressView(); Button("수집 중단") { references.stop() } }
-                Text(references.progress).font(.caption)
-                BuildingReferenceBackgroundStatus(status:references.collectionStatus)
-                Text("원본 \(references.archive.records.count)단지 · 표준 주소 \(references.standardAddresses.count)개").font(.caption)
-                Text("주소 공란 제외 \(references.catalog.missingAddressIDs.count)단지 · 중복 주소 \(references.catalog.duplicateAddressCount)건 · 주소 미확인 \(references.catalog.unresolvedIDs.count)단지").font(.caption).foregroundStyle(.secondary)
-                Text("여러 도로명주소는 각각 포함하며, 같은 주소는 목록에서 한 번만 표시합니다. 중복·별개·과거 등록은 건축물대장과 비교해 판별하고 원본을 보존합니다.").font(.caption).foregroundStyle(.secondary)
-                Button("확인한 전체 주소를 표준 건물 목록에 적용") {
-                    do {
-                        let standards = try references.standardSites(sites.records).map(EvaluationSite.init)
-                        try evaluation.setStandardPopulation(standards,token:references.populationToken)
-                        message = "전체 \(standards.count)개 표준 건물을 적용했습니다. 원자료를 확인한 뒤 새 기준을 확정하세요."
-                    } catch { message = error.localizedDescription }
-                }.disabled(references.isBusy)
-                Text("모든 표준 주소의 기본 건물·입구가 확인되어야 전체 표준 목록을 적용합니다. 일부 확인된 주소로 조용히 기준분포를 만들지 않습니다.").font(.caption).foregroundStyle(.secondary)
-                if let error = message ?? references.errorMessage { Text(error).font(.caption).foregroundStyle(.orange) }
-            }
-            Section("표준 주소 확인") {
-                NativeTextField("도로명주소·단지명 검색",text:$keyword).frame(minHeight:44)
-                ForEach(Array(filtered.prefix(limit))) { address in
-                    NavigationLink { BuildingRegisterView(roadAddress:address.roadAddress) } label: {
-                        VStack(alignment:.leading,spacing:3) {
-                            Text(address.roadAddress)
-                            Text(address.names.joined(separator:" · ")).font(.caption).foregroundStyle(.secondary)
-                            let verified = sites.records.contains { $0.building?.building.roadKey == address.id && $0.building?.isDefaultForAddress == true }
-                            Text(verified ? "기본 건물·입구 확인됨" : "기본 건물·입구 확인 필요").font(.caption2).foregroundStyle(verified ? Color.secondary : Color.orange)
-                        }
-                    }
-                }
-                if filtered.count > limit { Button("주소 더 보기") { limit += 100 } }
-            }
-        }.navigationTitle("K-apt 표준지 목록").navigationBarTitleDisplayMode(.inline)
-            .sheet(isPresented:$showingSettings) { PublicDataSettingsView(store:api) }
-    }
-}
-
-private struct BuildingReferenceBackgroundStatus: View {
-    @ObservedObject var status: HousingCollectionStatus
-    var body: some View {
-        if !status.backgroundMessage.isEmpty { Text(status.backgroundMessage).font(.caption).foregroundStyle(.secondary) }
-        if let value = status.value {
-            if let fraction = value.fraction { ProgressView(value:fraction) }
-            Text(value.summary).font(.caption).foregroundStyle(.secondary)
-        }
-    }
+    var body: some View { KaptPrimaryCatalogView() }
 }
 
 private func buildingFactTitle(_ key: String) -> String {

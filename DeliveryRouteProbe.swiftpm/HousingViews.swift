@@ -51,21 +51,12 @@ struct HousingCatalogView: View {
                 Picker("시군구", selection: $district) { Text("선택").tag(""); ForEach(districts) { Text($0.name).tag($0.code) } }.disabled(store.isBusy)
                 Picker("법정동 · 리", selection: $dong) { Text("전체 보관 자료").tag(""); ForEach(dongs) { Text($0.name).tag($0.code) } }.disabled(store.isBusy)
                 Text("보관 지역 \(store.regions.count)곳 · 원본 \(store.regions.reduce(0) { $0 + $1.sourceCount })건 · 표시 \(rows.count)건").font(.caption)
-                Text("전국 수집 완료 여부는 보관 지역별로 확인하세요. 검색 결과는 최대 2,000건을 읽습니다. 미수집 지역과 상세 미수집 항목은 빈칸으로 표시합니다.").font(.caption).foregroundStyle(.secondary)
+                Text("검색 결과는 기존 보관 자료만 표시하며 최대 2,000건을 읽습니다. 새 K-apt 연결 목록은 별도 화면에서 검증합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("원본 수집 · 공유") {
-                NavigationLink("K-apt 정보 수집·단지 통합") { HousingIntegrationView(regionCode:dong.isEmpty ? "" : regionCode) }.disabled(store.isBusy)
-                Button("\(selectedCollectionScope?.buttonPrefix ?? "선택 지역") 신규단지 목록 확인") { collect(details: false) }.disabled(selectedCollectionScope == nil || store.isBusy)
-                Button("\(selectedCollectionScope?.buttonPrefix ?? "선택 지역") 신규단지 추가·미완료 상세 수집") { collect(details: true) }.disabled(selectedCollectionScope == nil || store.isBusy)
-                Button("전국 신규단지 추가·미완료 상세 수집") { collectNational() }.disabled(store.isBusy)
-                Text("모바일 목록을 확인해 신규 단지를 추가하고 상세 미완료 항목만 수집합니다. 공시 연도가 바뀌어도 기존 상세와 사용자 수정·통합은 유지합니다. 전체 목록 저장에는 2,000건 제한이 없으며, 기존 단지의 최신 상세는 단지 화면에서 직접 수집하세요.").font(.caption).foregroundStyle(.secondary)
-                HousingCollectionStatusView(status: store.collectionStatus, busy: store.isBusy)
-                if store.isBusy { Button("수집 중단") { store.stopRealtyCollection() } }
-                else if let title = store.resumableScopeTitle {
-                    Button("\(title) 보관된 수집 이어서 하기") { store.resumeRealtyCollection() }
-                }
-                Text("전체 단지 목록을 먼저 확인한 후 단지 기준 진행률과 예상 시간을 표시합니다. 앱이 작업을 보관하므로 다른 화면으로 이동해도 계속 수집합니다. 백그라운드 실행은 iOS 26 이상에서 지원하며, 시스템이 중단하면 저장된 작업을 이어서 수집하세요.").font(.caption).foregroundStyle(.secondary)
-                Text("시도만 선택하면 해당 시도 전체, 시군구까지만 선택하면 해당 시군구 전체를 수집합니다. 상세 수집은 새 단지와 미완료 단지만 처리합니다.").font(.caption).foregroundStyle(.secondary)
+                NavigationLink("K-apt 기준 단지 수집·연결 검증") { KaptPrimaryCatalogView() }
+                Text("기존 법정동별 공시가격 자료를 보관합니다. 새 자료는 K-apt 주소로 도로명검색하고, 결과가 없을 때 지번검색합니다.").font(.caption).foregroundStyle(.secondary)
+                if store.isBusy { HousingCollectionStatusView(status:store.collectionStatus,busy:true); Button("기존 수집 중단") { store.stopRealtyCollection() } }
                 NavigationLink("기기 간 공유 폴더 설정") { DeviceSharingSettingsView() }
                 Button("JSON 자료 가져오기") { importing = true }.disabled(store.isBusy)
                 Button("보관 자료·사용자 수정 JSON 내보내기") {
@@ -104,17 +95,15 @@ struct HousingCatalogView: View {
                 }
                 if rows.count > 500 { Text("500건까지 표시합니다. 법정동이나 검색어로 범위를 좁히세요.").font(.caption) }
             }
-        }.navigationTitle("공동주택 목록").navigationBarTitleDisplayMode(.inline)
-            .task { do { sidos = try await client.areas() } catch { self.error = error.localizedDescription; sidos = Array(Set(store.regions.map(\.sido))).sorted { $0.name < $1.name } } }
+        }.navigationTitle("기존 공시가격 자료").navigationBarTitleDisplayMode(.inline)
+            .task { sidos = Array(Set(store.regions.map(\.sido))).sorted { $0.name < $1.name } }
             .task(id: regionCode + "|" + keyword) { await store.search(region: dong.isEmpty ? "" : regionCode, keyword: keyword) }
-            .onChange(of: sido) { _, value in
-                district = ""; dong = ""; districts = []; dongs = []
-                guard !value.isEmpty else { return }
-                Task { do { let rows = try await client.areas(sido: value); if sido == value { districts = rows } } catch { self.error = error.localizedDescription } }
+            .onChange(of: sido) { _,value in
+                district = ""; dong = ""; dongs = []
+                districts = Array(Set(store.regions.filter { $0.sido.code == value }.map(\.sigungu))).sorted { $0.name < $1.name }
             }
-            .onChange(of: district) { _, value in
-                dong = ""; dongs = []; guard !value.isEmpty else { return }; let currentSido = sido
-                Task { do { let rows = try await client.areas(sido: currentSido, sigungu: value); if sido == currentSido && district == value { dongs = rows } } catch { self.error = error.localizedDescription } }
+            .onChange(of: district) { _,value in
+                dong = ""; dongs = Array(Set(store.regions.filter { $0.sido.code == sido && $0.sigungu.code == value }.map(\.dong))).sorted { $0.name < $1.name }
             }
             .alert("합칠 단지명", isPresented: $merging) {
                 TextField("단지명", text: $mergeName)

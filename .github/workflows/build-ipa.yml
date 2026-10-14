@@ -28,6 +28,7 @@ on:
       - 'scripts/test_evaluation_reference.*'
       - 'scripts/test_building_evaluation.*'
       - 'scripts/test_building_complex.*'
+      - 'scripts/test_kapt_primary.*'
       - 'tests/naver_api_tests.js'
       - 'tests/shared_pin_tests.js'
       - 'tests/delivery_flow_tests.js'
@@ -57,6 +58,8 @@ jobs:
         run: bash scripts/test_building_evaluation.sh
       - name: Verify duplicate, reconstructed, partial-address and separate management scopes
         run: bash scripts/test_building_complex.sh
+      - name: Verify Kapt primary many-to-many links, exact address fallback, standards and shared checkpoints
+        run: bash scripts/test_kapt_primary.sh
       - name: Verify frozen reference distributions, stable scores, hierarchy, versions and shared persistence
         run: bash scripts/test_evaluation_reference.sh
       - name: Verify one public apartment using the paced production URLSession client
@@ -66,6 +69,12 @@ jobs:
         run: |
           set -o pipefail
           build/housing-kakao-tests --realty-live 2>&1 | tee build/logs/realty-live.log
+      - name: Verify one public exact-road apartment using the production address search
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          build/kapt-primary-tests --realty-address-live 2>&1 | tee build/logs/realty-address-live.log
       - name: Verify cross-origin iframe reads and share links in native WKWebView
         run: bash scripts/test_naver_frames.sh
       - name: Verify mobile and desktop route identities and units

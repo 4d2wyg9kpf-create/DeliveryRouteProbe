@@ -17,7 +17,7 @@ struct LocationAnalysisScreen: View {
             List {
                 Section("평가대상지 · \(sites.records.count)곳") {
                     NavigationLink("도로명주소로 개별 건물·입구 확인") { BuildingRegisterView() }
-                    NavigationLink("공동주택 목록에서 평가대상지 선택") { HousingCatalogView() }
+                    NavigationLink("K-apt 단지 수집·공시가격 연결 검증") { KaptPrimaryCatalogView() }
                     Button("지도에서 새 평가대상지·시설 추가") { addingPoint = true }
                     Button("네이버검색에서 평가대상지 추가", action: openNaver)
                     NativeTextField("건물 이름·도로명주소 찾기",text:$targetKeyword).frame(minHeight:44)

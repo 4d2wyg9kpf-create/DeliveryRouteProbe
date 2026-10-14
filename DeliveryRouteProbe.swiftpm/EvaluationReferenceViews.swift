@@ -46,13 +46,13 @@ struct EvaluationReferenceView: View {
                 Text("새 평가지 추가 시에는 기준을 유지합니다. 표준 대상 변경을 반영할 때는 기준분포를 갱신하고 전체 점수를 재계산합니다. 점수에는 적용한 기준 버전을 표시합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("새 기준 준비") {
-                NavigationLink("K-apt 전체 도로명주소 표준지 · \(store.standardCount)곳") { KaptBuildingReferenceView() }
+                NavigationLink("유효한 K-apt 단지별 표준 건물 · \(store.standardCount)곳") { KaptBuildingReferenceView() }
                 NavigationLink("대상별 원자료 입력·확인") {
                     EvaluationObservationList(criteria: store.archive.configuration.criteria, conditions: store.archive.configuration.conditions)
                 }
                 Button("평가 시각·조회 조건 설정") { editingConditions = true }
                 Text(evaluationTimestamp(store.archive.configuration.conditions.departure)).font(.caption)
-                Text("표준지는 K-apt 전체 단지의 도로명주소에서 공란·중복을 제외한 목록입니다. 여러 주소는 모두 포함하며 각 주소의 기본 건물을 사용합니다. 현재는 입지 항목의 확인한 원자료를 입력합니다.").font(.caption).foregroundStyle(.secondary)
+                Text("표준지는 공시가격 연결을 검증한 유효 K-apt 단지마다 하나씩 선정합니다. 같은 주소의 별개 단지는 각각 포함하며, 한 단지의 여러 주소에서는 하나만 선정합니다. 현재는 입지 항목의 확인한 원자료를 입력합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("평가 항목 · \(store.archive.configuration.criteria.count)개") {
                 ForEach(store.archive.configuration.criteria) { criterion in
