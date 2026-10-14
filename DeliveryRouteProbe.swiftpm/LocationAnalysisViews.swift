@@ -44,9 +44,9 @@ struct LocationAnalysisScreen: View {
                 }
                 Section("입지 평가") {
                     NavigationLink("표준 대상·고정 기준으로 점수 평가") { EvaluationReferenceView() }
-                    NavigationLink("K-apt 전체 도로명주소 표준지 목록") { KaptBuildingReferenceView() }
+                    NavigationLink("유효 K-apt 단지별 표준 건물 목록") { KaptBuildingReferenceView() }
                     NavigationLink("시설까지 도보·대중교통·자동차 거리 조회") { KakaoRouteView() }
-                    Text("K-apt의 공란·중복 주소를 제외한 전체 도로명주소에서 기본 건물을 선정합니다. 건물 정보는 대장 우선이며 경로 기준점은 해당 건물의 입구입니다. 입지 항목의 원자료는 확인한 값을 입력합니다.").font(.caption).foregroundStyle(.secondary)
+                    Text("공시가격 연결을 검증한 유효 K-apt 단지마다 표준 건물 하나를 선정합니다. 같은 주소의 별개 단지는 각각 포함하고, 한 단지의 여러 주소에서는 하나만 선정합니다. 건물 정보는 대장 우선이며 경로 기준점은 해당 건물의 입구입니다. 입지 항목의 원자료는 확인한 값을 입력합니다.").font(.caption).foregroundStyle(.secondary)
                 }
                 Section { Button("공공데이터 API 설정") { showSettings = true } }
             }.navigationTitle("입지분석").navigationBarTitleDisplayMode(.inline)
