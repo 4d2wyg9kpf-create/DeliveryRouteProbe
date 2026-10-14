@@ -16,6 +16,42 @@ enum KaptRequest {
         case .facilities: return "/1613000/AptBasisInfoServiceV5/getAphusDtlInfoV5"
         }
     }
+    func context(_ parameters: [String: String]) -> String {
+        let title: String
+        switch self {
+        case .all: title = "전국 K-apt 목록"
+        case .list: title = "법정동 K-apt 목록"
+        case .basic: title = "K-apt 기본정보"
+        case .facilities: title = "K-apt 관리·시설정보"
+        case .buildingTitle: title = "건축물대장 표제부"
+        case .buildingBasis: title = "건축물대장 기본개요"
+        case .buildingRecap: title = "건축물대장 총괄표제부"
+        }
+        // Only validated identifiers belong in an error. Provider messages and
+        // request URLs can echo credentials and must never be displayed.
+        if let page = parameters["pageNo"], let number = Int(page), (1...100_000).contains(number) {
+            return title + " · \(number)페이지"
+        }
+        if let code = parameters["kaptCode"], code.range(of: #"^[A-Za-z0-9]{1,40}$"#, options: .regularExpression) != nil {
+            return title + " · " + code
+        }
+        return title
+    }
+}
+
+enum KaptRetryPolicy {
+    // An upstream HTTP/timeout fault is not an empty page. Retry the same
+    // read at most twice, preserving the caller's checkpoint and accounting
+    // for every attempt. Do not change endpoints or retry auth/quota errors.
+    static func delay(code: String?, status: Int, attempt: Int) -> TimeInterval? {
+        guard (0..<2).contains(attempt), status == 200 || [502, 503, 504].contains(status) else { return nil }
+        if let code {
+            guard ["04", "05"].contains(code) else { return nil }
+        } else {
+            guard [502, 503, 504].contains(status) else { return nil }
+        }
+        return attempt == 0 ? 2 : 5
+    }
 }
 enum KaptGateway {
     static func request(_ action: KaptRequest, key: String, parameters: [String: String]) throws -> URLRequest {

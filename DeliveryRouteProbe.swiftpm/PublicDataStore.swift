@@ -95,6 +95,7 @@ final class PublicDataStore: ObservableObject {
     private let writeState: (Data) throws -> Void
     private let transport: ((URLRequest) async throws -> (Data, URLResponse))?
     private let uptime: () -> TimeInterval
+    private let retrySleep: (TimeInterval) async throws -> Void
     private let delegate = PublicNetworkDelegate()
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -108,8 +109,9 @@ final class PublicDataStore: ObservableObject {
         self.init(read: { try PublicDataKeychain.archive.read() }, write: { try PublicDataKeychain.archive.write($0) }, transport: nil)
     }
     init(read: () throws -> Data?, write: @escaping (Data) throws -> Void,
-         transport: ((URLRequest) async throws -> (Data, URLResponse))?, uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
-        self.writeState = write; self.transport = transport; self.uptime = uptime
+         transport: ((URLRequest) async throws -> (Data, URLResponse))?, uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         retrySleep: @escaping (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) {
+        self.writeState = write; self.transport = transport; self.uptime = uptime; self.retrySleep = retrySleep
         do {
             if let data = try read() {
                 try Self.validateSavedState(data); state = try JSONDecoder().decode(PublicSecureState.self, from: data)
@@ -307,22 +309,47 @@ final class PublicDataStore: ObservableObject {
     func kaptData(_ action: KaptRequest, parameters: [String: String]) async throws -> Data {
         try await DeviceShareHooks.prepareRequest()
         guard !isBusy else { throw PublicDataFailure.message("다른 공공데이터 조회가 진행 중입니다.") }
-        isBusy = true; defer { isBusy = false }
-        try await ensureClock(); try Task.checkCancellation()
-        let request = try KaptGateway.request(action, key: state.serviceKey, parameters: parameters)
-        try reserve(action.service)
-        let (data, response) = try await send(request); try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse, http.url?.host == "apis.data.go.kr", http.url?.scheme == "https", data.count <= 8_000_000 else { throw PublicDataFailure.message("공공데이터 응답 출처·크기를 확인하지 못했습니다.") }
+        let context = action.context(parameters), previousProgress = progress
+        isBusy = true; progress = context
+        defer { isBusy = false; progress = previousProgress }
         do {
-            _ = try KaptGateway.body(data)
-            guard http.statusCode == 200 else { throw PublicDataFailure.message("\(action.service.title) HTTP 오류 \(http.statusCode)") }
-            return data
-        } catch PublicDataFailure.provider(let code) {
-            if ["22", "-10"].contains(code), let now {
-                var next = state; var entry = account(action.service, at: now); entry.blocked = true
-                next.accounts[accountKey(action.service)] = entry; try commit(next)
-            } else if code == "23" { cooldownUntil = uptime() + 10 }
-            throw PublicDataFailure.provider(code)
+            try await ensureClock(); try Task.checkCancellation()
+            let request = try KaptGateway.request(action, key: state.serviceKey, parameters: parameters)
+            for attempt in 0..<3 {
+                try Task.checkCancellation()
+                if attempt > 0 { try await DeviceShareHooks.prepareRequest() }
+                try reserve(action.service)
+                let (data, response) = try await send(request); try Task.checkCancellation()
+                guard let http = response as? HTTPURLResponse, http.url == request.url,
+                      http.url?.host == "apis.data.go.kr", http.url?.scheme == "https",
+                      !(300..<400).contains(http.statusCode), data.count <= 8_000_000 else {
+                    throw PublicDataFailure.message("공공데이터 응답 출처·크기를 확인하지 못했습니다.")
+                }
+                var failure: Error?
+                var providerCode: String?
+                do {
+                    _ = try KaptGateway.body(data)
+                    if http.statusCode != 200 { failure = PublicDataFailure.message("공공데이터 HTTP 오류 \(http.statusCode)") }
+                } catch PublicDataFailure.provider(let code) {
+                    providerCode = code; failure = PublicDataFailure.provider(code)
+                    if ["22", "-10"].contains(code), let now {
+                        var next = state; var entry = account(action.service, at: now); entry.blocked = true
+                        next.accounts[accountKey(action.service)] = entry; try commit(next)
+                    } else if code == "23" { cooldownUntil = uptime() + 10 }
+                } catch {
+                    failure = (200..<300).contains(http.statusCode) ? error : PublicDataFailure.message("공공데이터 HTTP 오류 \(http.statusCode)")
+                }
+                guard let failure else { return data }
+                guard let delay = KaptRetryPolicy.delay(code:providerCode,status:http.statusCode,attempt:attempt) else { throw failure }
+                progress = "\(context) · \(Int(delay))초 후 재시도 \(attempt+1)/2"
+                try await retrySleep(delay)
+            }
+            throw PublicDataFailure.message("공공데이터 응답을 확인하지 못했습니다.")
+        } catch is CancellationError { throw CancellationError() }
+        catch let failure as PublicDataFailure {
+            throw PublicDataFailure.request(context,failure.localizedDescription)
+        } catch {
+            throw PublicDataFailure.request(context,"조회에 실패했습니다. 저장된 자료에서 이어서 수집할 수 있습니다.")
         }
     }
     func nearby(center: TMapCoordinate, radius: Int) async throws -> PublicNearbyResult {

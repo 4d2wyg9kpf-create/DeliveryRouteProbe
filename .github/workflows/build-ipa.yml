@@ -29,6 +29,7 @@ on:
       - 'scripts/test_building_evaluation.*'
       - 'scripts/test_building_complex.*'
       - 'scripts/test_kapt_primary.*'
+      - 'scripts/inspect_kapt_contract.py'
       - 'tests/naver_api_tests.js'
       - 'tests/shared_pin_tests.js'
       - 'tests/delivery_flow_tests.js'
@@ -99,6 +100,12 @@ jobs:
         run: bash scripts/test_device_sharing.sh
       - name: Verify public business radius, license dates, pagination, persistence and request gates
         run: bash scripts/test_public_data.sh
+      - name: Compare Kapt request paths and parameters with current official documentation without an API key
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          set -o pipefail
+          python3 scripts/inspect_kapt_contract.py 2>&1 | tee build/logs/kapt-contract.log
       - name: Verify shipped URLSession reads a live HTTPS clock without an API key or data quota use
         run: bash scripts/test_public_data_live_clock.sh
       - name: Verify selected place destinations, bulk import, deduplication and deletion persist independently
@@ -115,6 +122,7 @@ jobs:
           path: |
             build/logs/*.log
             build/logs/facility-live.json
+            build/logs/kapt-contract.json
           if-no-files-found: ignore
           retention-days: 7
   ipa:

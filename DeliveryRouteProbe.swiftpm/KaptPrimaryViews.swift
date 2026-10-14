@@ -68,6 +68,7 @@ struct KaptPrimaryCatalogView: View {
             }
             KaptPrimaryCollectionStatus(status:references.collectionStatus)
             if references.isBusy { Button("수집 중단") { references.stop() } }
+            if references.isBusy && api.isBusy && !api.progress.isEmpty { Text(api.progress).font(.caption).foregroundStyle(.secondary) }
             Text(references.progress).font(.caption)
             Text("원본 \(references.archive.records.count)개 · 유효 \(references.validKaptRecords.count)개 · 검증 필요 \(references.pendingKaptRecords.count)개").font(.caption)
             Text("도로명주소 공란 \(references.catalog.missingAddressIDs.count)개는 수집 대상에서 제외합니다. 도로명검색에 결과가 없으면 주소 API로 지번을 확인해 재검색합니다.").font(.caption).foregroundStyle(.secondary)

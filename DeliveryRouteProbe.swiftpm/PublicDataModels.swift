@@ -48,12 +48,16 @@ enum PublicDataService: String, Codable, CaseIterable, Identifiable, Hashable {
 }
 
 enum PublicDataFailure: LocalizedError {
-    case message(String), provider(String)
+    case message(String), provider(String), request(String, String)
     var errorDescription: String? {
         switch self {
         case .message(let text): return text
+        case .request(let context, let reason): return context + "\n" + reason
         case .provider(let code):
             switch code {
+            case "04": return "공공데이터 API의 HTTP 연계 오류입니다. (04) 호출 주소·요청 방식 또는 제공기관의 응답 처리에 문제가 있습니다."
+            case "05": return "공공데이터 제공기관의 응답 시간이 초과되었습니다. (05) 잠시 후 이어서 수집하세요."
+            case "12": return "공공데이터 API가 없거나 폐기되었습니다. (12) 호출 주소와 서비스 변경 공지를 확인해야 합니다."
             case "20", "30", "-4": return "인증키 또는 서비스 활용승인을 확인하세요. (\(code))"
             case "31": return "공공데이터 API 이용 기간이 만료되었습니다. 포털에서 갱신하세요."
             case "22", "-10": return "공공데이터 일일 한도를 소진했습니다. 초기화까지 요청을 차단합니다."

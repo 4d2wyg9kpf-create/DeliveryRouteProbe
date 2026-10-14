@@ -36,6 +36,9 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
     var clockResponder: ((URLRequest, [String: String]) throws -> HTTPURLResponse)?
     var omitDataDate = false
     var dataDateOffset: TimeInterval = 0
+    var dataStatus = 200
+    var retryDelays: [TimeInterval] = []
+    var waiting: ((TimeInterval) throws -> Void)?
     var heads = 0
     var gets: Int { requests.filter { $0.url?.host == "apis.data.go.kr" && $0.httpMethod != "HEAD" }.count }
     var clockRequests: [URLRequest] { requests.filter { $0.url?.host != "apis.data.go.kr" } }
@@ -52,10 +55,12 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
                 let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(secondsFromGMT: 0); f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
                 let header = self.badClock || (!isClock && self.omitDataDate) ? [:] : ["Date": f.string(from: Date(timeIntervalSince1970: self.millis + (isClock ? 0 : self.dataDateOffset)))]
                 if isClock, let clockResponder = self.clockResponder { return (Data(), try clockResponder(request, header)) }
-                let response = HTTPURLResponse(url: self.redirect ? URL(string: "https://example.invalid/")! : request.url!, statusCode: self.redirect ? 302 : 200, httpVersion: "HTTP/1.1", headerFields: header)!
+                let response = HTTPURLResponse(url: self.redirect ? URL(string: "https://example.invalid/")! : request.url!, statusCode: self.redirect ? 302 : (isClock ? 200 : self.dataStatus), httpVersion: "HTTP/1.1", headerFields: header)!
                 if isClock { return (Data(), response) }
                 return (try self.responder?(request) ?? page(rows: [business("one")], total: 1, nested: false), response)
-            }, uptime: { self.ticks })
+            }, uptime: { self.ticks }, retrySleep: { delay in
+                self.retryDelays.append(delay); try self.waiting?(delay); self.ticks += delay
+            })
     }
     func ready(_ store: PublicDataStore, limit: Int = 10_000, services: Set<String> = Set(PublicDataService.allCases.map(\.rawValue))) throws {
         try require(store.saveSettings(key: "fixture-key", approved: services, limits: Dictionary(uniqueKeysWithValues: PublicDataService.allCases.map { ($0.rawValue, limit) })), "settings save")
@@ -488,6 +493,92 @@ private func page(rows: [[String: Any]], total: Int, number: Int = 1, code: Stri
             oa = try ea.sharingSnapshot().values
             try ea.remove(ea.records.first { $0.address.contains("유천로") }!.id); try a.capture(ea.sharingSnapshot(), observed: &oa); try eb.applySharing(a)
             try require(eb.records.count == 1 && eb.records[0].address.contains("둔산로"), "deleted exclusion resurrected")
+        }
+        try await asyncCheck("national Kapt HTTP_ERROR retries the identical page and counts every attempt") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            var attempts = 0
+            f.responder = { request in
+                attempts += 1
+                if attempts == 1 { return Data("<OpenAPI_ServiceResponse><cmmMsgHeader><returnReasonCode>04</returnReasonCode><returnAuthMsg>echoed secret must stay private</returnAuthMsg></cmmMsgHeader></OpenAPI_ServiceResponse>".utf8) }
+                return try page(rows:[],total:0,number:7)
+            }
+            _ = try await store.kaptData(.all,parameters:["pageNo":"7"])
+            let dataRequests = f.requests.filter { $0.url?.host == "apis.data.go.kr" }
+            try require(f.gets == 2 && f.retryDelays == [2] && dataRequests[0].url == dataRequests[1].url,"same page and backoff")
+            try require(store.quotas.first { $0.id == .kaptList }?.used == 2 && !store.isBusy,"attempt ledger and completion")
+        }
+        try await asyncCheck("persistent national 04 stops after three reads and exposes safe page context") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            f.responder = { _ in Data("<OpenAPI_ServiceResponse><cmmMsgHeader><returnReasonCode>04</returnReasonCode><returnAuthMsg>fixture-key https://echo.invalid/?serviceKey=fixture-key</returnAuthMsg></cmmMsgHeader></OpenAPI_ServiceResponse>".utf8) }
+            do { _ = try await store.kaptData(.all,parameters:["pageNo":"12"]); throw CheckFailure.failed("04 accepted as empty page") }
+            catch let failure as PublicDataFailure {
+                let message = failure.localizedDescription
+                try require(message.contains("전국 K-apt 목록 · 12페이지") && message.contains("HTTP") && message.contains("(04)"),"stage/page/code lost")
+                try require(!message.contains("fixture-key") && !message.contains("https://"),"provider echoed key leaked")
+            }
+            try require(f.gets == 3 && f.retryDelays == [2,5] && store.quotas.first { $0.id == .kaptList }?.used == 3 && !store.isBusy,"unbounded or uncounted retries")
+        }
+        try await asyncCheck("upstream timeout retries without changing basic-information identifiers") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            var attempts = 0
+            f.responder = { _ in attempts += 1; return try page(rows:[],total:0,code:attempts == 1 ? "05" : "00") }
+            _ = try await store.kaptData(.basic,parameters:["kaptCode":"A30279105"])
+            try require(f.gets == 2 && f.retryDelays == [2] && store.quotas.first { $0.id == .kaptBasis }?.used == 2,"timeout recovery")
+        }
+        try await asyncCheck("HTML HTTP 503 faults remain errors and retry only within the bounded budget") {
+            let f = Fixture(), store = f.store(); try f.ready(store); f.dataStatus = 503
+            f.responder = { _ in Data("<html>upstream unavailable</html>".utf8) }
+            do { _ = try await store.kaptData(.all,parameters:["pageNo":"2"]); throw CheckFailure.failed("HTML 503 accepted") }
+            catch let failure as PublicDataFailure { try require(failure.localizedDescription.contains("503") && failure.localizedDescription.contains("2페이지"),"HTTP context lost") }
+            try require(f.gets == 3 && f.retryDelays == [2,5],"HTTP retry cap")
+        }
+        try await asyncCheck("daily quota errors never retry even when the gateway returns HTTP 503") {
+            let f = Fixture(), store = f.store(); try f.ready(store); f.dataStatus = 503
+            f.responder = { _ in try page(rows:[],total:0,code:"22") }
+            do { _ = try await store.kaptData(.all,parameters:["pageNo":"1"]); throw CheckFailure.failed("quota accepted") }
+            catch is PublicDataFailure {}
+            try require(f.gets == 1 && f.retryDelays.isEmpty && store.quotas.first { $0.id == .kaptList }?.blocked == true,"quota retried")
+        }
+        try await asyncCheck("auth and per-second limits remain single requests with their original gates") {
+            for code in ["20","30","23","12"] {
+                let f = Fixture(), store = f.store(); try f.ready(store)
+                f.responder = { _ in try page(rows:[],total:0,code:code) }
+                do { _ = try await store.kaptData(.all,parameters:["pageNo":"1"]); throw CheckFailure.failed("rejected code accepted") }
+                catch is PublicDataFailure {}
+                try require(f.gets == 1 && f.retryDelays.isEmpty,"auth/rate/retired endpoint retried")
+            }
+        }
+        try await asyncCheck("cancellation during backoff releases the busy gate without a second data request") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            f.responder = { _ in try page(rows:[],total:0,code:"04") }; f.waiting = { _ in throw CancellationError() }
+            do { _ = try await store.kaptData(.all,parameters:["pageNo":"1"]); throw CheckFailure.failed("cancellation accepted") }
+            catch is CancellationError {}
+            try require(f.gets == 1 && !store.isBusy,"cancelled request dispatched again")
+        }
+        try await asyncCheck("retry quota reservation stops before a second read when the first consumes the last call") {
+            let f = Fixture(), store = f.store(); try f.ready(store,limit:1)
+            f.responder = { _ in try page(rows:[],total:0,code:"04") }
+            do { _ = try await store.kaptData(.all,parameters:["pageNo":"1"]); throw CheckFailure.failed("retry bypassed quota") }
+            catch is PublicDataFailure {}
+            try require(f.gets == 1 && store.quotas.first { $0.id == .kaptList }?.used == 1,"retry quota bypass")
+        }
+        try await asyncCheck("facility failures identify the complex and leave request keys out of errors") {
+            let f = Fixture(), store = f.store(); try f.ready(store)
+            f.responder = { _ in try page(rows:[],total:0,code:"04") }
+            do { _ = try await store.kaptData(.facilities,parameters:["kaptCode":"A30279105"]); throw CheckFailure.failed("facility failure accepted") }
+            catch let failure as PublicDataFailure {
+                try require(failure.localizedDescription.contains("관리·시설정보 · A30279105") && !failure.localizedDescription.contains("fixture-key"),"complex context")
+            }
+            try require(f.gets == 3,"facility retry cap")
+        }
+        try await asyncCheck("wrong-origin Kapt responses stop before any provider-code retry") {
+            let f = Fixture(), store = f.store(); try f.ready(store); f.redirect = true
+            // Use a good clock so the deliberately redirected API response is reached.
+            f.clockResponder = { request, header in HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:header)! }
+            f.responder = { _ in try page(rows:[],total:0,code:"04") }
+            do { _ = try await store.kaptData(.all,parameters:["pageNo":"1"]); throw CheckFailure.failed("redirect accepted") }
+            catch is PublicDataFailure {}
+            try require(f.gets == 1 && f.retryDelays.isEmpty,"untrusted response retried")
         }
         print("Public data native checks: \(passed)/\(passed) passed")
     }

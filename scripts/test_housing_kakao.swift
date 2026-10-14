@@ -515,6 +515,35 @@ actor RequestConcurrencyProbe {
             let request = try KaptGateway.request(.all,key:"fixture-key",parameters:["pageNo":"1"])
             try require(request.url?.path == "/1613000/AptListService4/getTotalAptList4" && request.url?.query?.contains("bjdCode") == false,"national inventory scoped by dong")
         }
+        var interruptedReferenceData: Data?, nationalPages: [Int] = [], lastPageAvailable = false
+        let interruptedAPI = PublicDataStore(read:{nil},write:{_ in},transport:{ request in
+            if request.url?.host != "apis.data.go.kr" { return (Data(),HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:["Date":"Sun, 11 Oct 2026 10:00:00 GMT"])!) }
+            let number = Int(URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!.first { $0.name == "pageNo" }!.value!)!
+            nationalPages.append(number)
+            let data: Data
+            if number == 2 && !lastPageAvailable {
+                data = Data("<OpenAPI_ServiceResponse><cmmMsgHeader><returnReasonCode>04</returnReasonCode></cmmMsgHeader></OpenAPI_ServiceResponse>".utf8)
+            } else {
+                let ids = number == 1 ? Array(1...100) : [101]
+                let rows = ids.map { ["kaptCode":"CHECK\($0)","kaptName":"가상 단지 \($0)","as1":"대전광역시","as2":"서구","bjdCode":"3017011300"] }
+                data = try json(["response":["header":["resultCode":"00"],"body":["items":rows,"pageNo":number,"totalCount":101]]])
+            }
+            return (data,HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:[:])!)
+        },retrySleep:{ _ in })
+        try require(interruptedAPI.saveSettings(key:"fixture-key",approved:["kaptList"],limits:["kaptList":20]),"interrupted national settings")
+        let interruptedReferences = BuildingReferenceStore(read:{interruptedReferenceData},write:{interruptedReferenceData=$0})
+        do { try await interruptedReferences.collect(api:interruptedAPI,codes:[],configureProgress:false); throw PlannerFailure.message("failed national page accepted") }
+        catch is PublicDataFailure {}
+        try check("national 04 preserves the last saved page without marking a partial inventory complete") {
+            let saved = try JSONDecoder().decode(BuildingReferenceArchive.self,from:interruptedReferenceData!)
+            try require(saved.records.count == 100 && saved.nextPage == 2 && saved.listTotal == 101 && !saved.listComplete && nationalPages == [1,2,2,2],"national checkpoint lost or completed")
+        }
+        lastPageAvailable = true
+        let resumedReferences = BuildingReferenceStore(read:{interruptedReferenceData},write:{interruptedReferenceData=$0})
+        try await resumedReferences.collect(api:interruptedAPI,codes:[],configureProgress:false)
+        try check("national retry after relaunch resumes the failed page without fetching or duplicating the saved page") {
+            try require(resumedReferences.archive.listComplete && resumedReferences.archive.records.count == 101 && resumedReferences.archive.nextPage == 3 && nationalPages == [1,2,2,2,2],"national resume restarted or duplicated")
+        }
         var referenceState: Data?, referenceRequests = 0
         let referenceAPI = PublicDataStore(read:{nil},write:{_ in},transport:{ request in
             if request.httpMethod == "HEAD" { return (Data(),HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:["Date":"Sun, 11 Oct 2026 10:00:00 GMT"])!) }
