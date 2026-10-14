@@ -455,6 +455,62 @@ actor RequestConcurrencyProbe {
             let data = try json(["response":["header":["resultCode":"00"],"body":["items":[ledgerRow],"pageNo":1,"totalCount":2]]])
             try rejects { _ = try BuildingLedgerClient.parse(data,address:fixtureAddress,page:1) }
         }
+        try check("basic and recap registry operations share the approved registry quota") {
+            let parameters = try BuildingLedgerClient.parameters(fixtureAddress,page:1)
+            let basis = try KaptGateway.request(.buildingBasis,key:"fixture-key",parameters:parameters)
+            let recap = try KaptGateway.request(.buildingRecap,key:"fixture-key",parameters:parameters)
+            try require(basis.url?.path.hasSuffix("getBrBasisOulnInfo") == true && recap.url?.path.hasSuffix("getBrRecapTitleInfo") == true && KaptRequest.buildingBasis.service == .buildingLedger && KaptRequest.buildingRecap.service == .buildingLedger,"upper registry endpoint/quota")
+        }
+        let basisRows: [[String:Any]] = [["mgmBldrgstPk":ledgerBuilding.id,"mgmUpBldrgstPk":"fixture-summary","regstrKindCd":"3"]]
+        let recapRows: [[String:Any]] = [["mgmBldrgstPk":"fixture-summary","regstrKindCd":"1","bldNm":"가상 아파트","platPlc":fixtureAddress.jibunAddress,"newPlatPlc":fixtureAddress.roadAddress,"mainBldCnt":"1","hhldCnt":"10","useAprDay":"20200101","totPkngCnt":"100"]]
+        try check("registry membership follows the exact upper PK rather than returned row order") {
+            let linked = try BuildingLedgerClient.link(buildings:[ledgerBuilding],basis:basisRows,recap:recapRows)
+            try require(linked.buildings[0].parentRegistryID == "fixture-summary" && linked.groups[0].fields["parking"] == "100" && linked.groups[0].fields["approvalDate"] == "2020-01-01","upper PK missing")
+        }
+        try check("unknown upper PK stays unresolved even when one summary exists") {
+            var wrong = basisRows[0]; wrong["mgmUpBldrgstPk"] = "missing-summary"
+            let linked = try BuildingLedgerClient.link(buildings:[ledgerBuilding],basis:[wrong],recap:recapRows)
+            try require(linked.buildings[0].parentRegistryID == nil,"single summary guessed")
+        }
+        try check("duplicate basic identity and wrong recap kind are rejected") {
+            try rejects { _ = try BuildingLedgerClient.link(buildings:[ledgerBuilding],basis:basisRows + basisRows,recap:recapRows) }
+            var wrong = recapRows[0]; wrong["regstrKindCd"] = "3"
+            try rejects { _ = try BuildingLedgerClient.link(buildings:[ledgerBuilding],basis:basisRows,recap:[wrong]) }
+        }
+        try check("upper registry page cannot silently truncate rows or change parcels") {
+            let parsed = try BuildingLedgerClient.rows(ledgerData,address:fixtureAddress,page:1)
+            try require(parsed.rows.count == 1,"upper page parse")
+            var wrong = ledgerRow; wrong["bjdongCd"] = "10200"
+            let data = try json(["response":["header":["resultCode":"00"],"body":["items":[wrong],"pageNo":1,"totalCount":1]]])
+            try rejects { _ = try BuildingLedgerClient.rows(data,address:fixtureAddress,page:1) }
+        }
+        var comparisonState: Data?, comparisonRequests = 0, comparedFacilities: [String] = []
+        let comparisonAPI = PublicDataStore(read:{comparisonState},write:{comparisonState = $0},transport:{ request in
+            if request.httpMethod == "HEAD" { return (Data(),HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:["Date":"Sun, 11 Oct 2026 10:00:00 GMT"])!) }
+            comparisonRequests += 1
+            let path = request.url!.path, code = URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!.first { $0.name == "kaptCode" }?.value ?? ""
+            let road = fixtureAddress.roadAddress, other = "대전광역시 중구 가상로 20", payload: [String:Any]
+            if path.contains("getLegaldong") {
+                payload = ["items":["ALL","PART1","PART2","PAST","UNRELATED"].map { ["kaptCode":$0,"kaptName":$0,"bjdCode":"3014010100"] },"pageNo":1,"totalCount":5]
+            } else if path.contains("getAphusBass") {
+                let address = code == "ALL" ? road + "; " + other : code == "PART2" ? other : code == "PAST" ? "" : code == "UNRELATED" ? "대전광역시 중구 다른로 99" : road
+                payload = ["item":["kaptCode":code,"kaptName":code,"doroJuso":address,"kaptAddr":code == "UNRELATED" ? "대전광역시 중구 다른동 99" : fixtureAddress.jibunAddress,"kaptUsedate":"20200101","kaptdaCnt":"100","kaptDongCnt":"2"]]
+            } else {
+                comparedFacilities.append(code)
+                payload = ["item":["kaptCode":code,"useYn":code == "PAST" ? "N" : "Y","kaptdPcnt":"100","kaptdPcntu":"200"]]
+            }
+            let data = try json(["response":["header":["resultCode":"00"],"body":payload]])
+            return (data,HTTPURLResponse(url:request.url!,statusCode:200,httpVersion:nil,headerFields:[:])!)
+        })
+        try require(comparisonAPI.saveSettings(key:"fixture",approved:["kaptList","kaptBasis"],limits:["kaptList":20,"kaptBasis":30]),"comparison settings")
+        let compared = try await BuildingSupplementClient.kapt(roadAddress:fixtureAddress.roadAddress,regions:["3014010100"],jibunAddresses:[fixtureAddress.jibunAddress],api:comparisonAPI)
+        try check("live transport shape includes whole, both partial roads and blank historical registration") {
+            try require(compared.map(\.id) == ["ALL","PART1","PART2","PAST"] && comparedFacilities.sorted() == ["ALL","PART1","PART2","PAST"] && comparisonRequests == 10,"connected candidates or request count")
+        }
+        let cachedComparison = try await BuildingSupplementClient.kapt(roadAddress:fixtureAddress.roadAddress,regions:[],jibunAddresses:[fixtureAddress.jibunAddress],cached:compared,api:comparisonAPI)
+        try check("connected-region extension reuses already read detail instead of spending more quota") {
+            try require(cachedComparison == compared && comparisonRequests == 10,"cached comparison refetched")
+        }
         try check("national Kapt request does not require a legal dong") {
             let request = try KaptGateway.request(.all,key:"fixture-key",parameters:["pageNo":"1"])
             try require(request.url?.path == "/1613000/AptListService4/getTotalAptList4" && request.url?.query?.contains("bjdCode") == false,"national inventory scoped by dong")
@@ -496,6 +552,28 @@ actor RequestConcurrencyProbe {
             b.records[1].fetchedAt = nil; b.records[1].roadAddresses = []
             let merged = try BuildingReferenceArchive.merge(a,b)
             try require(merged.records.allSatisfy { $0.fetchedAt != nil },"one device lost detail")
+        }
+        try check("address-connected catalog discovers whole and both partial registrations") {
+            var storage: Data?
+            let other = "대전광역시 중구 가상로 20"
+            let value = BuildingReferenceArchive(listTotal:3,nextPage:2,listComplete:true,records:[
+                KaptReferenceRecord(id:"ALL",name:"전체",roadAddresses:[fixtureAddress.roadAddress + "; " + other],fetchedAt:Date()),
+                KaptReferenceRecord(id:"PART1",name:"주소1",roadAddresses:[fixtureAddress.roadAddress],fetchedAt:Date()),
+                KaptReferenceRecord(id:"PART2",name:"주소2",roadAddresses:[other],fetchedAt:Date())])
+            storage = try JSONEncoder().encode(value)
+            let store = BuildingReferenceStore(read:{storage},write:{storage = $0})
+            try require(store.connectedKaptCodes(fixtureAddress.roadAddress) == ["ALL","PART1","PART2"],"partial address component omitted")
+        }
+        try check("saved historical-only address is excluded while raw catalog persists") {
+            let road = fixtureAddress.roadAddress
+            let historical = BuildingComplexSource(id:"A1",name:"과거 등록",roadAddresses:[road],jibunAddress:fixtureAddress.jibunAddress,fields:[:],fetchedAt:Date(),isKapt:true)
+            var review = try BuildingComplexReview.draft(roadAddress:road,buildings:[],groups:[],candidates:[historical],realty:[])
+            review.decision.groupForKapt = [:]; review.decision.adoptedForGroup = [:]; review.decision.excludedKaptReasons = ["A1":"멸실 확인"]; review.decision.reason = "대장 현황과 비교"; review.confirmed = true
+            var storage = referenceState
+            let store = BuildingReferenceStore(read:{storage},write:{storage = $0})
+            try store.saveComplexReview(review)
+            let restored = BuildingReferenceStore(read:{storage},write:{storage = $0})
+            try require(restored.standardAddresses.isEmpty && restored.catalog.addresses.count == 1 && restored.archive.records.count == 2 && restored.complexReviews[0].usable,"historical source deleted or population retained")
         }
         try check("shared reference catalog pieces verify checksums and restore all addresses") {
             let snapshot = try referenceStore.sharingSnapshot()

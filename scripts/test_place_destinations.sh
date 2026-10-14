@@ -9,6 +9,7 @@ swiftc -parse-as-library \
   "$route_root/DeliveryRouteProbe.swiftpm/NaverAPIEngineSource.swift" \
   "$route_root/DeliveryRouteProbe.swiftpm/NaverCustomerStore.swift" \
   "$route_root/DeliveryRouteProbe.swiftpm/BuildingEvaluation.swift" \
+  "$route_root/DeliveryRouteProbe.swiftpm/BuildingComplex.swift" \
   "$route_root/DeliveryRouteProbe.swiftpm/SiteTargetStore.swift" \
   "$route_root/scripts/test_place_destinations.swift" \
   -o "$route_root/build/place-destination-tests"

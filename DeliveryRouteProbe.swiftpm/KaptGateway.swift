@@ -1,15 +1,17 @@
 import Foundation
 
 enum KaptRequest {
-    case list, all, basic, facilities, buildingTitle
+    case list, all, basic, facilities, buildingTitle, buildingBasis, buildingRecap
     var service: PublicDataService {
-        switch self { case .list, .all: return .kaptList; case .buildingTitle: return .buildingLedger; default: return .kaptBasis }
+        switch self { case .list, .all: return .kaptList; case .buildingTitle, .buildingBasis, .buildingRecap: return .buildingLedger; default: return .kaptBasis }
     }
     var path: String {
         switch self {
         case .list: return "/1613000/AptListService4/getLegaldongAptList4"
         case .all: return "/1613000/AptListService4/getTotalAptList4"
         case .buildingTitle: return "/1613000/BldRgstHubService/getBrTitleInfo"
+        case .buildingBasis: return "/1613000/BldRgstHubService/getBrBasisOulnInfo"
+        case .buildingRecap: return "/1613000/BldRgstHubService/getBrRecapTitleInfo"
         case .basic: return "/1613000/AptBasisInfoServiceV5/getAphusBassInfoV5"
         case .facilities: return "/1613000/AptBasisInfoServiceV5/getAphusDtlInfoV5"
         }
@@ -23,7 +25,7 @@ enum KaptGateway {
             guard action == .all || values["bjdCode"]?.range(of: #"^\d{10}$"#, options: .regularExpression) != nil,
                   let page = Int(values["pageNo"] ?? ""), (1...100_000).contains(page) else { throw DeviceShareError.invalid }
             values["numOfRows"] = "100"
-        } else if action == .buildingTitle {
+        } else if [.buildingTitle, .buildingBasis, .buildingRecap].contains(action) {
             for (name, length) in [("sigunguCd",5),("bjdongCd",5),("bun",4),("ji",4)] {
                 guard values[name]?.range(of: "^\\d{\(length)}$", options: .regularExpression) != nil else { throw DeviceShareError.invalid }
             }

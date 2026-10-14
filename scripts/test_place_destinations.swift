@@ -234,6 +234,48 @@ private func sharedBusiness(_ longitude: String = "127.4000001") throws -> Naver
             try siteCustomers.remember(plan); try siteCustomers.setCoordinate(id, coordinate: nil)
             try require(siteCustomers.records[0].effectiveCoordinate?.longitude == siteCustomers.records[0].capture?.coordinate?.longitude, "restored customer kept migrated manual position")
         }
+        var scopedA = entranceA, scopedB = entranceB
+        scopedA.building.parentRegistryID = "scope1"; scopedB.building.parentRegistryID = "scope1"
+        var scopedC = scopedB; scopedC.building.id = "scope-building3"; scopedC.building.dongName = "201동"; scopedC.building.parentRegistryID = "scope2"
+        let scope1 = RegistryBuildingComplex(id:"scope1",name:"가상 단지1",jibunAddress:"대전광역시 중구 가상동 1",roadAddress:buildingA.roadAddress,fields:["buildings":"2","households":"100","approvalDate":"2020-01-01","parking":""])
+        var scope2 = scope1; scope2.id = "scope2"; scope2.name = "가상 단지2"; scope2.fields["households"] = "200"
+        let profile1 = BuildingComplexSource(id:"K1",name:scope1.name,roadAddresses:[buildingA.roadAddress],jibunAddress:scope1.jibunAddress,fields:scope1.fields.merging(["registrationStatus":"사용","parking":"1000"]){_,new in new},fetchedAt:Date(),isKapt:true)
+        var profile2 = profile1; profile2.id = "K2"; profile2.name = scope2.name; profile2.fields["households"] = "200"; profile2.fields["parking"] = "2000"
+        var scopeReview = try BuildingComplexReview.draft(roadAddress:buildingA.roadAddress,buildings:[scopedA.building,scopedB.building,scopedC.building],groups:[scope1,scope2],candidates:[profile1,profile2],realty:[])
+        try require(scopeReview.usable,"scope fixture unresolved")
+        _ = try buildingSites.saveBuilding(scopedA,facts:[:]); _ = try buildingSites.saveBuilding(scopedB,facts:[:]); _ = try buildingSites.saveBuilding(scopedC,facts:[:])
+        try check("same management buildings share parking and separate management remains independent") {
+            try buildingSites.applyComplexReviews([scopeReview])
+            let a = buildingSites.records.first { $0.building?.building.id == scopedA.building.id }!, b = buildingSites.records.first { $0.building?.building.id == scopedB.building.id }!, c = buildingSites.records.first { $0.building?.building.id == scopedC.building.id }!
+            try require(a.managedComplex?.sharedFacts["parking"]?.value == "1000" && b.managedComplex?.id == a.managedComplex?.id && c.managedComplex?.sharedFacts["parking"]?.value == "2000","management shared across wrong scope")
+        }
+        try check("refreshed management data updates all saved member buildings together") {
+            let coordinates = buildingSites.records.map(\.effectiveCoordinate)
+            var fresh = profile1; fresh.fields["parking"] = "1100"
+            scopeReview = try BuildingComplexReview.draft(roadAddress:buildingA.roadAddress,buildings:scopeReview.buildings,groups:[scope1,scope2],candidates:[fresh,profile2],realty:[],previous:scopeReview,now:Date().addingTimeInterval(100))
+            try buildingSites.applyComplexReviews([scopeReview])
+            try require(buildingSites.records.filter { $0.complexBinding?.complexID == "kapt:K1" }.allSatisfy { $0.managedComplex?.sharedFacts["parking"]?.value == "1100" } && buildingSites.records.map(\.effectiveCoordinate) == coordinates,"shared refresh failed or moved entrances")
+        }
+        try check("membership and common source survive store recreation") {
+            let restored = SiteTargetStore(directory:buildingFolder)
+            try require(restored.errorMessage == nil && restored.records.filter { $0.complexBinding != nil }.count == 3 && restored.records.first?.managedComplex?.sharedFacts["parking"]?.complexID == "kapt:K1","complex persistence")
+        }
+        try check("changed upper registry invalidates prior shared parking until reviewed") {
+            var moved = scopedB; moved.building.parentRegistryID = "scope2"
+            _ = try buildingSites.saveBuilding(moved,facts:[:]); try buildingSites.applyComplexReviews([scopeReview])
+            try require(buildingSites.records.first { $0.building?.building.id == moved.building.id }?.managedComplex == nil,"changed membership reused")
+        }
+        try check("conflicted decisions remove outdated common values from every affected member") {
+            var other = scopeReview; other.decision.id = "other-device"; other.decision.groupForBuilding[scopedA.building.id] = "K2"
+            let conflict = try BuildingComplexReview.merge(scopeReview,other)
+            try buildingSites.applyComplexReviews([conflict])
+            try require(buildingSites.records.allSatisfy { $0.managedComplex == nil && $0.complexBinding == nil },"conflicting common facts retained")
+        }
+        try check("confirming another default building retains records and one address default") {
+            var other = scopedC; other.defaultForAddress = true
+            _ = try buildingSites.saveBuilding(other,facts:[:])
+            try require(buildingSites.records.count == 3 && buildingSites.records.filter { $0.building?.isDefaultForAddress == true }.count == 1,"default change erased building or duplicated default")
+        }
         print("Place destination native checks: \(passed)/\(passed) passed")
     }
 }

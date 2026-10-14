@@ -17,6 +17,8 @@ struct SiteTarget: Codable, Identifiable {
     var housingID: String? = nil
     var building: BuildingSelection? = nil
     var buildingFacts: [String: BuildingFact]? = nil
+    var complexBinding: BuildingComplexBinding? = nil
+    var managedComplex: ManagedBuildingComplex? = nil
     var effectiveCoordinate: TMapCoordinate { coordinateOverride ?? coordinate }
     var folders: [String]
     var addedAt: Date
@@ -44,6 +46,7 @@ final class SiteTargetStore: ObservableObject {
                 guard archive.version == 1, archive.records.count <= 100_000,
                       Set(archive.records.map(\.id)).count == archive.records.count else { throw PlannerFailure.message("평가대상지 보관함 형식이 다릅니다.") }
                 for record in archive.records {
+                    try Self.validateComplex(record)
                     if let building = record.building { try building.validate(); guard building.longitude == record.coordinate.longitude, building.latitude == record.coordinate.latitude else { throw DeviceShareError.invalid } }
                     guard Self.valid(record.coordinate), record.coordinateOverride.map(Self.valid) ?? true else { throw DeviceShareError.invalid }
                     guard let capture = record.capture else { continue }
@@ -116,12 +119,34 @@ final class SiteTargetStore: ObservableObject {
         let point = TMapCoordinate(longitude:selection.longitude,latitude:selection.latitude)
         var next = records
         let existing = next.firstIndex { $0.building?.identity == selection.identity }
+        if selection.isDefaultForAddress {
+            for index in next.indices where next[index].building?.building.roadKey == selection.building.roadKey { next[index].building?.defaultForAddress = false }
+        }
         let id = existing.map { next[$0].id } ?? UUID().uuidString
         let target = SiteTarget(id:id,name:name.isEmpty ? selection.building.roadAddress : name,address:selection.building.roadAddress,
             coordinate:point,capture:nil,building:selection,buildingFacts:facts,folders:existing.map { next[$0].folders } ?? [],addedAt:existing.map { next[$0].addedAt } ?? Date())
         if let existing { next[existing] = target }
         else { guard next.count < 100_000 else { throw DeviceShareError.invalid }; next.append(target) }
         try commit(next); return id
+    }
+    func applyComplexReviews(_ reviews: [BuildingComplexReview]) throws {
+        let byRoad = Dictionary(reviews.map { ($0.id,$0) },uniquingKeysWith:{ a,b in b.updatedAt >= a.updatedAt ? b : a })
+        let complexes = BuildingComplexReview.sharedComplexes(reviews)
+        var next = records
+        for index in next.indices {
+            guard let building = next[index].building?.building else { continue }
+            let review = byRoad[building.roadKey], binding = review?.binding(building)
+            if let binding, let complex = complexes[binding.complexID], let review {
+                next[index].complexBinding = binding; next[index].managedComplex = complex
+                next[index].buildingFacts = review.individualFacts(building)
+            } else {
+                next[index].complexBinding = nil; next[index].managedComplex = nil
+                // Older versions supplemented by address alone. Keep registry
+                // values while withholding unconfirmed complex-wide facts.
+                next[index].buildingFacts = next[index].buildingFacts?.filter { $0.value.scope == .building }
+            }
+        }
+        if try DeviceShareCodec.encode(next) != DeviceShareCodec.encode(records) { try commit(next) }
     }
     static func sharingKey(_ record: SiteTarget) -> String {
         if let building = record.building { return "site/building/" + DeviceShareCodec.key(building.identity) }
@@ -145,6 +170,7 @@ final class SiteTargetStore: ObservableObject {
         for (key, entry) in replica.records where key.hasPrefix("site/") {
             guard let data = entry.value else { continue }
             var record = try DeviceShareCodec.decode(SiteTarget.self, data)
+            try Self.validateComplex(record)
             if let building = record.building { try building.validate(); guard building.longitude == record.coordinate.longitude, building.latitude == record.coordinate.latitude else { throw DeviceShareError.invalid } }
             guard key == Self.sharingKey(record), Self.valid(record.coordinate), record.coordinateOverride.map(Self.valid) ?? true else { throw DeviceShareError.invalid }
             if let capture = record.capture {
@@ -165,6 +191,16 @@ final class SiteTargetStore: ObservableObject {
         try data.write(to: fileURL, options: .atomic)
         records = next; errorMessage = nil
         try DeviceShareHooks.changed()
+    }
+    private static func validateComplex(_ record: SiteTarget) throws {
+        guard (record.buildingFacts?.count ?? 0) <= 100, record.buildingFacts?.values.allSatisfy({ $0.value.utf8.count <= 20_000 }) ?? true else { throw DeviceShareError.invalid }
+        if record.complexBinding == nil && record.managedComplex == nil { return }
+        guard let binding = record.complexBinding, let info = record.managedComplex, let building = record.building?.building,
+              binding.complexID == info.id, binding.buildingScopeKey == building.complexScopeKey, binding.registryParentID == building.parentRegistryID,
+              !binding.reviewID.isEmpty, binding.reviewID.utf8.count <= 200, info.name.utf8.count <= 500, info.reason.utf8.count <= 10_000,
+              (1...1_000).contains(info.kaptIDs.count), Set(info.kaptIDs).count == info.kaptIDs.count, info.kaptIDs.contains(info.adoptedKaptID),
+              info.kaptIDs.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 200 }), info.sharedFacts.count <= 100,
+              info.sharedFacts.values.allSatisfy({ $0.scope == .complex && $0.complexID == info.id && $0.value.utf8.count <= 20_000 }) else { throw DeviceShareError.invalid }
     }
 }
 

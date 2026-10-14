@@ -27,6 +27,7 @@ on:
       - 'scripts/test_place_destinations.*'
       - 'scripts/test_evaluation_reference.*'
       - 'scripts/test_building_evaluation.*'
+      - 'scripts/test_building_complex.*'
       - 'tests/naver_api_tests.js'
       - 'tests/shared_pin_tests.js'
       - 'tests/delivery_flow_tests.js'
@@ -54,6 +55,8 @@ jobs:
         run: bash scripts/test_housing_kakao.sh
       - name: Verify individual buildings, entrance gates, source priority and Kapt reference addresses
         run: bash scripts/test_building_evaluation.sh
+      - name: Verify duplicate, reconstructed, partial-address and separate management scopes
+        run: bash scripts/test_building_complex.sh
       - name: Verify frozen reference distributions, stable scores, hierarchy, versions and shared persistence
         run: bash scripts/test_evaluation_reference.sh
       - name: Verify one public apartment using the paced production URLSession client

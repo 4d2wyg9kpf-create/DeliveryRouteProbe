@@ -39,7 +39,8 @@ enum BuildingLedgerClient {
             }
             fields["elevators"] = sum(["rideUseElvtCnt","emgenUseElvtCnt"])
             fields["parking"] = sum(["indrMechUtcnt","oudrMechUtcnt","indrAutoUtcnt","oudrAutoUtcnt"])
-            let building = EvaluationBuilding(id:text(row,"mgmBldrgstPk"),roadAddress:address.roadAddress,name:text(row,"bldNm"),dongName:text(row,"dongNm"),fields:fields,fetchedAt:now)
+            let parcel = ["sigunguCd","bjdongCd","platGbCd","bun","ji"].map { expected[$0]! }.joined(separator:"|")
+            let building = EvaluationBuilding(id:text(row,"mgmBldrgstPk"),roadAddress:address.roadAddress,name:text(row,"bldNm"),dongName:text(row,"dongNm"),fields:fields,fetchedAt:now,parcelID:parcel)
             try building.validate(); buildings.append(building)
         }
         return (buildings,total,rows.count)
@@ -56,5 +57,60 @@ enum BuildingLedgerClient {
         }
         guard seen == total, Set(buildings.map(\.id)).count == buildings.count else { throw BuildingEvaluationError.message("건축물대장 수집이 완료되지 않았습니다.") }
         return buildings
+    }
+    static func rows(_ data: Data, address: HousingAddressEvidence, page: Int) throws -> (rows: [[String:Any]], total: Int) {
+        let expected = try parameters(address,page:page), body = try KaptGateway.body(data)
+        guard let total = Int(KaptGateway.text(body,"totalCount")), (0...100_000).contains(total), Int(KaptGateway.text(body,"pageNo")) == page else { throw DeviceShareError.invalid }
+        let raw = (body["items"] as? [String:Any])?["item"] ?? body["items"]
+        let rows = raw as? [[String:Any]] ?? (raw as? [String:Any]).map { [$0] } ?? []
+        guard rows.count == min(100,max(0,total-(page-1)*100)) else { throw BuildingEvaluationError.message("상위 대장 조회 페이지가 누락되었습니다.") }
+        for row in rows {
+            for key in ["sigunguCd","bjdongCd","platGbCd","bun","ji"] {
+                guard Int(KaptGateway.text(row,key)) == Int(expected[key] ?? "") else { throw BuildingEvaluationError.message("상위 대장 응답의 지번이 다릅니다.") }
+            }
+        }
+        return (rows,total)
+    }
+    static func link(buildings: [EvaluationBuilding], basis: [[String:Any]], recap: [[String:Any]]) throws -> (buildings: [EvaluationBuilding], groups: [RegistryBuildingComplex]) {
+        var groups: [RegistryBuildingComplex] = []
+        for row in recap {
+            guard KaptGateway.text(row,"regstrKindCd") == "1" else { throw BuildingEvaluationError.message("총괄표제부 대장종류가 다릅니다.") }
+            let id = KaptGateway.text(row,"mgmBldrgstPk")
+            guard !id.isEmpty else { throw DeviceShareError.invalid }
+            var fields: [String:String] = [:]
+            for (key,raw) in ["households":"hhldCnt","buildings":"mainBldCnt","approvalDate":"useAprDay","parking":"totPkngCnt"] { fields[key] = KaptGateway.text(row,raw) }
+            if let date = PublicDataParser.date(fields["approvalDate",default:""]) { fields["approvalDate"] = date }
+            groups.append(RegistryBuildingComplex(id:id,name:KaptGateway.text(row,"bldNm"),jibunAddress:KaptGateway.text(row,"platPlc"),roadAddress:KaptGateway.text(row,"newPlatPlc"),fields:fields))
+        }
+        guard Set(groups.map(\.id)).count == groups.count else { throw BuildingEvaluationError.message("총괄표제부 식별자가 중복되어 소속 판별을 보류했습니다.") }
+        var parents: [String:String] = [:], seen = Set<String>()
+        for row in basis {
+            let id = KaptGateway.text(row,"mgmBldrgstPk")
+            guard !id.isEmpty, seen.insert(id).inserted else { throw BuildingEvaluationError.message("기본개요의 대장 식별자가 비어 있거나 중복됩니다.") }
+            guard ["2","3"].contains(KaptGateway.text(row,"regstrKindCd")) else { continue }
+            let parent = KaptGateway.text(row,"mgmUpBldrgstPk")
+            // A missing/incomplete parent is unresolved; never attach the only
+            // summary returned for a parcel just because it is the only one.
+            if groups.contains(where:{ $0.id == parent }) { parents[id] = parent }
+        }
+        return (buildings.map { original in var building = original; building.parentRegistryID = parents[building.id]; return building },groups)
+    }
+    @MainActor private static func allRows(_ action: KaptRequest, address: HousingAddressEvidence, api: PublicDataStore) async throws -> [[String:Any]] {
+        var result: [[String:Any]] = [], total: Int?
+        for page in 1...1000 {
+            try Task.checkCancellation()
+            let part = try rows(await api.kaptData(action,parameters:parameters(address,page:page)),address:address,page:page)
+            guard total == nil || total == part.total else { throw BuildingEvaluationError.message("상위 대장 조회 건수가 변경되었습니다.") }
+            total = part.total; result.append(contentsOf:part.rows)
+            if result.count == part.total { return result }
+        }
+        throw BuildingEvaluationError.message("상위 대장 조회가 완료되지 않았습니다.")
+    }
+    @MainActor static func context(_ address: HousingAddressEvidence, buildings existing: [EvaluationBuilding]? = nil, api: PublicDataStore) async throws -> (buildings: [EvaluationBuilding], groups: [RegistryBuildingComplex]) {
+        let buildings: [EvaluationBuilding]
+        if let existing { buildings = existing } else { buildings = try await lookup(address,api:api) }
+        let basis = try await allRows(.buildingBasis,address:address,api:api)
+        let recap = try await allRows(.buildingRecap,address:address,api:api)
+        return try link(buildings:buildings,basis:basis,recap:recap)
     }
 }

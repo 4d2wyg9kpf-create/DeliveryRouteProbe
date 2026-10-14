@@ -7,12 +7,17 @@ struct BuildingReferenceArchive: Codable {
     var nextPage = 1
     var listComplete = false
     var records: [KaptReferenceRecord] = []
+    var complexReviews: [BuildingComplexReview]? = nil
     func validate() throws {
         guard version == 1, (1...1001).contains(nextPage), records.count <= 100_000,
               listTotal.map({ (0...100_000).contains($0) }) ?? true,
               Set(records.map(\.id)).count == records.count,
               !listComplete || records.count == listTotal,
               records.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 40 && $0.name.utf8.count <= 500 && $0.roadAddresses.count <= 100 && $0.roadAddresses.allSatisfy { $0.utf8.count <= 2000 } && $0.fields.count <= 100 && $0.fields.values.allSatisfy { $0.utf8.count <= 20_000 } }) else { throw DeviceShareError.invalid }
+        let reviews = complexReviews ?? []
+        guard reviews.count <= 100_000, Set(reviews.map(\.id)).count == reviews.count,
+              reviews.reduce(0,{ $0 + $1.buildings.count }) <= 1_000_000 else { throw DeviceShareError.invalid }
+        for review in reviews { try review.validate() }
     }
     static func merge(_ a: Self, _ b: Self) throws -> Self {
         try a.validate(); try b.validate()
@@ -27,7 +32,13 @@ struct BuildingReferenceArchive: Codable {
             if next.records[index].fetchedAt == nil || otherDate > next.records[index].fetchedAt! { next.records[index] = other }
         }
         next.listComplete = a.listComplete || b.listComplete; next.listTotal = a.listTotal ?? b.listTotal
-        next.nextPage = max(a.nextPage,b.nextPage); try next.validate(); return next
+        next.nextPage = max(a.nextPage,b.nextPage)
+        var reviews = Dictionary((a.complexReviews ?? []).map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
+        for review in b.complexReviews ?? [] {
+            reviews[review.id] = try reviews[review.id].map { try BuildingComplexReview.merge($0,review) } ?? review
+        }
+        next.complexReviews = reviews.values.sorted { $0.id < $1.id }
+        try next.validate(); return next
     }
 }
 
@@ -35,6 +46,7 @@ struct BuildingReferenceArchive: Codable {
     static let shared = BuildingReferenceStore()
     @Published private(set) var archive = BuildingReferenceArchive()
     @Published private(set) var catalog = KaptReferenceCatalog(addresses: [], missingAddressIDs: [], unresolvedIDs: [], duplicateAddressCount: 0)
+    @Published private(set) var managedComplexes: [String:ManagedBuildingComplex] = [:]
     @Published private(set) var isBusy = false
     @Published private(set) var progress = ""
     @Published var errorMessage: String?
@@ -57,9 +69,9 @@ struct BuildingReferenceArchive: Codable {
         readState = read; writeState = write
         do {
             if let data = try read() {
-                guard data.count <= 50_000_000 else { throw DeviceShareError.invalid }
+                guard data.count <= 250_000_000 else { throw DeviceShareError.invalid }
                 let value = try JSONDecoder().decode(BuildingReferenceArchive.self,from:data); try value.validate()
-                archive = value; catalog = try KaptReferenceCatalog.build(value.records); snapshotData = data
+                archive = value; catalog = try KaptReferenceCatalog.build(value.records); managedComplexes = BuildingComplexReview.sharedComplexes(value.complexReviews ?? []); snapshotData = data
             }
         } catch { writable = false; errorMessage = "K-apt 표준지 원본 보관함을 보존했습니다. " + error.localizedDescription }
     }
@@ -67,9 +79,10 @@ struct BuildingReferenceArchive: Codable {
         guard writable else { throw DeviceShareError.unavailable }
         let value = try BuildingReferenceArchive.merge(archive,value)
         let data = try DeviceShareCodec.encode(value)
-        guard data.count <= 50_000_000 else { throw BuildingEvaluationError.message("K-apt 표준지 보관함 크기를 확인하세요.") }
+        guard data.count <= 250_000_000 else { throw BuildingEvaluationError.message("K-apt 표준지 보관함 크기를 확인하세요.") }
         let result = try KaptReferenceCatalog.build(value.records)
-        try writeState(data); archive = value; catalog = result; snapshotData = data
+        let complexes = BuildingComplexReview.sharedComplexes(value.complexReviews ?? [])
+        try writeState(data); archive = value; catalog = result; managedComplexes = complexes; snapshotData = data
     }
     func stop() {
         task?.cancel()
@@ -157,17 +170,35 @@ struct BuildingReferenceArchive: Codable {
         guard archive.listComplete, catalog.complete else { throw BuildingEvaluationError.message("전국 주소 확인이 미완료입니다. 형식 미확인 또는 상세 미수집 등록을 확인하세요.") }
         try DeviceShareHooks.changed()
     }
-    func supplementalFields(_ roadAddress: String) -> [String:String] {
-        guard let key = BuildingAddress.key(roadAddress), let address = catalog.addresses.first(where: { $0.id == key }) else { return [:] }
-        let sources = archive.records.filter { address.kaptIDs.contains($0.id) }.sorted { $0.id < $1.id }
-        var fields: [String:String] = [:]
-        // Retain one value only if all nonblank sources agree. Duplicate K-apt
-        // registrations must not silently add counts or overwrite conflicting facts.
-        for key in Set(sources.flatMap { $0.fields.keys }) {
-            let values = Set(sources.compactMap { BuildingFacts.blank($0.fields[key]) ? nil : $0.fields[key] })
-            if values.count == 1 { fields[key] = values.first }
+    var complexReviews: [BuildingComplexReview] { archive.complexReviews ?? [] }
+    var standardAddresses: [KaptReferenceAddress] {
+        let excluded = BuildingComplexReview.excludedCodes(complexReviews)
+        return catalog.addresses.filter { !Set($0.kaptIDs).isSubset(of:excluded) }
+    }
+    func connectedKaptCodes(_ roadAddress: String) -> [String] {
+        guard let key = BuildingAddress.key(roadAddress) else { return [] }
+        var byRoad: [String:Set<String>] = [:], byCode: [String:Set<String>] = [:]
+        for address in catalog.addresses {
+            byRoad[address.id] = Set(address.kaptIDs)
+            for code in address.kaptIDs { byCode[code,default:[]].insert(address.id) }
         }
-        return fields
+        var roads = [key], visited = Set<String>(), codes = Set<String>(), cursor = 0
+        while cursor < roads.count {
+            let road = roads[cursor]; cursor += 1
+            guard visited.insert(road).inserted else { continue }
+            for code in byRoad[road] ?? [] where codes.insert(code).inserted { roads.append(contentsOf:byCode[code] ?? []) }
+        }
+        return codes.sorted()
+    }
+    func complexReview(_ roadAddress: String) -> BuildingComplexReview? {
+        let key = BuildingAddress.key(roadAddress); return complexReviews.first { $0.id == key }
+    }
+    func saveComplexReview(_ review: BuildingComplexReview) throws {
+        try review.validate()
+        var next = archive, values = complexReviews
+        if let index = values.firstIndex(where:{ $0.id == review.id }) { values[index] = review }
+        else { values.append(review) }
+        next.complexReviews = values; try commit(next); try DeviceShareHooks.changed()
     }
     func standardSites(_ sites: [SiteTarget]) throws -> [SiteTarget] {
         guard archive.listComplete, catalog.complete, !catalog.addresses.isEmpty else {
@@ -179,16 +210,27 @@ struct BuildingReferenceArchive: Codable {
             grouped[selection.building.roadKey,default:[]].append(site)
         }
         var result: [SiteTarget] = []
-        for address in catalog.addresses {
+        let shared = managedComplexes
+        let reviews = Dictionary(complexReviews.map { ($0.id,$0) },uniquingKeysWith:{ a,_ in a })
+        let excludedInAnyReview = Set(complexReviews.flatMap { $0.excludedKaptIDs })
+        for address in standardAddresses {
             guard let targets = grouped[address.id], targets.count == 1 else {
                 throw BuildingEvaluationError.message("\(address.roadAddress): 기본 건물의 입구가 미확인되었거나 기본 등록이 중복되었습니다.")
+            }
+            if address.kaptIDs.count > 1 || reviews[address.id] != nil || !excludedInAnyReview.isDisjoint(with:Set(address.kaptIDs)) {
+                guard let selection = targets[0].building, let review = reviews[address.id], review.usable,
+                      Set(address.kaptIDs).isSubset(of:Set(review.candidates.map(\.id))),
+                      let binding = review.binding(selection.building), shared[binding.complexID] != nil else {
+                    throw BuildingEvaluationError.message("\(address.roadAddress): 중복·별개 단지 판별과 기본 건물의 단지 소속을 먼저 확인하세요.")
+                }
             }
             result.append(targets[0])
         }
         return result
     }
     var populationToken: String {
-        DeviceShareCodec.digest(Data(catalog.addresses.map(\.id).joined(separator:"\n").utf8))
+        let decisions = complexReviews.sorted { $0.id < $1.id }.map { $0.id + "|" + String($0.usable) + "|" + $0.decisionKey }
+        return DeviceShareCodec.digest(Data((standardAddresses.map(\.id) + decisions).joined(separator:"\n").utf8))
     }
     func sharingSnapshot() throws -> DeviceShareSnapshot {
         guard writable else { throw DeviceShareError.unavailable }
@@ -202,13 +244,13 @@ struct BuildingReferenceArchive: Codable {
     }
     func applySharing(_ replica: DeviceShareReplica) throws {
         guard let header = try replica.value("setting/building-reference/header",as:BuildingReferenceHeader.self) else { return }
-        guard (1...167).contains(header.parts) else { throw DeviceShareError.invalid }
+        guard (1...834).contains(header.parts) else { throw DeviceShareError.invalid }
         var data = Data()
         for part in 0..<header.parts {
             guard let bytes = try replica.value("setting/building-reference/part/\(part)",as:Data.self), !bytes.isEmpty, bytes.count <= 300_000 else { throw DeviceShareError.invalid }
             data.append(bytes)
         }
-        guard data.count <= 50_000_000, DeviceShareCodec.digest(data) == header.digest else { throw DeviceShareError.invalid }
+        guard data.count <= 250_000_000, DeviceShareCodec.digest(data) == header.digest else { throw DeviceShareError.invalid }
         if data != snapshotData { try commit(JSONDecoder().decode(BuildingReferenceArchive.self,from:data)) }
     }
 }

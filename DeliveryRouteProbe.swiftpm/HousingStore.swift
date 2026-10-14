@@ -97,7 +97,7 @@ final class HousingStore: ObservableObject {
             }
         }
     }
-    func refreshBuildingRealty(roadAddress: String, regionCode: String, client: RealtyHousingClient = RealtyHousingClient()) async throws -> [String:String] {
+    func refreshBuildingRealty(roadAddress: String, regionCode: String, client: RealtyHousingClient = RealtyHousingClient()) async throws -> [HousingSource] {
         guard !isBusy else { throw BuildingEvaluationError.message("공시가격 수집 작업 완료 후 보충할 수 있습니다.") }
         isBusy = true; defer { isBusy = false }
         var region: HousingRegion
@@ -119,7 +119,7 @@ final class HousingStore: ObservableObject {
             region.generation = max(Date().timeIntervalSince1970*1000,region.generation+1)
             try importRegion(region)
         }
-        return BuildingFacts.consensus(try buildingSupplements(roadAddress:roadAddress,regionCode:regionCode).filter { !$0.isKapt }.map(\.fields))
+        return try buildingSupplements(roadAddress:roadAddress,regionCode:regionCode).filter { !$0.isKapt }
     }
     func exportRegions(_ code: String) throws -> [HousingRegion] {
         let selected = regions.filter { code.isEmpty || $0.code == code }

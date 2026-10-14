@@ -73,12 +73,16 @@ struct EvaluationBuilding: Codable, Equatable, Identifiable {
     var dongName: String
     var fields: [String: String]
     var fetchedAt: Date
+    var parentRegistryID: String? = nil
+    var parcelID: String? = nil
     var roadKey: String { BuildingAddress.key(roadAddress) ?? "" }
     func validate() throws {
         guard !id.isEmpty, id.utf8.count <= 200, !roadKey.isEmpty, dongName.utf8.count <= 200,
               name.utf8.count <= 500, fields.count <= 100, fields.values.allSatisfy({ $0.utf8.count <= 20_000 }) else {
             throw BuildingEvaluationError.message("건축물대장 건물 식별정보와 주소를 확인하세요.")
         }
+        guard parentRegistryID.map({ !$0.isEmpty && $0.utf8.count <= 200 }) ?? true,
+              parcelID.map({ !$0.isEmpty && $0.utf8.count <= 200 }) ?? true else { throw BuildingEvaluationError.message("상위 대장·지번 식별자를 확인하세요.") }
     }
 }
 
@@ -135,6 +139,7 @@ struct BuildingFact: Codable, Equatable {
     var value: String
     var source: BuildingFactSource
     var scope: BuildingFactScope
+    var complexID: String? = nil
 }
 enum BuildingFacts {
     static func consensus(_ sources: [[String:String]]) -> [String:String] {
