@@ -521,7 +521,7 @@ actor RequestConcurrencyProbe {
             referenceRequests += 1
             let data: Data
             if request.url!.path.contains("getTotalAptList") {
-                data = try json(["response":["header":["resultCode":"00"],"body":["items":[["kaptCode":"A1","kaptName":"가상 등록1"],["kaptCode":"A2","kaptName":"가상 등록2"]],"pageNo":1,"totalCount":2]]])
+                data = try json(["response":["header":["resultCode":"00"],"body":["items":[["kaptCode":"A1","kaptName":"가상 등록1","as1":"대전광역시","as2":"서구","bjdCode":"3017011300"],["kaptCode":"A2","kaptName":"가상 등록2","as1":"대전광역시","as2":"서구","bjdCode":"3017011300"]],"pageNo":1,"totalCount":2]]])
             } else {
                 let code = URLComponents(url:request.url!,resolvingAgainstBaseURL:false)!.queryItems!.first { $0.name == "kaptCode" }!.value!
                 data = try json(["response":["header":["resultCode":"00"],"body":["item":["kaptCode":code,"doroJuso":code == "A1" ? fixtureAddress.roadAddress : "","kaptdaCnt":"100"]]]])
@@ -532,7 +532,7 @@ actor RequestConcurrencyProbe {
         let referenceStore = BuildingReferenceStore(read:{referenceState},write:{referenceState = $0})
         try await referenceStore.collect(api:referenceAPI)
         try check("national catalog preserves blank originals and produces a complete address inventory") {
-            try require(referenceStore.archive.listComplete && referenceStore.archive.records.count == 2 && referenceStore.catalog.addresses.count == 1 && referenceStore.catalog.missingAddressIDs == ["A2"] && referenceStore.catalog.complete,"national catalog rules")
+            try require(referenceStore.archive.listComplete && referenceStore.archive.records.count == 2 && referenceStore.catalog.addresses.count == 1 && referenceStore.catalog.missingAddressIDs == ["A2"] && referenceStore.catalog.complete && referenceStore.inRegion("A2",province:"대전광역시",district:"서구"),"national catalog rules or inventory region lost")
         }
         try await referenceStore.collect(api:referenceAPI)
         try check("completed reference address collection resumes without fetching old details") {

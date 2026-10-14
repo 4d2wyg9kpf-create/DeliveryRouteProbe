@@ -94,6 +94,11 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         let blank = record("BLANK",roads:[" "]), unknown = KaptReferenceRecord(id:"UNKNOWN",name:"미수집",roadAddresses:[])
         let blankStore = try store([blank,unknown])
         try check("only an actually fetched blank road is skipped") { try require(blankStore.isExcluded(blank) && !blankStore.isExcluded(unknown) && blankStore.pendingKaptRecords.map(\.id) == ["UNKNOWN"],"unfetched treated as demolished") }
+        let regional = KaptReferenceRecord(id:"REGION",name:"상세 미수집 단지",roadAddresses:[],inventoryProvince:"대전광역시",inventoryDistrict:"서구",inventoryRegionCode:"3017011300",inventoryAt:at)
+        let regionalStore = try store([regional])
+        try check("province or district selection includes inventory rows before address details") {
+            try require(regionalStore.primaryProvinces == ["대전광역시"] && regionalStore.inRegion("REGION",province:"대전광역시",district:"") && regionalStore.inRegion("REGION",province:"대전광역시",district:"서구") && !regionalStore.isExcluded(regional),"region selection omitted unfetched building")
+        }
         try check("old archives preserve raw records and require new user links") {
             let old = BuildingReferenceArchive(listTotal:1,nextPage:2,listComplete:true,records:[a]); let data = try DeviceShareCodec.encode(old)
             let restoredStore = BuildingReferenceStore(read:{data},write:{_ in})

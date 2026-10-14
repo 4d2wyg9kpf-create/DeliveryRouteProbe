@@ -9,8 +9,9 @@ struct BuildingReferenceArchive: Codable {
     var records: [KaptReferenceRecord] = []
     var complexReviews: [BuildingComplexReview]? = nil
     var concordance: KaptConcordance? = nil
+    var regionalMetadataNextPage: Int? = nil
     func validate() throws {
-        guard version == 1, (1...1001).contains(nextPage), records.count <= 100_000,
+        guard version == 1, (1...1001).contains(nextPage), regionalMetadataNextPage.map({ (1...1001).contains($0) }) ?? true, records.count <= 100_000,
               listTotal.map({ (0...100_000).contains($0) }) ?? true,
               Set(records.map(\.id)).count == records.count,
               !listComplete || records.count == listTotal,
@@ -18,7 +19,7 @@ struct BuildingReferenceArchive: Codable {
         try concordance?.validate()
         let recordIDs = Set(records.map(\.id))
         guard (concordance?.reviews ?? []).allSatisfy({ recordIDs.contains($0.kaptID) }),
-              records.allSatisfy({ ($0.rawBasic?.count ?? 0) <= 1_000_000 && ($0.rawFacilities?.count ?? 0) <= 1_000_000 }) else { throw DeviceShareError.invalid }
+              records.allSatisfy({ ($0.rawBasic?.count ?? 0) <= 1_000_000 && ($0.rawFacilities?.count ?? 0) <= 1_000_000 && ($0.inventoryProvince?.utf8.count ?? 0) <= 200 && ($0.inventoryDistrict?.utf8.count ?? 0) <= 500 && ($0.inventoryRegionCode?.utf8.count ?? 0) <= 10 }) else { throw DeviceShareError.invalid }
         let reviews = complexReviews ?? []
         guard reviews.count <= 100_000, Set(reviews.map(\.id)).count == reviews.count,
               reviews.reduce(0,{ $0 + $1.buildings.count }) <= 1_000_000 else { throw DeviceShareError.invalid }
@@ -33,8 +34,13 @@ struct BuildingReferenceArchive: Codable {
         var next = larger
         let alternatives = Dictionary(smaller.records.map { ($0.id,$0) },uniquingKeysWith:{ a,_ in a })
         for index in next.records.indices {
-            guard let other = alternatives[next.records[index].id], let otherDate = other.fetchedAt else { continue }
+            guard let other = alternatives[next.records[index].id] else { continue }
             let existing = next.records[index]
+            if let at = other.inventoryAt, at >= (existing.inventoryAt ?? .distantPast) {
+                next.records[index].inventoryProvince = other.inventoryProvince; next.records[index].inventoryDistrict = other.inventoryDistrict
+                next.records[index].inventoryRegionCode = other.inventoryRegionCode; next.records[index].inventoryAt = at
+            }
+            guard let otherDate = other.fetchedAt else { continue }
             if existing.fetchedAt == nil || otherDate > existing.fetchedAt! || (otherDate == existing.fetchedAt && (other.facilitiesAt ?? .distantPast) > (existing.facilitiesAt ?? .distantPast)) { next.records[index] = other }
             // Basic and facility checkpoints are independent. Prefer completed
             // facilities only when both devices observed the same basic scope.
@@ -44,9 +50,15 @@ struct BuildingReferenceArchive: Codable {
                 next.records[index].facilitiesAt = facilities; next.records[index].rawFacilities = other.rawFacilities
             }
             if next.records[index].basicSchemaVersion == nil, other.basicSchemaVersion != nil, existing.fetchedAt == other.fetchedAt { next.records[index] = other }
+            let metadata = (existing.inventoryAt ?? .distantPast) > (other.inventoryAt ?? .distantPast) ? existing : other
+            if metadata.inventoryAt != nil {
+                next.records[index].inventoryProvince = metadata.inventoryProvince; next.records[index].inventoryDistrict = metadata.inventoryDistrict
+                next.records[index].inventoryRegionCode = metadata.inventoryRegionCode; next.records[index].inventoryAt = metadata.inventoryAt
+            }
         }
         next.listComplete = a.listComplete || b.listComplete; next.listTotal = a.listTotal ?? b.listTotal
         next.nextPage = max(a.nextPage,b.nextPage)
+        next.regionalMetadataNextPage = max(a.regionalMetadataNextPage ?? 1,b.regionalMetadataNextPage ?? 1)
         var reviews = Dictionary((a.complexReviews ?? []).map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
         for review in b.complexReviews ?? [] {
             reviews[review.id] = try reviews[review.id].map { try BuildingComplexReview.merge($0,review) } ?? review
@@ -227,11 +239,30 @@ struct BuildingReferenceArchive: Codable {
             let records = try rows.map { row -> KaptReferenceRecord in
                 let code = KaptGateway.text(row,"kaptCode"), name = KaptGateway.text(row,"kaptName")
                 guard code.range(of:#"^[A-Za-z0-9]{1,40}$"#,options:.regularExpression) != nil, !name.isEmpty else { throw DeviceShareError.invalid }
-                return KaptReferenceRecord(id:code,name:name,roadAddresses:[])
+                return KaptReferenceRecord(id:code,name:name,roadAddresses:[],inventoryProvince:KaptGateway.text(row,"as1"),inventoryDistrict:KaptGateway.text(row,"as2"),inventoryRegionCode:KaptGateway.text(row,"bjdCode"),inventoryAt:Date())
             }
             guard Set(next.records.map(\.id)).isDisjoint(with:Set(records.map(\.id))), Set(records.map(\.id)).count == records.count else { throw BuildingEvaluationError.message("전국 K-apt 목록의 단지 코드가 중복되어 완료 처리하지 않았습니다.") }
             next.records.append(contentsOf:records); next.listTotal = total; next.nextPage += 1
             next.listComplete = next.records.count == total; try await commitAsync(next); next = archive
+        }
+        // Older address catalogs omitted the list's as1/as2 fields. Re-read
+        // only list metadata, checking every stable code before filling it.
+        while next.records.contains(where:{ $0.inventoryAt == nil }) {
+            try Task.checkCancellation()
+            let page = next.regionalMetadataNextPage ?? 1
+            progress = "K-apt 지역 목록 확인 · \(page)페이지"
+            let body = try KaptGateway.body(await api.kaptData(.all,parameters:["pageNo":String(page)]))
+            guard Int(KaptGateway.text(body,"totalCount")) == next.listTotal, Int(KaptGateway.text(body,"pageNo")) == page else { throw BuildingEvaluationError.message("기존 K-apt 목록과 지역 조회의 건수가 달라 원본을 보존했습니다.") }
+            let raw = (body["items"] as? [String:Any])?["item"] ?? body["items"]
+            let rows = raw as? [[String:Any]] ?? (raw as? [String:Any]).map { [$0] } ?? []
+            let first = (page-1)*100, last = min(next.records.count,first+100)
+            guard first < last, rows.count == last-first,
+                  rows.map({ KaptGateway.text($0,"kaptCode") }) == next.records[first..<last].map(\.id) else { throw BuildingEvaluationError.message("기존 K-apt 목록의 코드·순서가 달라 원본을 보존했습니다.") }
+            for (offset,row) in rows.enumerated() {
+                next.records[first+offset].inventoryProvince = KaptGateway.text(row,"as1"); next.records[first+offset].inventoryDistrict = KaptGateway.text(row,"as2")
+                next.records[first+offset].inventoryRegionCode = KaptGateway.text(row,"bjdCode"); next.records[first+offset].inventoryAt = Date()
+            }
+            next.regionalMetadataNextPage = page+1; try await commitAsync(next); next = archive
         }
         let targets = next.records.filter { codes == nil || codes!.contains($0.id) }
         if configureProgress, var value = collectionStatus.value {

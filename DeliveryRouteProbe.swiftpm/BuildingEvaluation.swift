@@ -177,6 +177,10 @@ struct KaptReferenceRecord: Codable, Equatable, Identifiable {
     var basicSchemaVersion: Int? = nil
     var rawBasic: Data? = nil
     var rawFacilities: Data? = nil
+    var inventoryProvince: String? = nil
+    var inventoryDistrict: String? = nil
+    var inventoryRegionCode: String? = nil
+    var inventoryAt: Date? = nil
 }
 struct KaptReferenceAddress: Codable, Equatable, Identifiable {
     var roadAddress: String

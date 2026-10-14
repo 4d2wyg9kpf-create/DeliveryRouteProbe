@@ -185,6 +185,12 @@ struct KaptPrimaryIndex {
                 provinceSet.insert(province); districtSets[province,default:[]].insert(district)
                 regions[record.id,default:[]].append(province + "|" + district)
             }
+            if let rawProvince = record.inventoryProvince, !rawProvince.isEmpty {
+                let province = BuildingAddress.key(rawProvince + " 가상로 1")?.split(separator:" ").first.map(String.init) ?? rawProvince
+                let district = BuildingAddress.clean(record.inventoryDistrict ?? "")
+                provinceSet.insert(province); districtSets[province,default:[]].insert(district)
+                regions[record.id,default:[]].append(province + "|" + district)
+            }
             guard let decision = reviews[record.id]?.decision, !record.hasConfirmedBlankRoad,
                   decision.kaptScopeKey == scope,
                   decision.realtyIDs.allSatisfy({ detailedIDs.contains($0) && decision.realtyScopeKeys[$0] == priceScopes[$0] }) else { continue }
