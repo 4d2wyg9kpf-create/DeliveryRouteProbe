@@ -117,7 +117,15 @@ struct BuildingComplexReviewView: View {
         do {
             inputs.finishEditing(); try review.normalizeGroups()
             let prior = references.complexReview(review.roadAddress)
-            review.supersedes = Array(Set(review.supersedes + [review.decision.id] + review.conflicts.map(\.id) + (prior.map { [$0.decision.id] + $0.conflicts.map(\.id) + $0.supersedes } ?? []))).sorted()
+            var replaced = Set(review.supersedes)
+            replaced.insert(review.decision.id)
+            replaced.formUnion(review.conflicts.map(\.id))
+            if let prior {
+                replaced.insert(prior.decision.id)
+                replaced.formUnion(prior.conflicts.map(\.id))
+                replaced.formUnion(prior.supersedes)
+            }
+            review.supersedes = replaced.sorted()
             review.decision.id = UUID().uuidString; review.updatedAt = Date(); review.confirmed = true; review.conflicts = []
             try review.validate(); try references.saveComplexReview(review)
             try sites.applyComplexReviews(references.complexReviews)

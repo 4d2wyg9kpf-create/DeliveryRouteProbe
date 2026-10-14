@@ -44,6 +44,7 @@ struct ManagedBuildingComplex: Codable, Equatable, Identifiable {
     var sharedFacts: [String:BuildingFact]
     var reason: String
     var reviewedAt: Date
+    var dataCheckedAt: Date? = nil
 }
 
 struct BuildingComplexBinding: Codable, Equatable {
@@ -66,6 +67,7 @@ struct BuildingComplexReview: Codable, Equatable, Identifiable {
     var supersedes: [String] = []
     var conflicts: [BuildingComplexDecision] = []
     var comparisonComplete: Bool? = nil
+    var dataCheckedAt: Date? = nil
     var id: String { BuildingAddress.key(roadAddress) ?? "" }
     var roots: [String] { Set(decision.groupForKapt.values).sorted() }
     var usable: Bool { confirmed && conflicts.isEmpty && comparisonComplete != false }
@@ -167,6 +169,7 @@ struct BuildingComplexReview: Codable, Equatable, Identifiable {
                       candidates: [BuildingComplexSource], realty: [BuildingComplexSource], previous: Self? = nil, now: Date = Date()) throws -> Self {
         var result = Self(roadAddress:roadAddress,buildings:buildings,registryGroups:groups,candidates:candidates,realty:realty,
             decision:BuildingComplexDecision(id:UUID().uuidString,groupForKapt:[:],adoptedForGroup:[:],groupForBuilding:[:],groupForRealty:[:],reason:""),updatedAt:now)
+        result.dataCheckedAt = now
         for source in candidates { result.decision.groupForKapt[source.id] = source.id; result.decision.adoptedForGroup[source.id] = source.id }
         if let previous, previous.usable, previous.scopeKey == result.scopeKey {
             result.decision = previous.decision; result.confirmed = true; result.automatic = previous.automatic
@@ -267,6 +270,23 @@ struct BuildingComplexReview: Codable, Equatable, Identifiable {
         decision.groupForRealty = decision.groupForRealty.filter { roots.contains($0.value) }
         decision.wholeScopeGroups = (decision.wholeScopeGroups ?? []).filter { roots.contains($0) }
     }
+    func updatingAdoption(from incoming: Self) -> Self? {
+        guard usable, incoming.usable, decision.groupForKapt == incoming.decision.groupForKapt,
+              excludedKaptIDs == incoming.excludedKaptIDs, decision.adoptedForGroup != incoming.decision.adoptedForGroup,
+              candidates.sorted(by:{ $0.id < $1.id }).map(\.scopeKey) == incoming.candidates.sorted(by:{ $0.id < $1.id }).map(\.scopeKey) else { return nil }
+        let changed = Set(roots.filter { decision.adoptedForGroup[$0] != incoming.decision.adoptedForGroup[$0] })
+        var result = self
+        result.supersedes = Array(Set(supersedes + [decision.id])).sorted()
+        result.decision.id = UUID().uuidString; result.updatedAt = incoming.updatedAt; result.automatic = false
+        result.decision.adoptedForGroup = incoming.decision.adoptedForGroup; result.decision.wholeScopeGroups = incoming.decision.wholeScopeGroups
+        result.decision.reason = incoming.decision.reason; result.candidates = incoming.candidates
+        result.decision.groupForRealty = decision.groupForRealty.filter { !changed.contains($0.value) }
+        result.decision.wholeRealtyIDs = (decision.wholeRealtyIDs ?? []).filter { result.decision.groupForRealty[$0] != nil }
+        // The other address's summary wasn't queried again. Preserve its source
+        // timestamp so it cannot outrank the freshly checked common record.
+        result.dataCheckedAt = dataCheckedAt ?? updatedAt
+        do { try result.validate(); return result } catch { return nil }
+    }
     func individualFacts(_ building: EvaluationBuilding) -> [String:BuildingFact] {
         let root = usable ? decision.groupForBuilding[building.id] : nil
         let price = Self.consensus(realty.filter { source in
@@ -307,7 +327,7 @@ struct BuildingComplexReview: Codable, Equatable, Identifiable {
             facts["parkingPerHousehold"] = BuildingFact(value:String(format:"%.4f",parking/households),source:facts["parking"]!.source,scope:.complex,complexID:complexID)
         }
         return ManagedBuildingComplex(id:complexID,name:adopted.name,kaptIDs:candidates.filter { decision.groupForKapt[$0.id] == root }.map(\.id).sorted(),
-            adoptedKaptID:code,sharedFacts:facts,reason:decision.reason,reviewedAt:updatedAt)
+            adoptedKaptID:code,sharedFacts:facts,reason:decision.reason,reviewedAt:updatedAt,dataCheckedAt:dataCheckedAt ?? updatedAt)
     }
     func binding(_ building: EvaluationBuilding) -> BuildingComplexBinding? {
         guard usable, let original = buildings.first(where:{ $0.id == building.id }), original.complexScopeKey == building.complexScopeKey,
@@ -342,10 +362,10 @@ struct BuildingComplexReview: Codable, Equatable, Identifiable {
             for root in review.roots { if let info = review.complex(root) { infos[root,default:[]].append(info) } }
         }
         var result: [String:ManagedBuildingComplex] = [:]
-        for (root,values) in infos {
+        for values in infos.values {
             let allIDs = Set(values.flatMap(\.kaptIDs))
             guard allIDs.isDisjoint(with:blocked), allIDs.allSatisfy({ aliases[$0]?.count == 1 }), Set(values.map(\.adoptedKaptID)).count == 1 else { continue }
-            if let value = values.max(by:{ $0.reviewedAt < $1.reviewedAt }) { result[value.id] = value }
+            if let value = values.max(by:{ ($0.dataCheckedAt ?? $0.reviewedAt) < ($1.dataCheckedAt ?? $1.reviewedAt) }) { result[value.id] = value }
         }
         return result
     }

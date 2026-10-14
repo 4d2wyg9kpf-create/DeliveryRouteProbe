@@ -198,6 +198,11 @@ struct BuildingReferenceArchive: Codable {
         var next = archive, values = complexReviews
         if let index = values.firstIndex(where:{ $0.id == review.id }) { values[index] = review }
         else { values.append(review) }
+        if review.usable && !review.automatic {
+            for index in values.indices where values[index].id != review.id {
+                if let updated = values[index].updatingAdoption(from:review) { values[index] = updated }
+            }
+        }
         next.complexReviews = values; try commit(next); try DeviceShareHooks.changed()
     }
     func standardSites(_ sites: [SiteTarget]) throws -> [SiteTarget] {

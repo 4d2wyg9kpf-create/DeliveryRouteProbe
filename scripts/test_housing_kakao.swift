@@ -575,6 +575,28 @@ actor RequestConcurrencyProbe {
             let restored = BuildingReferenceStore(read:{storage},write:{storage = $0})
             try require(restored.standardAddresses.isEmpty && restored.catalog.addresses.count == 1 && restored.archive.records.count == 2 && restored.complexReviews[0].usable,"historical source deleted or population retained")
         }
+        try check("persisted adoption change updates every confirmed address of one management") {
+            var data: Data?
+            let store = BuildingReferenceStore(read:{data},write:{data = $0})
+            let secondRoad = "대전광역시 중구 가상로 20"
+            var group = try BuildingLedgerClient.link(buildings:[ledgerBuilding],basis:basisRows,recap:recapRows).groups[0]; group.fields["parking"] = ""
+            var building = ledgerBuilding; building.parentRegistryID = group.id
+            let source = BuildingComplexSource(id:"WHOLE",name:group.name,roadAddresses:[fixtureAddress.roadAddress,secondRoad],jibunAddress:group.jibunAddress,
+                fields:group.fields.merging(["registrationStatus":"사용","parking":"100"]){_,new in new},fetchedAt:Date(),isKapt:true)
+            var twin = source; twin.id = "TWIN"; twin.fields["parking"] = "200"
+            var first = try BuildingComplexReview.draft(roadAddress:fixtureAddress.roadAddress,buildings:[building],groups:[group],candidates:[source,twin],realty:[])
+            first.decision.groupForKapt = ["WHOLE":"WHOLE","TWIN":"WHOLE"]; first.decision.adoptedForGroup = ["WHOLE":"WHOLE"]
+            first.decision.wholeScopeGroups = ["WHOLE"]; first.decision.groupForBuilding = [building.id:"WHOLE"]; first.decision.reason = "현재 관리 범위 확인"; first.confirmed = true
+            try store.saveComplexReview(first)
+            var aliasBuilding = building; aliasBuilding.roadAddress = secondRoad
+            let second = try BuildingComplexReview.draft(roadAddress:secondRoad,buildings:[aliasBuilding],groups:[group],candidates:[source,twin],realty:[]).reusingManagementDecision([first])
+            try require(second.usable,"second address fixture")
+            try store.saveComplexReview(second)
+            var changed = first; changed.supersedes = [first.decision.id]; changed.decision.id = "current-adoption"; changed.decision.adoptedForGroup["WHOLE"] = "TWIN"; changed.updatedAt = Date().addingTimeInterval(100); changed.dataCheckedAt = changed.updatedAt
+            try store.saveComplexReview(changed)
+            let restored = BuildingReferenceStore(read:{data},write:{data = $0})
+            try require(restored.complexReviews.count == 2 && restored.complexReviews.allSatisfy { $0.decision.adoptedForGroup["WHOLE"] == "TWIN" } && restored.managedComplexes["kapt:WHOLE"]?.sharedFacts["parking"]?.value == "200","persisted cross-address adoption stale")
+        }
         try check("shared reference catalog pieces verify checksums and restore all addresses") {
             let snapshot = try referenceStore.sharingSnapshot()
             var replica = DeviceShareReplica(deviceID:UUID().uuidString), observed: [String:Data] = [:]

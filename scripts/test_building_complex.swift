@@ -182,6 +182,30 @@ private func rejects(_ action: () throws -> Void) throws { do { try action() } c
             let restored = try JSONDecoder().decode(BuildingComplexReview.self,from:data)
             try restored.validate(); try require(restored == reconstruction,"review persistence")
         }
+        var activeTwin = k1; activeTwin.id = "TWIN"; activeTwin.roadAddresses = [road,road2]; activeTwin.fields["parking"] = "2400"
+        var activeOriginal = k1; activeOriginal.roadAddresses = [road,road2]
+        var initialChoice = try draft([activeOriginal,activeTwin],[b1,b2],[noParking])
+        initialChoice.decision.groupForKapt = ["K1":"K1","TWIN":"K1"]; initialChoice.decision.adoptedForGroup = ["K1":"K1"]
+        initialChoice.decision.wholeScopeGroups = ["K1"]; initialChoice.decision.groupForBuilding = [b1.id:"K1",b2.id:"K1"]
+        initialChoice.decision.reason = "관리 단지 전체 범위를 비교하여 채택"; initialChoice.confirmed = true
+        let secondChoice = try BuildingComplexReview.draft(roadAddress:road2,buildings:[otherBuilding],groups:[noParking],candidates:[activeOriginal,activeTwin],realty:[],now:date.addingTimeInterval(1)).reusingManagementDecision([initialChoice])
+        var updatedChoice = initialChoice; updatedChoice.decision.id = "updated-adoption"; updatedChoice.decision.adoptedForGroup["K1"] = "TWIN"
+        updatedChoice.updatedAt = date.addingTimeInterval(10); updatedChoice.dataCheckedAt = updatedChoice.updatedAt
+        try updatedChoice.validate()
+        try check("changing adopted duplicate propagates across its confirmed road addresses") {
+            let propagated = secondChoice.updatingAdoption(from:updatedChoice)
+            try require(propagated?.decision.adoptedForGroup["K1"] == "TWIN" && propagated?.binding(otherBuilding)?.complexID == "kapt:K1","adoption propagation lost members")
+            let infos = BuildingComplexReview.sharedComplexes([updatedChoice,propagated!])
+            try require(infos["kapt:K1"]?.adoptedKaptID == "TWIN" && infos["kapt:K1"]?.sharedFacts["parking"]?.value == "2400","common adoption not refreshed")
+        }
+        try check("adoption propagation never silently changes a different management partition") {
+            var incompatible = secondChoice; incompatible.decision.groupForKapt["TWIN"] = "TWIN"; incompatible.decision.adoptedForGroup["TWIN"] = "TWIN"; incompatible.decision.wholeScopeGroups = ["K1","TWIN"]
+            try incompatible.validate(); try require(incompatible.updatingAdoption(from:updatedChoice) == nil,"different partition overwritten")
+        }
+        try check("incomplete linked-address inventory cannot be manually confirmed") {
+            var incomplete = reconstruction; incomplete.confirmed = false; incomplete.comparisonComplete = false
+            try rejects { incomplete.confirmed = true; try incomplete.validate() }
+        }
         try check("older building records decode without parent or management evidence") {
             let data = Data("{\"id\":\"legacy\",\"roadAddress\":\"대전광역시 서구 가상로 10\",\"name\":\"이전 건물\",\"dongName\":\"101동\",\"fields\":{},\"fetchedAt\":0}".utf8)
             let oldBuilding = try JSONDecoder().decode(EvaluationBuilding.self,from:data)

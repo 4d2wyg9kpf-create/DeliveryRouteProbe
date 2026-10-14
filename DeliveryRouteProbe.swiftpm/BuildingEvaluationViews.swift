@@ -93,7 +93,7 @@ struct BuildingRegisterView: View {
                     ForEach(facts.keys.sorted(),id:\.self) { key in
                         if let fact = facts[key] {
                             VStack(alignment:.leading,spacing:3) {
-                                Text(HousingField(rawValue:key)?.title ?? buildingFactTitle(key)).font(.caption).foregroundStyle(.secondary)
+                                Text(key == "parking" && fact.scope == .building ? "이 건물의 대장상 주차대수" : HousingField(rawValue:key)?.title ?? buildingFactTitle(key)).font(.caption).foregroundStyle(.secondary)
                                 Text(fact.value)
                                 Text("\(fact.source == .registry ? "건축물대장" : fact.source == .realty ? "공시가격" : "K-apt") · \(fact.scope == .building ? "개별 건물" : "단지 정보로 보충")").font(.caption2).foregroundStyle(.secondary)
                             }
