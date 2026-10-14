@@ -145,6 +145,75 @@ struct KaptConcordance: Codable {
         try result.validate(); return result
     }
 }
+// Build once per saved checkpoint, off the UI thread during collection.
+struct KaptPrimaryIndex {
+    var records: [String:KaptReferenceRecord]
+    var prices: [String:HousingSource]
+    var reviews: [String:KaptLinkReview]
+    var searches: [String:KaptPriceSearch]
+    var observations: [String:KaptRegistryObservation]
+    var detailedIDs: Set<String>
+    var decisions: [String:KaptLinkDecision]
+    var roads: [String:[String]]
+    var provinces: [String] = []
+    var districts: [String:[String]] = [:]
+    var regions: [String:[String]]
+    var populationToken = ""
+    var memberOwners: [String:Set<String>] = [:]
+    var priceOwners: [String:Set<String>] = [:]
+    var managementOwners: [String:Set<String>] = [:]
+    init(_ archive: BuildingReferenceArchive) {
+        let concordance = archive.concordance ?? KaptConcordance()
+        records = Dictionary(archive.records.map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
+        prices = Dictionary(concordance.sources.map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
+        reviews = Dictionary(concordance.reviews.map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
+        searches = Dictionary(concordance.searches.map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
+        observations = Dictionary((concordance.observations ?? []).map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
+        detailedIDs = Set(concordance.sources.filter { $0.detailAt != nil && ($0.latestNoticeDate == nil || $0.latestNoticeDate == $0.noticeDate) }.map(\.id))
+        let priceScopes = Dictionary(concordance.sources.map { ($0.id,KaptConcordance.sourceKey($0)) },uniquingKeysWith:{ x,_ in x })
+        let priceFacts = Dictionary(concordance.sources.map { ($0.id,BuildingComplexReview.key($0.fields)) },uniquingKeysWith:{ x,_ in x })
+        let knownBuildings = Dictionary((concordance.observations ?? []).flatMap(\.buildings).map { ($0.roadKey + "|" + $0.id,$0) },uniquingKeysWith:{ x,_ in x })
+        var sourceScopes: [String:String] = [:], provinceSet = Set<String>(), districtSets: [String:Set<String>] = [:]
+        roads = [:]; regions = [:]; decisions = [:]
+        for record in archive.records {
+            let scope = record.source.scopeKey; sourceScopes[record.id] = scope
+            roads[record.id] = record.roads
+            for road in record.roads {
+                let words = (BuildingAddress.key(road) ?? "").split(separator:" ")
+                guard let province = words.first.map(String.init) else { continue }
+                let district = words.dropFirst().dropLast(2).joined(separator:" ")
+                provinceSet.insert(province); districtSets[province,default:[]].insert(district)
+                regions[record.id,default:[]].append(province + "|" + district)
+            }
+            guard let decision = reviews[record.id]?.decision, !record.hasConfirmedBlankRoad,
+                  decision.kaptScopeKey == scope,
+                  decision.realtyIDs.allSatisfy({ detailedIDs.contains($0) && decision.realtyScopeKeys[$0] == priceScopes[$0] }) else { continue }
+            decisions[record.id] = decision
+            if decision.disposition == .accepted, let match = BuildingComplexReview.managementMatchKey(name:record.name,parcel:record.fields["jibunAddress",default:""],fields:record.fields) {
+                managementOwners[match,default:[]].insert(record.id)
+            }
+        }
+        for record in archive.records where !record.hasConfirmedBlankRoad {
+            for decision in reviews[record.id]?.heads ?? [] where decision.disposition == .accepted {
+                for identity in decision.memberBuildings.keys { memberOwners[identity,default:[]].insert(record.id) }
+                for id in decision.realtyIDs { priceOwners[id,default:[]].insert(record.id) }
+            }
+        }
+        provinces = provinceSet.sorted(); districts = districtSets.mapValues { $0.filter { !$0.isEmpty }.sorted() }
+        let values = archive.records.sorted { $0.id < $1.id }.map { record -> String in
+            let decision = decisions[record.id]
+            let state = record.hasConfirmedBlankRoad || decision?.disposition == .excluded ? "excluded" : "included"
+            let edges = decision.map { BuildingComplexReview.key([$0.realtyScopeKeys,$0.memberBuildings]) } ?? "pending"
+            let whole = decision.map { $0.wholeRealtyIDs.sorted().joined(separator:"|") } ?? ""
+            let priceData = decision.map { $0.realtyIDs.sorted().compactMap { priceFacts[$0] }.joined(separator:"|") } ?? ""
+            let standard = decision?.standardBuildingIdentity ?? ""
+            let currentBuilding = knownBuildings[standard].map { BuildingComplexReview.key([$0.complexScopeKey,BuildingComplexReview.key($0.fields)]) } ?? "unconfirmed"
+            return BuildingComplexReview.key([record.id,sourceScopes[record.id] ?? "",state,edges,whole,standard,currentBuilding,priceData,
+                BuildingComplexReview.key(record.fields),reviews[record.id]?.conflicted == true ? "conflict" : "clear"])
+        }
+        populationToken = DeviceShareCodec.digest(Data(values.joined(separator:"\n").utf8))
+    }
+}
 extension KaptReferenceRecord {
     var basicFootprint: String { BuildingComplexReview.key([id,name,roads.joined(separator:"\n"),fields["jibunAddress",default:""],fields["approvalDate",default:""],fields["households",default:""],fields["buildings",default:""]]) }
     var roads: [String] { Array(Set(roadAddresses.flatMap(BuildingAddress.split))).sorted() }

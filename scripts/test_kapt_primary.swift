@@ -103,8 +103,22 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         try one.mergeConcordance(KaptConcordance(sources:[changedPrice]))
         try check("a new price notice invalidates old verified link footprints") { try require(one.validKaptRecords.isEmpty && one.profile(ba) == nil,"stale link accepted") }
         var changedBuilding = bb; changedBuilding.parentRegistryID = "new-recap"
+        let beforeRegistryChange = primary.populationToken
         try primary.saveObservation(observation([ba,changedBuilding]))
-        try check("a changed registry parent invalidates standard membership and shared facts") { try require(primary.profile(bb) == nil,"stale parent shared"); try rejects { _ = try primary.standardSites([SiteTarget(building:selection(ba)),SiteTarget(building:selection(bb))]) } }
+        try check("a changed registry parent invalidates standard membership and shared facts") { try require(primary.profile(bb) == nil && beforeRegistryChange != primary.populationToken,"stale parent shared or stale population token"); try rejects { _ = try primary.standardSites([SiteTarget(building:selection(ba)),SiteTarget(building:selection(bb))]) } }
+        var bFork = db; bFork.id = "B-conflict"; bFork.standardBuildingIdentity = nil
+        try primary.mergeConcordance(KaptConcordance(reviews:[KaptLinkReview(kaptID:"B",heads:[bFork])]))
+        try check("unresolved neighboring price ownership withholds a whole price total") {
+            try require(primary.linkReview("B")?.conflicted == true && primary.profile(ba)?.complex.sharedFacts["parking"]?.value == "100","conflicted owner leaked price total")
+        }
+        let factStore = try store([a],prices:[p1],observations:[observation([ba])]); try factStore.saveLink(da)
+        var newFacts = a; newFacts.fields["parking"] = "150"; newFacts.facilitiesAt = at.addingTimeInterval(10)
+        let factArchive = BuildingReferenceArchive(listTotal:1,nextPage:2,listComplete:true,records:[newFacts],concordance:factStore.concordance)
+        let factData = try DeviceShareCodec.encode(factArchive)
+        let factRestored = BuildingReferenceStore(read:{factData},write:{_ in})
+        try check("new facts in an unchanged verified scope change the population token") {
+            try require(factRestored.validKaptRecords.count == 1 && factRestored.populationToken != factStore.populationToken,"updated facts left reference current")
+        }
         let ambiguous = try store([a,b],prices:[p1],observations:[observation([ba])])
         try ambiguous.saveLink(decision(a,prices:[p1],members:[ba],standard:ba))
         try ambiguous.saveLink(decision(b,prices:[p1],members:[ba],standard:ba))
@@ -140,6 +154,24 @@ func json(_ value: Any) throws -> Data { try JSONSerialization.data(withJSONObje
         try check("cancellation persists discovered candidate and unfinished detail") { try require(interrupted.concordance.searches.count == 1 && interrupted.concordance.sources[0].detailAt == nil,"checkpoint lost") }
         try await interrupted.collectPrices(search:{ _ in throw PlannerFailure.message("saved search refetched") },detail:{ source in var full = source; full.detailAt = at; return full })
         try check("interrupted targeted source resumes from its detail checkpoint") { try require(interrupted.collectionComplete(a),"resume incomplete") }
+        let noticeStore = try store([a],prices:[p1])
+        try noticeStore.mergeConcordance(KaptConcordance(searches:[KaptPriceSearch(roadAddress:road,method:"road",sourceIDs:[p1.id],addresses:[],fetchedAt:at)]))
+        do {
+            try await noticeStore.collectPrices(refresh:true,search:{ address in
+                var latest = p1; latest.noticeDate = "20270101"; latest.detailAt = nil
+                return (KaptPriceSearch(roadAddress:address,method:"road",sourceIDs:[p1.id],addresses:[],fetchedAt:at.addingTimeInterval(20)),[latest])
+            },detail:{ _ in throw CancellationError() })
+            throw PlannerFailure.message("new notice cancel lost")
+        } catch is CancellationError {}
+        try check("interrupted new notice retains old detail but marks it unfinished") {
+            try require(noticeStore.concordance.sources[0].latestNoticeDate == "20270101" && !noticeStore.collectionComplete(a),"new notice checkpoint marked complete")
+        }
+        try await noticeStore.collectPrices(search:{ _ in throw PlannerFailure.message("new notice search repeated") },detail:{ source in
+            var latest = source; latest.noticeDate = source.latestNoticeDate!; latest.detailAt = at.addingTimeInterval(21); return latest
+        })
+        try check("resuming a new notice requests its updated detail before completion") {
+            try require(noticeStore.collectionComplete(a) && noticeStore.concordance.sources[0].noticeDate == "20270101","new detail not resumed")
+        }
         var requests: [[String:String]] = [], paths: [String] = []
         let scheduler = RealtyRequestScheduler(policy:RealtyRequestPolicy(minimumInterval:0),sleep:{ _ in })
         let transport: RealtyRequestScheduler.Transport = { request in

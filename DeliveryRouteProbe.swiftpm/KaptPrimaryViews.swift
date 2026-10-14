@@ -12,18 +12,12 @@ struct KaptPrimaryCatalogView: View {
     @State private var limit = 100
     @State private var settings = false
     @State private var message: String?
-    private var provinces: [String] { Set(references.archive.records.flatMap(\.roads).compactMap { BuildingAddress.key($0)?.split(separator:" ").first.map(String.init) }).sorted() }
-    private func districtOf(_ road: String) -> String {
-        let words = (BuildingAddress.key(road) ?? "").split(separator:" ")
-        return words.dropFirst().dropLast(2).joined(separator:" ")
-    }
-    private var districts: [String] {
-        Set(references.archive.records.flatMap(\.roads).filter { province.isEmpty || (BuildingAddress.key($0) ?? "").hasPrefix(province + " ") }.map(districtOf).filter { !$0.isEmpty }).sorted()
-    }
+    private var provinces: [String] { references.primaryProvinces }
+    private var districts: [String] { province.isEmpty ? [] : references.primaryDistricts[province] ?? [] }
     private var scoped: [KaptReferenceRecord] {
         references.archive.records.filter { record in
-            (province.isEmpty || record.roads.contains { (BuildingAddress.key($0) ?? "").hasPrefix(province + " ") && (district.isEmpty || districtOf($0) == district) }) &&
-            (keyword.isEmpty || ([record.id,record.name] + record.roads + [record.fields["jibunAddress",default:""]]).joined(separator:" ").localizedCaseInsensitiveContains(keyword))
+            references.inRegion(record.id,province:province,district:district) &&
+            (keyword.isEmpty || ([record.id,record.name] + references.roadAddresses(record.id) + [record.fields["jibunAddress",default:""]]).joined(separator:" ").localizedCaseInsensitiveContains(keyword))
         }
     }
     private var rows: [KaptReferenceRecord] {

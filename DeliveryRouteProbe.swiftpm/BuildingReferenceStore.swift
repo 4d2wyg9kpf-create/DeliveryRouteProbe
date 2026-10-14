@@ -81,22 +81,26 @@ struct BuildingReferenceArchive: Codable {
     private var metadataDurations: [String:TimeInterval] = [:]
     private var detailedPriceIDs = Set<String>()
     private var observationsByRoad: [String:KaptRegistryObservation] = [:]
+    private var populationDigest = ""
+    private var membershipOwners: [String:Set<String>] = [:]
+    private var priceOwners: [String:Set<String>] = [:]
+    private var managementOwners: [String:Set<String>] = [:]
+    private var roadsByCode: [String:[String]] = [:]
+    private var regionsByCode: [String:[String]] = [:]
+    private(set) var primaryProvinces: [String] = []
+    private(set) var primaryDistricts: [String:[String]] = [:]
     private func detailedPrice(_ id: String) -> Bool { pricesByID[id].map { $0.detailAt != nil && ($0.latestNoticeDate == nil || $0.latestNoticeDate == $0.noticeDate) } ?? false }
-    private func rebuildIndexes() {
-        reviewsByCode = Dictionary(concordance.reviews.map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
-        pricesByID = Dictionary(concordance.sources.map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
-        searchesByRoad = Dictionary(concordance.searches.map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
-        recordsByCode = Dictionary(archive.records.map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
-        decisionsByCode = [:]
-        let priceKeys = Dictionary(pricesByID.map { ($0.key,KaptConcordance.sourceKey($0.value)) },uniquingKeysWith:{ x,_ in x })
-        for record in archive.records {
-            guard let value = reviewsByCode[record.id]?.decision, !record.hasConfirmedBlankRoad,
-                  value.kaptScopeKey == record.source.scopeKey,
-                  value.realtyIDs.allSatisfy({ detailedPrice($0) && value.realtyScopeKeys[$0] == priceKeys[$0] }) else { continue }
-            decisionsByCode[record.id] = value
-        }
-        detailedPriceIDs = Set(concordance.sources.filter { $0.detailAt != nil && ($0.latestNoticeDate == nil || $0.latestNoticeDate == $0.noticeDate) }.map(\.id))
-        observationsByRoad = Dictionary((concordance.observations ?? []).map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
+    private func rebuildIndexes(_ prepared: KaptPrimaryIndex? = nil) {
+        let value = prepared ?? KaptPrimaryIndex(archive)
+        recordsByCode = value.records; pricesByID = value.prices; reviewsByCode = value.reviews
+        searchesByRoad = value.searches; observationsByRoad = value.observations; detailedPriceIDs = value.detailedIDs
+        decisionsByCode = value.decisions; populationDigest = value.populationToken; roadsByCode = value.roads
+        regionsByCode = value.regions; primaryProvinces = value.provinces; primaryDistricts = value.districts
+        membershipOwners = value.memberOwners; priceOwners = value.priceOwners; managementOwners = value.managementOwners
+    }
+    func roadAddresses(_ code: String) -> [String] { roadsByCode[code] ?? [] }
+    func inRegion(_ code: String, province: String, district: String) -> Bool {
+        province.isEmpty || (regionsByCode[code] ?? []).contains { district.isEmpty ? $0.hasPrefix(province + "|") : $0 == province + "|" + district }
     }
     convenience init(directory: URL? = nil) {
         let folder = directory ?? FileManager.default.urls(for:.documentDirectory,in:.userDomainMask)[0].appendingPathComponent("RouteProbe")
@@ -135,13 +139,13 @@ struct BuildingReferenceArchive: Codable {
                 let data = try DeviceShareCodec.encode(value)
                 guard data.count <= 250_000_000 else { throw BuildingEvaluationError.message("K-apt 보관함 크기를 확인하세요.") }
                 let catalog = try KaptReferenceCatalog.build(value.records)
-                return (value,data,catalog)
+                return (value,data,catalog,KaptPrimaryIndex(value))
             }.value
             // A review made during encoding is merged before the checkpoint.
             guard previousRevision == revision else { continue }
             try writeState(prepared.1); archive = prepared.0; snapshotData = prepared.1; catalog = prepared.2
             managedComplexes = BuildingComplexReview.sharedComplexes(prepared.0.complexReviews ?? [])
-            revision += 1; rebuildIndexes(); return
+            revision += 1; rebuildIndexes(prepared.3); return
         }
     }
     func stop() {
@@ -227,7 +231,7 @@ struct BuildingReferenceArchive: Codable {
             }
             guard Set(next.records.map(\.id)).isDisjoint(with:Set(records.map(\.id))), Set(records.map(\.id)).count == records.count else { throw BuildingEvaluationError.message("전국 K-apt 목록의 단지 코드가 중복되어 완료 처리하지 않았습니다.") }
             next.records.append(contentsOf:records); next.listTotal = total; next.nextPage += 1
-            next.listComplete = next.records.count == total; try commit(next); next = archive
+            next.listComplete = next.records.count == total; try await commitAsync(next); next = archive
         }
         let targets = next.records.filter { codes == nil || codes!.contains($0.id) }
         if configureProgress, var value = collectionStatus.value {
@@ -411,15 +415,11 @@ struct BuildingReferenceArchive: Codable {
     func profiles(_ buildings: [EvaluationBuilding]) -> [String:BuildingComplexProfile] {
         let owners = memberOwners()
         var result: [String:BuildingComplexProfile] = [:]
-        let valid = validKaptRecords
-        let decisions = Dictionary(valid.compactMap { record in currentDecision(record).map { (record.id,$0) } },uniquingKeysWith:{ x,_ in x })
-        var priceOwners: [String:Set<String>] = [:]
-        for decision in decisions.values { for id in decision.realtyIDs { priceOwners[id,default:[]].insert(decision.kaptID) } }
-        let records = Dictionary(valid.map { ($0.id,$0) },uniquingKeysWith:{ x,_ in x })
+        let decisions = decisionsByCode, records = recordsByCode
         for building in buildings {
             let identity = building.roadKey + "|" + building.id
             guard let codes = owners[identity], codes.count == 1, let code = codes.first,
-                  let record = records[code], let decision = decisions[code],
+                  let record = records[code], let decision = decisions[code], decision.disposition == .accepted,
                   decision.memberBuildings[identity] == building.complexScopeKey,
                   let observation = observationsByRoad[building.roadKey],
                   observation.buildings.contains(where:{ $0.id == building.id && $0.complexScopeKey == building.complexScopeKey }) else { continue }
@@ -429,7 +429,7 @@ struct BuildingReferenceArchive: Codable {
             var registry: [String:String] = [:]
             if let parent = building.parentRegistryID, let group = observation.groups.first(where:{ $0.id == parent }),
                BuildingComplexReview.matches(record.source,group),
-               valid.filter({ BuildingComplexReview.matches($0.source,group) }).map(\.id) == [code] {
+               let match = BuildingComplexReview.managementMatchKey(name:group.name,parcel:group.jibunAddress,fields:group.fields), managementOwners[match] == [code] {
                 registry = group.fields
             }
             let priceFields = BuildingFacts.consensus(whole.map(\.fields))
@@ -504,13 +504,14 @@ struct BuildingReferenceArchive: Codable {
         var selected: [SiteTarget] = [], used = Set<String>()
         let membership = memberOwners()
         let resolved = profiles(sites.compactMap { $0.building?.building })
+        let byIdentity = Dictionary(grouping:sites.filter { $0.building != nil },by:{ $0.building!.identity })
         for record in archive.records {
             if isExcluded(record) { continue }
             guard let decision = currentDecision(record), decision.disposition == .accepted else {
                 throw BuildingEvaluationError.message(record.name + ": 연결·유효 여부를 먼저 검증하세요.")
             }
             guard let identity = decision.standardBuildingIdentity,
-                  let site = sites.first(where:{ $0.building?.identity == identity }), let building = site.building,
+                  let matches = byIdentity[identity], matches.count == 1, let site = matches.first, let building = site.building,
                   decision.memberBuildings[identity] == building.building.complexScopeKey,
                   membership[identity] == [record.id], resolved[identity]?.complex.adoptedKaptID == record.id, used.insert(identity).inserted else {
                 throw BuildingEvaluationError.message(record.name + ": 소속·입구를 확인한 표준 건물 하나를 지정하세요. 다른 단지와 같은 건물을 중복 선택하지 않습니다.")
@@ -520,28 +521,8 @@ struct BuildingReferenceArchive: Codable {
         guard !selected.isEmpty else { throw BuildingEvaluationError.message("유효한 K-apt 표준 단지가 없습니다.") }
         return selected
     }
-    func memberOwners() -> [String:Set<String>] {
-        var result: [String:Set<String>] = [:]
-        // Unresolved device conflicts also reserve their membership: a second
-        // device cannot silently transfer a building into a competing complex.
-        for record in archive.records where !record.hasConfirmedBlankRoad {
-            guard let review = linkReview(record.id) else { continue }
-            let decisions = review.conflicted ? review.heads : currentDecision(record).map { [$0] } ?? []
-            for decision in decisions where decision.disposition == .accepted {
-                for identity in decision.memberBuildings.keys { result[identity,default:[]].insert(record.id) }
-            }
-        }
-        return result
-    }
-    var populationToken: String {
-        let values = archive.records.sorted { $0.id < $1.id }.map { record -> String in
-            let decision = currentDecision(record)
-            return BuildingComplexReview.key([record.id,record.source.scopeKey,isExcluded(record) ? "excluded" : "included",
-                decision.map { BuildingComplexReview.key([$0.realtyScopeKeys,$0.memberBuildings]) } ?? "pending",
-                decision?.standardBuildingIdentity ?? "",linkReview(record.id)?.conflicted == true ? "conflict" : "clear"])
-        }
-        return DeviceShareCodec.digest(Data(values.joined(separator:"\n").utf8))
-    }
+    func memberOwners() -> [String:Set<String>] { membershipOwners }
+    var populationToken: String { populationDigest }
     func sharingSnapshot() throws -> DeviceShareSnapshot {
         guard writable else { throw DeviceShareError.unavailable }
         var result = DeviceShareSnapshot(); guard let data = snapshotData else { return result }

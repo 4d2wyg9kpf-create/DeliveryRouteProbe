@@ -91,6 +91,13 @@ struct BuildingComplexReview: Codable, Equatable, Identifiable {
         value = words.joined(separator:" ")
         return value
     }
+    static func managementMatchKey(name: String, parcel: String, fields: [String:String]) -> String? {
+        let name = nameKey(name), parcel = parcelKey(parcel), date = fields["approvalDate",default:""].filter(\.isNumber)
+        guard !name.isEmpty, !parcel.isEmpty, date.count == 8,
+              let buildings = Int(fields["buildings",default:""]), buildings > 0,
+              let households = Int(fields["households",default:""]), households > 0 else { return nil }
+        return key([name,parcel,date,String(buildings),String(households)])
+    }
     // All five checks are required. Similar names, totals or a newer download
     // alone do not prove that a management area is the whole registry group.
     static func matches(_ source: BuildingComplexSource, _ group: RegistryBuildingComplex) -> Bool {

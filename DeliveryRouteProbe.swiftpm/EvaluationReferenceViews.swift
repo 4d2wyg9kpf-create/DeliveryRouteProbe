@@ -35,7 +35,7 @@ struct EvaluationReferenceView: View {
                         }
                     }
                     NavigationLink("이 기준으로 대상별 점수 조회") { EvaluationScoresView() }
-                    if store.needsReferenceUpdate(sites: sites.records.map(EvaluationSite.init)) {
+                    if store.needsReferenceUpdate(sites: sites.records.map(EvaluationSite.init)) || (store.archive.configuration.populationToken != nil && store.archive.configuration.populationToken != buildingReferences.populationToken) {
                         Text("표준 대상·원자료·평가 조건 변경됨 · 기준 갱신 필요").font(.caption).foregroundStyle(.orange)
                         Button("기준 갱신·전체 평가지 점수 재계산") {
                             perform { preview = try makePreview(title: reference.title + " · 갱신") }
@@ -368,6 +368,7 @@ private struct EvaluationReferenceDetailView: View {
 private struct EvaluationScoresView: View {
     @EnvironmentObject private var store: EvaluationReferenceStore
     @EnvironmentObject private var sites: SiteTargetStore
+    @EnvironmentObject private var buildingReferences: BuildingReferenceStore
     @State private var keyword = ""
     var body: some View {
         Group {
@@ -375,7 +376,7 @@ private struct EvaluationScoresView: View {
            List {
             Section("적용 기준") {
                 Text(reference.title).bold(); Text("버전 ID " + reference.id).font(.caption).textSelection(.enabled)
-                if store.needsReferenceUpdate(sites: sites.records.map(EvaluationSite.init)) {
+                if store.needsReferenceUpdate(sites: sites.records.map(EvaluationSite.init)) || (store.archive.configuration.populationToken != nil && store.archive.configuration.populationToken != buildingReferences.populationToken) {
                     Text("기준 변경 준비 중 · 현재 점수는 표시된 확정 기준으로 계산합니다. 새 기준 확정 시 전체 점수가 갱신됩니다.").font(.caption).foregroundStyle(.orange)
                 }
                 NativeTextField("대상지 이름·주소 찾기", text: $keyword).frame(minHeight: 44)
