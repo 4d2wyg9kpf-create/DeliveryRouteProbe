@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+import csv
+import os
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFontDatabase, QFont
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QDialog
+
+from location_analysis.diagnostics import populate
+from location_analysis.gui import ImportDialog, MainWindow, ReviewDialog, RealtyPicker, STYLE
+from location_analysis.importer import inspect_file
+from location_analysis.storage import CatalogStore
+
+
+class GuiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        cls.app.setStyle("Fusion")
+        cls.app.setStyleSheet(STYLE)
+        root = Path(__file__).resolve().parents[1]
+        for path in (root / "location_analysis" / "assets").glob("*.ttf"):
+            number = QFontDatabase.addApplicationFont(str(path))
+            families = QFontDatabase.applicationFontFamilies(number)
+            if families:
+                cls.app.setFont(QFont(families[0], 10))
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = CatalogStore(self.root / "catalog.sqlite3")
+        self.records = populate(self.store)
+        self.window = MainWindow(self.store)
+        self.window.show()
+        self.app.processEvents()
+
+    def tearDown(self):
+        if self.window.job:
+            self.window.job.requestInterruption()
+            self.window.job.wait(5000)
+        self.window.close()
+        self.app.processEvents()
+        self.temporary.cleanup()
+
+    def wait_for(self, predicate, timeout=4):
+        deadline = time.monotonic() + timeout
+        while not predicate() and time.monotonic() < deadline:
+            QTest.qWait(10)
+        self.assertTrue(predicate())
+
+    def test_enter_search_and_region_filter(self):
+        self.window.search.setText("해오름")
+        QTest.keyClick(self.window.search, Qt.Key_Return)
+        self.assertEqual(self.window.total, 1)
+        self.window.search.clear()
+        self.window.search_timer.stop()
+        self.window.province.setCurrentIndex(self.window.province.findData("대전광역시"))
+        self.assertEqual(self.window.total, 3)
+        self.assertEqual(self.window.district.itemText(1), "서구")
+
+    def test_sidebar_and_candidate_counts(self):
+        QTest.mouseClick(self.window.nav["standards"], Qt.LeftButton)
+        self.assertEqual((self.window.page, self.window.total), ("standards", 4))
+        QTest.mouseClick(self.window.nav["duplicates"], Qt.LeftButton)
+        self.assertEqual(self.window.total, 3)
+        QTest.mouseClick(self.window.nav["realty"], Qt.LeftButton)
+        self.assertEqual(self.window.total, 3)
+        self.assertFalse(self.window.review_button.isVisible())
+        self.assertTrue(self.window.manual_button.isVisible())
+
+    def test_single_address_preselected_but_multiple_require_choice(self):
+        one = ReviewDialog(self.store, "TEST-A002", self.window)
+        several = ReviewDialog(self.store, "TEST-A003", self.window)
+        self.assertTrue(one.road.currentData())
+        # A003 already has a reviewed choice; an unreviewed multiple-address source does not.
+        self.store.save_review("TEST-A003", verdict="pending")
+        pending = ReviewDialog(self.store, "TEST-A003", self.window)
+        self.assertEqual(pending.road.currentData(), "")
+        one.close(); several.close(); pending.close()
+
+    def test_review_save_and_invalid_coordinate_feedback(self):
+        dialog = ReviewDialog(self.store, "TEST-A001", self.window)
+        dialog.lat.setText("invalid")
+        with patch("location_analysis.gui.QMessageBox.warning") as warning:
+            dialog.save()
+            self.assertTrue(warning.called)
+        self.assertEqual(self.store.get_complex("TEST-A001")["status"], "확정")
+        dialog.verdict.setCurrentIndex(dialog.verdict.findData("excluded"))
+        dialog.reason.setCurrentText("중복 등록")
+        dialog.save()
+        self.assertEqual(dialog.result(), QDialog.Accepted)
+        self.assertEqual(self.store.get_complex("TEST-A001")["status"], "제외")
+        dialog.close()
+
+    def test_import_mapping_validation_and_explicit_full_snapshot(self):
+        path = self.root / "sample.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            csv.writer(handle).writerows([["단지코드", "단지명", "도로명주소"], ["A001", "가상", "서울 강서구 예제로 1"]])
+        dialog = ImportDialog(inspect_file(path), "kapt", self.window)
+        self.assertFalse(dialog.full.isChecked())
+        dialog.maps["road"].setCurrentIndex(0)
+        with patch("location_analysis.gui.QMessageBox.warning") as warning:
+            dialog.validate()
+            self.assertTrue(warning.called)
+        dialog.maps["road"].setCurrentIndex(dialog.maps["road"].findData("도로명주소"))
+        dialog.validate()
+        self.assertEqual(dialog.result(), QDialog.Accepted)
+        dialog.close()
+
+    def test_realty_picker_enter_search(self):
+        dialog = RealtyPicker(self.store, [], self.window)
+        dialog.search.setText("TEST-P003")
+        QTest.keyClick(dialog.search, Qt.Key_Return)
+        self.assertEqual(len(dialog.model.rows), 1)
+        dialog.table.setCurrentIndex(dialog.model.index(0, 0))
+        dialog.choose()
+        self.assertEqual(dialog.chosen["code"], "TEST-P003")
+        dialog.close()
+
+    def test_worker_allows_navigation_and_blocks_review_until_completion(self):
+        release = threading.Event()
+        finished = []
+        def work(progress, cancelled):
+            release.wait(2)
+            return "done"
+        self.window.run_job(work, finished.append)
+        self.window.change_page("standards")
+        self.app.processEvents()
+        self.assertFalse(self.window.review_button.isEnabled())
+        self.assertFalse(self.window.import_button.isEnabled())
+        self.assertEqual(self.window.total, 4)
+        release.set()
+        self.wait_for(lambda: self.window.job is None)
+        self.assertEqual(finished, ["done"])
+        self.assertTrue(self.window.import_button.isEnabled())
+
+    def test_worker_cancel_rolls_back_without_modal_error(self):
+        started = threading.Event()
+        def work(progress, cancelled):
+            started.set()
+            while not cancelled():
+                threading.Event().wait(0.01)
+            return self.store.import_records([self.records[0]], cancelled=cancelled)
+        with patch("location_analysis.gui.QMessageBox.warning") as warning:
+            self.window.run_job(work, lambda _: self.fail("Cancelled work succeeded"))
+            self.assertTrue(started.wait(2))
+            self.window.cancel_job()
+            self.wait_for(lambda: self.window.job is None)
+            self.assertFalse(warning.called)
+        self.assertEqual(self.store.stats()["total"], 6)
+
+
+if __name__ == "__main__":
+    unittest.main()

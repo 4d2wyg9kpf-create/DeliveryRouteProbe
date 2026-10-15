@@ -1,0 +1,60 @@
+name: Build Location Analysis PC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'LocationAnalysisPC/**'
+      - '.github/workflows/build-location-analysis-pc.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: location-analysis-pc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: LocationAnalysisPC
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: pip
+          cache-dependency-path: LocationAnalysisPC/requirements*.txt
+      - name: Install pinned desktop and build dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Fetch verified Korean font assets
+        run: python scripts/fetch_assets.py
+      - name: Verify catalog rules, import transactions and large-file navigation
+        run: python scripts/run_checks.py
+      - name: Build portable app and exercise the packaged Windows EXE
+        run: python scripts/build_windows.py
+      - name: Upload portable Windows app and verification report
+        uses: actions/upload-artifact@v7
+        with:
+          name: LocationAnalysisPC-Windows-x64
+          path: LocationAnalysisPC/build/release/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload actual packaged UI screenshots and check reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: LocationAnalysisPC-verification
+          path: |
+            LocationAnalysisPC/build/verification/*
+            LocationAnalysisPC/build/LocationAnalysisPC/warn-LocationAnalysisPC.txt
+          if-no-files-found: ignore
+          retention-days: 14

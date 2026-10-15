@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.spec
+*.sqlite3*
+location_analysis/assets/
