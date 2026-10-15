@@ -20,7 +20,7 @@ def copy_licenses(destination):
     for name in ["PySide6-Essentials", "shiboken6", "openpyxl", "et_xmlfile", "xlrd", "pyinstaller"]:
         distribution = metadata.distribution(name)
         for file in distribution.files or []:
-            if any(token in str(file).lower() for token in ["license", "copying", "copyright"]):
+            if any(token in str(file).lower() for token in ["licen", "copying", "copyright"]):
                 source = Path(distribution.locate_file(file))
                 if source.is_file():
                     # Retain all texts, including similarly named Qt component licenses.
@@ -31,6 +31,10 @@ def copy_licenses(destination):
     if python_license.is_file():
         shutil.copy2(python_license, destination / "Python-LICENSE.txt")
     shutil.copy2(ROOT / "location_analysis" / "assets" / "OFL.txt", destination / "NanumGothic-OFL.txt")
+    shutil.copytree(ROOT / "location_analysis" / "assets" / "licenses", destination / "Qt-for-Python", dirs_exist_ok=True)
+    required = [destination/"Qt-for-Python"/"LGPL-3.0-only.txt", destination/"Qt-for-Python"/"GPL-3.0-only.txt"]
+    if not all(path.is_file() for path in required) or not any((destination/"openpyxl").rglob("LICENCE*")):
+        raise RuntimeError("Required dependency license texts are missing.")
 
 
 def main():
