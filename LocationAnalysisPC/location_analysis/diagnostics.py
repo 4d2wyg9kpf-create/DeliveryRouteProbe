@@ -5,6 +5,8 @@ import csv
 import json
 import platform
 import tempfile
+from zipfile import ZipFile,ZIP_DEFLATED
+from xml.sax.saxutils import escape
 from pathlib import Path
 
 from . import VERSION
@@ -16,6 +18,36 @@ from .storage import CatalogStore
 def sample_record(code,name,road):
     roads,issues=split_roads(road);p,d=region_from_road(roads)
     return CatalogRecord(code,name,road,roads,issues,province=p,district=d,households="420",buildings="4",use="아파트",raw={"단지코드":code,"단지명":name,"도로명주소":road,"자료종류":"검증용 가상 자료"})
+
+
+def write_kapt_import_fixture(path):
+    """Synthetic provider-format regression fixture; intentionally declares A1."""
+    headers=["시도","시군구","읍면","동리","단지코드","단지명","단지분류","법정동주소","우편번호","도로명주소","분양형태","사용승인일","가입일","동수","세대수","총주차대수"]
+    headers += [f"추가항목{i}" for i in range(1,73)]
+    rows=[["검증용 가상 자료입니다. 실제 단지정보가 아닙니다. "*30],headers]
+    for code,name,road in [("TEST-I001","가상 가져오기 단지","대전광역시 서구 예제로 10"),("TEST-I001","가상 가져오기 단지","대전광역시 서구 예제로 12"),("TEST-I002","가상 별개 단지","대전광역시 서구 예제로 10")]:
+        rows.append(["대전광역시","서구","","가상동",code,name,"아파트","가상 지번","01234",road,"분양","20000101","20010101","4","420","500"]+[""]*72)
+    def column_name(number):
+        result=""
+        while number:
+            number,digit=divmod(number-1,26);result=chr(65+digit)+result
+        return result
+    sheet_rows=[]
+    for i,row in enumerate(rows,1):
+        cells="".join(f'<c r="{column_name(j)}{i}" t="inlineStr"><is><t>{escape(str(value))}</t></is></c>' for j,value in enumerate(row,1))
+        sheet_rows.append(f'<row r="{i}">{cells}</row>')
+    main="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel="http://schemas.openxmlformats.org/package/2006/relationships"
+    office="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    files={
+        "[Content_Types].xml":'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
+        "_rels/.rels":f'<Relationships xmlns="{rel}"><Relationship Id="rId1" Type="{office}/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+        "xl/workbook.xml":f'<workbook xmlns="{main}" xmlns:r="{office}"><sheets><sheet name="sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        "xl/_rels/workbook.xml.rels":f'<Relationships xmlns="{rel}"><Relationship Id="rId1" Type="{office}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+        "xl/worksheets/sheet1.xml":f'<worksheet xmlns="{main}"><dimension ref="A1"/><sheetData>{"".join(sheet_rows)}</sheetData></worksheet>',
+    }
+    with ZipFile(path,"w",ZIP_DEFLATED) as archive:
+        for name,value in files.items():archive.writestr(name,value)
 
 
 def populate(store):
@@ -74,13 +106,25 @@ def gui_smoke(output):
         assert window.total>=0
     window.change_page("standards");app.processEvents();window.grab().save(str(output/"standards.png"))
     dialog=ReviewDialog(store,"TEST-A001",window);dialog.show();app.processEvents();dialog.grab().save(str(output/"review.png"));dialog.close()
-    fixture=Path(temporary.name)/"import.csv"
-    with fixture.open("w",encoding="utf-8-sig",newline="") as handle:
-        csv.writer(handle).writerows([["단지코드","단지명","도로명주소","세대수","동수"],["TEST-I001","가상 가져오기 단지","서울특별시 강서구 예제로 1","420","4"]])
-    dialog=ImportDialog(inspect_file(fixture),"kapt",window);dialog.show();app.processEvents();dialog.grab().save(str(output/"import.png"));dialog.close()
+    fixture=Path(temporary.name)/"import.xlsx";write_kapt_import_fixture(fixture)
+    info=inspect_file(fixture)
+    assert info.header_row==1 and len(info.headers)==88 and len(info.samples)==3
+    dialog=ImportDialog(info,"kapt",window);dialog.show();app.processEvents();dialog.grab().save(str(output/"import.png"))
+    screen=dialog.screen().availableGeometry()
+    assert screen.contains(dialog.frameGeometry())
+    assert all(dialog.maps[key].currentData() for key in ["code","name","road"])
+    assert dialog.controls.isVisible() and dialog.preview.rowCount()==3
+    dialog.resize(min(580,screen.width()-32),min(520,screen.height()-48));app.processEvents()
+    assert dialog._mapping_columns==1 and dialog.controls.isVisible()
+    dialog.grab().save(str(output/"import-narrow.png"))
+    dialog.body_scroll.verticalScrollBar().setValue(dialog.body_scroll.verticalScrollBar().maximum());app.processEvents()
+    dialog.grab().save(str(output/"import-narrow-bottom.png"));dialog.close()
+    imported=CatalogStore(Path(temporary.name)/"imported.sqlite3")
+    summary=imported.import_file(info)
+    assert summary["total"]==2 and summary["repeated"]==1 and imported.stats()["candidates"]==2
     window.resize(1180,720);app.processEvents();window.grab().save(str(output/"compact.png"))
     assert counts["kapt"]==6 and counts["standards"]==4 and counts["realty"]==3
     window.close();app.processEvents()
-    report={"version":VERSION,"status":"passed","platform":platform.platform(),"screen":app.primaryScreen().size().toTuple(),"page_counts":counts,"empty_startup":True,"import_mapping_dialog":True,"review_dialog":True,"fixture_data_only":True}
+    report={"version":VERSION,"status":"passed","platform":platform.platform(),"screen":app.primaryScreen().size().toTuple(),"page_counts":counts,"empty_startup":True,"import_mapping_dialog":True,"review_dialog":True,"import_window_within_screen":True,"narrow_import_controls_accessible":True,"provider_incorrect_dimension_88_columns":True,"fixture_data_only":True}
     (output/"gui-smoke.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
     temporary.cleanup();return report

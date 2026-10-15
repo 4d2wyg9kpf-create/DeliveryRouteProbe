@@ -10,14 +10,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt,QRect
 from PySide6.QtGui import QFontDatabase, QFont
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog
 
-from location_analysis.diagnostics import populate
+from location_analysis.diagnostics import populate,write_kapt_import_fixture
 from location_analysis.gui import ImportDialog, MainWindow, ReviewDialog, RealtyPicker, STYLE
-from location_analysis.importer import inspect_file
+from location_analysis.importer import inspect_file,FileInfo,infer_mapping
 from location_analysis.storage import CatalogStore
 
 
@@ -114,6 +114,53 @@ class GuiTests(unittest.TestCase):
         dialog.maps["road"].setCurrentIndex(dialog.maps["road"].findData("도로명주소"))
         dialog.validate()
         self.assertEqual(dialog.result(), QDialog.Accepted)
+        dialog.close()
+
+    def test_import_long_headers_and_sheet_names_stay_within_screen(self):
+        long_header="안내문을 포함한 매우 긴 열 이름입니다. "*120
+        headers=["단지코드","단지명","도로명주소",long_header]
+        info=FileInfo("길고_긴_파일명_"*50+".xlsx",headers,[],infer_mapping(headers),sheet="긴 시트 이름"*20,sheets=["긴 시트 이름"*20])
+        dialog=ImportDialog(info,"kapt",self.window);dialog.show();self.app.processEvents()
+        self.assertTrue(dialog.screen().availableGeometry().contains(dialog.frameGeometry()))
+        self.assertLessEqual(dialog.width(),980)
+        self.assertLess(dialog.minimumSizeHint().width(),500)
+        self.assertEqual(dialog.maps["road"].currentData(),"도로명주소")
+        selector=dialog.maps["road"]
+        selector.setCurrentIndex(selector.findData(long_header))
+        self.assertEqual(selector.currentData(),long_header)
+        self.assertEqual(selector.toolTip(),long_header)
+        self.app.processEvents()
+        self.assertTrue(dialog.screen().availableGeometry().contains(dialog.frameGeometry()))
+        dialog.close()
+
+    def test_import_narrow_scrolls_content_and_keeps_actions_visible(self):
+        path=self.root/"provider.xlsx";write_kapt_import_fixture(path)
+        dialog=ImportDialog(inspect_file(path),"kapt",self.window);dialog.show()
+        dialog.resize(580,500);self.app.processEvents()
+        self.assertEqual(dialog._mapping_columns,1)
+        self.assertEqual((dialog.preview.rowCount(),dialog.preview.columnCount()),(3,88))
+        self.assertTrue(dialog.controls.isVisible())
+        self.assertTrue(dialog.rect().contains(dialog.controls.geometry()))
+        scroll=dialog.body_scroll.verticalScrollBar()
+        self.assertGreater(scroll.maximum(),0)
+        scroll.setValue(scroll.maximum());self.app.processEvents()
+        visible_full=dialog.full.mapTo(dialog.body_scroll.viewport(),dialog.full.rect().center())
+        self.assertTrue(dialog.body_scroll.viewport().rect().contains(visible_full))
+        for key,expected in [("code","단지코드"),("name","단지명"),("road","도로명주소")]:
+            self.assertEqual(dialog.maps[key].currentData(),expected)
+        dialog.validate()
+        self.assertEqual(dialog.result(),QDialog.Accepted)
+        dialog.close()
+
+    def test_import_mapping_reflows_to_two_columns_on_wide_screen(self):
+        path=self.root/"provider.xlsx";write_kapt_import_fixture(path)
+        screen=self.window.screen()
+        with patch.object(screen,"availableGeometry",return_value=QRect(0,0,1280,800)):
+            dialog=ImportDialog(inspect_file(path),"kapt",self.window)
+            dialog.resize(980,720);dialog.show();self.app.processEvents()
+            self.assertEqual(dialog._mapping_columns,2)
+            self.assertTrue(screen.availableGeometry().contains(dialog.frameGeometry()))
+            self.assertEqual(dialog.preview_caption.text(),"미리보기 · 제목 행 2행 / 처음 3개 행")
         dialog.close()
 
     def test_realty_picker_enter_search(self):

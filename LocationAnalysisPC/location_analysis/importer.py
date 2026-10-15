@@ -98,8 +98,12 @@ def inspect_file(path, sheet="") -> FileInfo:
             candidates = [sheet] if sheet else sheets
             best = None
             for name in candidates:
+                page = book[name]
+                # Some K-apt exports declare A1 although the XML contains the full table.
+                # Stream the actual cells instead of trusting that declared used range.
+                page.reset_dimensions()
                 rows = []
-                for index, row in enumerate(book[name].iter_rows()):
+                for index, row in enumerate(page.iter_rows()):
                     if index >= 40:
                         break
                     rows.append([_cell_text(c) for c in row])
@@ -186,7 +190,9 @@ def iter_rows(info: FileInfo):
         import openpyxl
         book = openpyxl.load_workbook(info.path, read_only=True, data_only=True, keep_links=False)
         try:
-            for i, row in enumerate(book[info.sheet].iter_rows(min_row=info.header_row+2), info.header_row+2):
+            page = book[info.sheet]
+            page.reset_dimensions()
+            for i, row in enumerate(page.iter_rows(min_row=info.header_row+2), info.header_row+2):
                 yield i, dict(zip(info.headers, (_cell_text(c) for c in row)))
         finally:
             book.close()

@@ -137,39 +137,101 @@ class ImportDialog(QDialog):
         super().__init__(parent); self.info=info; self.kind=kind; self.mapping={}
         self.setWindowTitle("K-apt 단지정보 가져오기" if kind=="kapt" else "공시가격 단지목록 가져오기")
         self.resize(980,720)
+        self._mapping_columns = 0
+        self._screen_connected = False
         layout=QVBoxLayout(self)
         layout.addWidget(label("가져오기 전 열 연결 확인","title"))
-        layout.addWidget(label(Path(info.path).name,"subtitle"))
-        layout.addWidget(label("단지코드로 원본을 갱신하며, 같은 주소의 다른 코드는 별도 단지로 유지합니다.","notice",True))
+        filename=label(Path(info.path).name,"subtitle",True)
+        filename.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
+        filename.setToolTip(Path(info.path).name);layout.addWidget(filename)
+        self.body_scroll=QScrollArea();self.body_scroll.setWidgetResizable(True)
+        self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.body_scroll.setFrameShape(QFrame.NoFrame)
+        body=QWidget();body.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
+        self.body_scroll.setWidget(body);layout.addWidget(self.body_scroll,1)
+        content=QVBoxLayout(body);content.setContentsMargins(0,0,8,0)
+        content.addWidget(label("단지코드로 원본을 갱신하며, 같은 주소의 다른 코드는 별도 단지로 유지합니다.","notice",True))
         if info.sheets:
-            line=QHBoxLayout(); line.addWidget(label("시트")); self.sheet=QComboBox(); self.sheet.addItems(info.sheets); self.sheet.setCurrentText(info.sheet)
-            line.addWidget(self.sheet,1); layout.addLayout(line); self.sheet.currentTextChanged.connect(self.change_sheet)
-        grid=QGridLayout(); self.maps={}
+            line=QHBoxLayout(); line.addWidget(label("시트")); self.sheet=self.bounded_selector(); self.sheet.addItems(info.sheets); self.sheet.setCurrentText(info.sheet)
+            line.addWidget(self.sheet,1); content.addLayout(line); self.sheet.currentTextChanged.connect(self.change_sheet)
+        self.mapping_grid=QGridLayout();self.mapping_widgets=[];self.maps={}
         for i,(key,title) in enumerate(FIELD_LABELS.items()):
-            selector=QComboBox(); selector.addItem("사용 안 함","")
+            selector=self.bounded_selector(); selector.addItem("사용 안 함","")
             for header in info.headers:
                 selector.addItem(header,header)
+                selector.setItemData(selector.count()-1,header,Qt.ToolTipRole)
             selector.setCurrentIndex(max(0,selector.findData(info.mapping.get(key,""))))
+            selector.setToolTip(selector.currentText())
             self.maps[key]=selector
-            grid.addWidget(label(title + (" *" if key in {"code","name"} or (key=="road" and kind=="kapt") else "")),i//2,(i%2)*2)
-            grid.addWidget(selector,i//2,(i%2)*2+1)
-        grid.setColumnStretch(1,1);grid.setColumnStretch(3,1);layout.addLayout(grid)
-        layout.addWidget(label(f"미리보기 · 제목 행 {info.header_row+1}행 / 처음 {len(info.samples)}개 행","subtitle"))
-        self.preview=QTableWidget(); self.populate_preview(); layout.addWidget(self.preview,1)
+            caption=label(title + (" *" if key in {"code","name"} or (key=="road" and kind=="kapt") else ""))
+            self.mapping_widgets.append((caption,selector))
+        content.addLayout(self.mapping_grid);self.reflow_mapping()
+        self.preview_caption=label("","subtitle",True);content.addWidget(self.preview_caption)
+        self.preview=QTableWidget();self.preview.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
+        self.preview.setMinimumSize(0,150);self.preview.setMaximumHeight(240)
+        self.preview.setWordWrap(False);self.preview.setTextElideMode(Qt.ElideRight)
+        self.preview.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.populate_preview();content.addWidget(self.preview,1)
         form=QFormLayout(); self.source_date=QLineEdit(); self.source_date.setPlaceholderText("선택: YYYY-MM-DD · 원본 자료의 기준일")
-        form.addRow("자료 기준일",self.source_date);layout.addLayout(form)
-        self.full=QCheckBox("이 파일은 전국 전체 목록입니다. 이전에 있던 코드가 빠지면 ‘수록 확인’으로 표시합니다.")
+        form.addRow("자료 기준일",self.source_date);content.addLayout(form)
+        self.full=QCheckBox("전국 전체 목록으로 갱신")
         self.full.setToolTip("체크하지 않으면 선택한 지역이나 일부 단지를 추가·갱신합니다. 빠진 단지를 자동으로 삭제하거나 멸실 처리하지 않습니다.")
-        layout.addWidget(self.full)
-        controls=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
-        controls.button(QDialogButtonBox.Ok).setText("가져오기");controls.button(QDialogButtonBox.Cancel).setText("취소")
-        controls.accepted.connect(self.validate); controls.rejected.connect(self.reject);layout.addWidget(controls)
+        content.addWidget(self.full)
+        content.addWidget(label("전체 목록에서 이전 코드가 빠지면 ‘수록 확인’으로 표시합니다. 지역·일부 자료는 체크하지 마세요.","subtitle",True))
+        self.controls=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
+        self.controls.button(QDialogButtonBox.Ok).setText("가져오기");self.controls.button(QDialogButtonBox.Cancel).setText("취소")
+        self.controls.accepted.connect(self.validate);self.controls.rejected.connect(self.reject);layout.addWidget(self.controls)
+        self.fit_to_screen()
+
+    def bounded_selector(self):
+        selector=QComboBox()
+        selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        selector.setMinimumContentsLength(10)
+        selector.setMinimumWidth(100)
+        selector.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
+        selector.view().setTextElideMode(Qt.ElideRight)
+        selector.view().setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        selector.currentTextChanged.connect(selector.setToolTip)
+        return selector
+
+    def reflow_mapping(self):
+        columns=1 if self.width()<840 else 2
+        if columns==self._mapping_columns:return
+        self._mapping_columns=columns
+        while self.mapping_grid.count():self.mapping_grid.takeAt(0)
+        for column in range(4):self.mapping_grid.setColumnStretch(column,0)
+        for i,(caption,selector) in enumerate(self.mapping_widgets):
+            self.mapping_grid.addWidget(caption,i//columns,(i%columns)*2)
+            self.mapping_grid.addWidget(selector,i//columns,(i%columns)*2+1)
+        for column in range(columns):self.mapping_grid.setColumnStretch(column*2+1,1)
+
+    def fit_to_screen(self):
+        parent=self.parentWidget()
+        screen=self.windowHandle().screen() if self.windowHandle() else parent.screen() if parent else self.screen()
+        available=screen.availableGeometry().adjusted(16,32,-16,-16)
+        self.setMinimumSize(min(480,available.width()),min(340,available.height()))
+        self.setMaximumSize(available.size())
+        self.resize(min(self.width(),available.width()),min(self.height(),available.height()))
+        for selector in [*self.maps.values(),*([self.sheet] if hasattr(self,"sheet") else [])]:
+            selector.view().setMaximumWidth(available.width()-24)
+        frame=self.frameGeometry();frame.moveCenter(screen.availableGeometry().center());self.move(frame.topLeft())
+
+    def showEvent(self,event):
+        super().showEvent(event);self.fit_to_screen()
+        if not self._screen_connected and self.windowHandle():
+            self.windowHandle().screenChanged.connect(lambda _:self.fit_to_screen())
+            self._screen_connected=True
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        if hasattr(self,"mapping_grid"):self.reflow_mapping()
 
     def populate_preview(self):
+        self.preview_caption.setText(f"미리보기 · 제목 행 {self.info.header_row+1}행 / 처음 {len(self.info.samples)}개 행")
         self.preview.clear();self.preview.setColumnCount(len(self.info.headers));self.preview.setRowCount(len(self.info.samples));self.preview.setHorizontalHeaderLabels(self.info.headers)
         for i,row in enumerate(self.info.samples):
             for j,key in enumerate(self.info.headers):
-                cell=QTableWidgetItem(str(row.get(key,"")));cell.setFlags(cell.flags() & ~Qt.ItemIsEditable);self.preview.setItem(i,j,cell)
+                value=str(row.get(key,""));cell=QTableWidgetItem(value);cell.setToolTip(value);cell.setFlags(cell.flags() & ~Qt.ItemIsEditable);self.preview.setItem(i,j,cell)
         self.preview.resizeColumnsToContents()
         for i in range(len(self.info.headers)):
             self.preview.setColumnWidth(i,min(320,max(120,self.preview.columnWidth(i))))
@@ -179,7 +241,8 @@ class ImportDialog(QDialog):
             info=inspect_file(self.info.path,name); self.info=info
             for key,selector in self.maps.items():
                 selector.clear();selector.addItem("사용 안 함","")
-                for h in info.headers: selector.addItem(h,h)
+                for h in info.headers:
+                    selector.addItem(h,h);selector.setItemData(selector.count()-1,h,Qt.ToolTipRole)
                 selector.setCurrentIndex(max(0,selector.findData(info.mapping.get(key,""))))
             self.populate_preview()
         except Exception as error:

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import openpyxl
 
-from location_analysis.diagnostics import populate, sample_record
+from location_analysis.diagnostics import populate, sample_record, write_kapt_import_fixture
 from location_analysis.importer import inspect_file, parse_records
 from location_analysis.models import split_roads, validate_coordinates
 from location_analysis.storage import CatalogStore, write_table
@@ -60,6 +60,18 @@ class AddressTests(unittest.TestCase):
 
 
 class ImportTests(TemporaryCatalog):
+    def test_provider_incorrect_a1_dimension_reads_all_columns_and_data(self):
+        path=self.root/"provider.xlsx"
+        write_kapt_import_fixture(path)
+        info=inspect_file(path)
+        self.assertEqual((info.header_row,len(info.headers),len(info.samples)),(1,88,3))
+        self.assertEqual(info.mapping["code"],"단지코드")
+        self.assertEqual(info.mapping["road"],"도로명주소")
+        result=self.store.import_file(info)
+        self.assertEqual((result["total"],result["repeated"]),(2,1))
+        self.assertEqual(self.store.get_complex("TEST-I001")["address_count"],2)
+        self.assertEqual(json.loads(self.store.get_complex("TEST-I001")["raw"])["총주차대수"],"500")
+
     def test_korean_xlsx_title_header_leading_zero_and_date(self):
         path = self.root / "공동주택단지정보.xlsx"
         book = openpyxl.Workbook()
