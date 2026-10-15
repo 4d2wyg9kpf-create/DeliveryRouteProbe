@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 import openpyxl
@@ -278,8 +279,9 @@ class ReviewTests(TemporaryCatalog):
 
     def test_wrong_backup_is_rejected_without_changing_current(self):
         path = self.root / "wrong.sqlite3"
-        with sqlite3.connect(path) as con:
+        with closing(sqlite3.connect(path)) as con:
             con.execute("CREATE TABLE other(x TEXT)")
+            con.commit()
         before = self.store.stats()
         with self.assertRaises((ValueError, sqlite3.Error)):
             self.store.restore(path)

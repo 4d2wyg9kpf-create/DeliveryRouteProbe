@@ -64,11 +64,16 @@ def main():
     report = {"application": "LocationAnalysisPC", "version": VERSION, "commit": os.environ.get("GITHUB_SHA", "local"),
         "workflow_run": os.environ.get("GITHUB_RUN_ID", ""), "platform": platform.platform(), "python": platform.python_version(),
         "status": "passed", "archive": archive.name, "bytes": archive.stat().st_size,
-        "sha256": hashlib.file_digest(archive.open("rb"), "sha256").hexdigest(),
-        "executable_sha256": hashlib.file_digest(executable.open("rb"), "sha256").hexdigest(),
+        "sha256": sha256(archive),
+        "executable_sha256": sha256(executable),
         "checks": checks, "data": "Synthetic fixtures only; no nationwide K-apt dataset bundled.", "code_signed": False}
     (release / f"LocationAnalysisPC-{VERSION}-verification.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"archive": str(archive), "bytes": report["bytes"], "status": report["status"]}))
+
+
+def sha256(path):
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 if __name__ == "__main__":

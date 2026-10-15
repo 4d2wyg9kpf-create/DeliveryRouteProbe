@@ -7,7 +7,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from .models import CatalogRecord, clean, fingerprint, json_text, road_key, validate_coordinates
@@ -314,7 +314,7 @@ class CatalogStore:
         handle, temporary = tempfile.mkstemp(prefix=".catalog-",suffix=".sqlite3",dir=destination.parent)
         os.close(handle)
         try:
-            with self.connect() as source, sqlite3.connect(temporary) as target:
+            with self.connect() as source, closing(sqlite3.connect(temporary)) as target:
                 source.backup(target)
             os.replace(temporary,destination)
         finally:
