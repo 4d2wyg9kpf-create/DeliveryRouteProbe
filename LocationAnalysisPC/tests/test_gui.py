@@ -10,13 +10,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtCore import Qt,QRect
-from PySide6.QtGui import QFontDatabase, QFont
+from PySide6.QtCore import Qt,QRect,QSettings
+from PySide6.QtGui import QFontDatabase, QFont,QPalette,QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog
 
 from location_analysis.diagnostics import populate,write_kapt_import_fixture
-from location_analysis.gui import ImportDialog, MainWindow, ReviewDialog, RealtyPicker, STYLE
+from location_analysis.gui import ImportDialog, MainWindow, ReviewDialog, RealtyPicker,apply_theme
 from location_analysis.importer import inspect_file,FileInfo,infer_mapping
 from location_analysis.storage import CatalogStore
 
@@ -25,21 +25,21 @@ class GuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
-        cls.app.setStyle("Fusion")
-        cls.app.setStyleSheet(STYLE)
+        apply_theme(cls.app,15)
         root = Path(__file__).resolve().parents[1]
         for path in (root / "location_analysis" / "assets").glob("*.ttf"):
             number = QFontDatabase.addApplicationFont(str(path))
             families = QFontDatabase.applicationFontFamilies(number)
-            if families:
-                cls.app.setFont(QFont(families[0], 10))
+            if families and os.name!="nt":cls.app.setFont(QFont(families[0],11))
+        if os.name=="nt":cls.app.setFont(QFont("Malgun Gothic",11))
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.store = CatalogStore(self.root / "catalog.sqlite3")
         self.records = populate(self.store)
-        self.window = MainWindow(self.store)
+        self.settings=QSettings(str(self.root/"display.ini"),QSettings.IniFormat)
+        self.window = MainWindow(self.store,self.settings)
         self.window.show()
         self.app.processEvents()
 
@@ -50,6 +50,43 @@ class GuiTests(unittest.TestCase):
         self.window.close()
         self.app.processEvents()
         self.temporary.cleanup()
+
+    def test_dark_os_palette_is_replaced_for_import_and_review_bodies(self):
+        dark=QPalette()
+        for role in [QPalette.Window,QPalette.Base,QPalette.Button]:dark.setColor(role,QColor("#151515"))
+        for role in [QPalette.Text,QPalette.WindowText,QPalette.ButtonText]:dark.setColor(role,QColor("#eeeeee"))
+        self.app.setPalette(dark);apply_theme(self.app,15)
+        path=self.root/"provider.xlsx";write_kapt_import_fixture(path)
+        imported=ImportDialog(inspect_file(path),"kapt",self.window)
+        reviewed=ReviewDialog(self.store,"TEST-A001",self.window)
+        imported.show();reviewed.show();self.app.processEvents()
+        for body in [imported.body_scroll.widget(),reviewed.findChild(type(imported.body_scroll.widget()),"reviewBody")]:
+            self.assertGreater(body.palette().color(QPalette.Window).lightness(),230)
+            self.assertLess(body.palette().color(QPalette.WindowText).lightness(),70)
+        self.assertGreater(imported.maps["road"].palette().color(QPalette.Base).lightness(),240)
+        imported.close();reviewed.close()
+
+    def test_text_size_is_persisted_without_changing_catalog(self):
+        before=self.store.stats()
+        self.window.text_size.setCurrentIndex(self.window.text_size.findData(19));self.app.processEvents()
+        self.assertEqual(self.app.property("textSize"),19)
+        reopened=MainWindow(self.store,self.settings)
+        self.assertEqual(reopened.text_size.currentData(),19)
+        self.assertEqual(reopened.store.stats(),before)
+        self.assertEqual(self.window.table.verticalHeader().defaultSectionSize(),61)
+        reopened.close()
+
+    def test_next_step_navigation_clears_search_and_region_filters(self):
+        self.window.search.setText("없는 단지");self.window.search_timer.stop()
+        self.window.province.setCurrentIndex(self.window.province.findData("부산광역시"))
+        QTest.mouseClick(self.window.guide_button,Qt.LeftButton)
+        self.assertEqual((self.window.page,self.window.total),("duplicates",3))
+        self.assertEqual(self.window.search.text(),"")
+        self.assertEqual(self.window.province.currentData(),"")
+        QTest.mouseClick(self.window.guide_button,Qt.LeftButton)
+        self.assertEqual((self.window.page,self.window.total),("standards",4))
+        self.window.change_page("realty")
+        self.assertIn("추후",self.window.guide_body.text())
 
     def wait_for(self, predicate, timeout=4):
         deadline = time.monotonic() + timeout
@@ -106,8 +143,12 @@ class GuiTests(unittest.TestCase):
         with path.open("w", encoding="utf-8-sig", newline="") as handle:
             csv.writer(handle).writerows([["단지코드", "단지명", "도로명주소"], ["A001", "가상", "서울 강서구 예제로 1"]])
         dialog = ImportDialog(inspect_file(path), "kapt", self.window)
+        dialog.show();self.app.processEvents()
         self.assertFalse(dialog.full.isChecked())
+        self.assertFalse(dialog.mapping_section.isVisible())
+        self.assertEqual([dialog.preview.horizontalHeaderItem(i).text() for i in range(3)],["단지명","단지코드","도로명주소"])
         dialog.maps["road"].setCurrentIndex(0)
+        self.assertTrue(dialog.mapping_section.isVisible())
         with patch("location_analysis.gui.QMessageBox.warning") as warning:
             dialog.validate()
             self.assertTrue(warning.called)
@@ -136,6 +177,7 @@ class GuiTests(unittest.TestCase):
     def test_import_narrow_scrolls_content_and_keeps_actions_visible(self):
         path=self.root/"provider.xlsx";write_kapt_import_fixture(path)
         dialog=ImportDialog(inspect_file(path),"kapt",self.window);dialog.show()
+        dialog.mapping_toggle.setChecked(True)
         dialog.resize(580,500);self.app.processEvents()
         self.assertEqual(dialog._mapping_columns,1)
         self.assertEqual((dialog.preview.rowCount(),dialog.preview.columnCount()),(3,88))
@@ -160,7 +202,7 @@ class GuiTests(unittest.TestCase):
             dialog.resize(980,720);dialog.show();self.app.processEvents()
             self.assertEqual(dialog._mapping_columns,2)
             self.assertTrue(screen.availableGeometry().contains(dialog.frameGeometry()))
-            self.assertEqual(dialog.preview_caption.text(),"미리보기 · 제목 행 2행 / 처음 3개 행")
+            self.assertEqual(dialog.preview_caption.text(),"미리보기 · 처음 3개 행 · 전체 88개 열 · 제목은 2행")
         dialog.close()
 
     def test_realty_picker_enter_search(self):

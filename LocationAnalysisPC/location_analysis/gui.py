@@ -5,14 +5,14 @@ import datetime as dt
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QKeySequence, QShortcut
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt, QThread, QTimer, QUrl, QSettings, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QKeySequence, QShortcut, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableView,
-    QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QTableWidget, QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from . import APP_NAME, VERSION
@@ -20,42 +20,78 @@ from .importer import FIELD_LABELS, FileInfo, inspect_file
 from .storage import CatalogStore, PAGE_SIZE, STATUSES
 
 
-COLORS = {"확정":"#147d68", "제외":"#87929d", "주소 공란":"#87929d", "재검토":"#b36c17", "수록 확인":"#b36c17", "주소 확인":"#b36c17"}
+COLORS = {"확정":"#08634b", "제외":"#526176", "주소 공란":"#526176", "재검토":"#8a4809", "수록 확인":"#8a4809", "주소 확인":"#8a4809"}
 STYLE = """
-QMainWindow,QDialog {background:#f3f5f8;color:#182d3d;}
-QWidget {font-size:13px;color:#182d3d;}
-QFrame#sidebar {background:#142e40;border:0;}
-QFrame#sidebar QLabel {color:#d9e5ed;background:transparent;}
-QFrame#sidebar QPushButton {color:#bdd0de;background:transparent;border:0;text-align:left;padding:13px 16px;border-radius:7px;font-weight:500;}
-QFrame#sidebar QPushButton:checked {color:white;background:#285269;font-weight:700;}
-QFrame#sidebar QPushButton:hover {background:#21475e;}
-QLabel#eyebrow {color:#698393;font-size:11px;font-weight:700;}
-QLabel#title {font-size:25px;font-weight:700;color:#183747;}
-QLabel#subtitle {color:#6d7e8c;}
-QFrame#card {background:white;border:1px solid #dfe6ec;border-radius:10px;}
-QLabel#cardNumber {font-size:28px;font-weight:700;color:#173d4c;}
-QLabel#cardLabel {color:#71838e;font-size:12px;}
-QPushButton {background:white;border:1px solid #cdd8e1;border-radius:6px;padding:8px 13px;}
-QPushButton:hover {background:#eaf2f5;border-color:#7aa1b2;}
-QPushButton:disabled {color:#9ca7af;background:#f2f4f6;border-color:#dfe4e9;}
-QPushButton#primary {background:#167c77;color:white;border:1px solid #167c77;font-weight:700;}
-QPushButton#primary:hover {background:#106b67;}
-QLineEdit,QComboBox,QPlainTextEdit {background:white;border:1px solid #d1dce4;border-radius:5px;padding:7px;selection-background-color:#c1e4e0;}
-QLineEdit:focus,QComboBox:focus,QPlainTextEdit:focus {border-color:#167c77;}
-QTableView,QTableWidget,QListWidget {background:white;border:1px solid #dfe6ec;border-radius:6px;gridline-color:#edf1f4;selection-background-color:#e2f2ef;selection-color:#183d46;outline:0;}
-QHeaderView::section {background:#edf2f6;color:#526978;border:0;border-bottom:1px solid #dfe6ec;padding:9px;text-align:left;font-weight:600;}
-QTableView::item {padding:7px;border-bottom:1px solid #edf1f4;}
-QScrollBar:vertical {background:#f1f4f6;width:10px;}
-QScrollBar::handle:vertical {background:#c9d4de;min-height:24px;border-radius:4px;}
+QWidget {font-size:15px;color:#172538;}
+QMainWindow,QDialog {background:#f3f6fa;color:#172538;}
+QLabel {background:transparent;}
+QFrame#sidebar {background:#162b42;border:0;}
+QFrame#sidebar QLabel {color:#e3edf7;background:transparent;}
+QFrame#sidebar QPushButton {color:#e3edf7;background:transparent;border:0;text-align:left;padding:12px 12px;border-radius:7px;font-weight:500;}
+QFrame#sidebar QPushButton:checked {color:white;background:#315d80;font-weight:700;}
+QFrame#sidebar QPushButton:hover {background:#264a6b;}
+QLabel#eyebrow {color:#40536c;font-size:14px;font-weight:700;}
+QLabel#title {font-size:27px;font-weight:700;color:#162b42;}
+QLabel#subtitle {color:#475b73;font-size:14px;}
+QLabel#sectionTitle {font-size:17px;font-weight:700;color:#1d3651;}
+QFrame#card,QFrame#section {background:white;border:1px solid #cfd9e5;border-radius:10px;}
+QFrame#nextStep {background:#eaf3fc;border:1px solid #b7d0e9;border-radius:8px;}
+QLabel#cardNumber {font-size:30px;font-weight:700;color:#183b59;}
+QLabel#cardLabel {color:#43566d;font-size:14px;}
+QPushButton,QToolButton {background:white;color:#243b55;border:1px solid #bac8d8;border-radius:6px;padding:8px 13px;min-height:20px;}
+QPushButton:hover,QToolButton:hover {background:#edf4fb;border-color:#577fa8;}
+QPushButton:focus,QToolButton:focus {border:2px solid #286197;}
+QPushButton:disabled,QToolButton:disabled {color:#73839a;background:#eef2f7;border-color:#d8e0e9;}
+QPushButton#primary {background:#0f766e;color:white;border:1px solid #0f766e;font-weight:700;}
+QPushButton#primary:hover {background:#095f59;}
+QLineEdit,QComboBox,QPlainTextEdit {background:white;color:#172538;border:1px solid #b9c8d9;border-radius:5px;padding:7px;selection-background-color:#cce4fa;selection-color:#11243a;}
+QLineEdit,QComboBox {min-height:22px;}
+QLineEdit:focus,QComboBox:focus,QPlainTextEdit:focus {border:2px solid #26749a;}
+QComboBox QAbstractItemView {background:white;color:#172538;selection-background-color:#dbeafe;selection-color:#11243a;border:1px solid #b9c8d9;outline:0;}
+QScrollArea {background:#f3f6fa;border:0;}
+QWidget#importBody,QWidget#reviewBody {background:#f3f6fa;}
+QTableView,QTableWidget,QListWidget {background:white;alternate-background-color:#f6f9fc;color:#172538;border:1px solid #c6d3e1;border-radius:6px;gridline-color:#e2e9f1;selection-background-color:#dbeafe;selection-color:#102c49;outline:0;}
+QHeaderView::section {background:#e7eef7;color:#263f5b;border:0;border-bottom:1px solid #b9c9db;padding:10px;text-align:left;font-weight:700;}
+QTableCornerButton::section {background:#e7eef7;border:0;}
+QTableView::item {padding:7px;border-bottom:1px solid #e6edf5;}
+QTableView::item:selected {background:#dbeafe;color:#102c49;}
+QScrollBar:vertical {background:#edf2f7;width:12px;}
+QScrollBar:horizontal {background:#edf2f7;height:12px;}
+QScrollBar::handle:vertical {background:#9dafc3;min-height:30px;border-radius:5px;}
+QScrollBar::handle:horizontal {background:#9dafc3;min-width:30px;border-radius:5px;}
 QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical {height:0;}
-QTabWidget::pane {border:1px solid #dfe6ec;background:white;}
-QTabBar::tab {padding:9px 14px;background:#edf2f6;border:0;}
-QTabBar::tab:selected {background:white;color:#147d77;}
-QProgressBar {border:1px solid #d7e2e8;border-radius:4px;height:10px;text-align:center;background:#e9eff3;}
-QProgressBar::chunk {background:#298e85;}
-QCheckBox {spacing:7px;}
-QLabel#notice {background:#e9f3f1;color:#38665f;padding:12px;border-radius:7px;}
+QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal {width:0;}
+QScrollBar::add-page,QScrollBar::sub-page {background:transparent;}
+QTabWidget::pane {border:1px solid #cfd9e5;background:white;}
+QTabBar::tab {padding:10px 15px;background:#e7eef7;color:#334e6d;border:0;}
+QTabBar::tab:selected {background:white;color:#0f766e;font-weight:700;}
+QProgressBar {border:1px solid #becddd;border-radius:4px;height:12px;text-align:center;background:#e5edf5;}
+QProgressBar::chunk {background:#0f766e;}
+QCheckBox {spacing:9px;background:transparent;color:#172538;}
+QCheckBox::indicator {width:18px;height:18px;}
+QCheckBox::indicator:unchecked {border:2px solid #72869f;border-radius:3px;background:white;}
+QCheckBox::indicator:checked {border:2px solid #0f766e;border-radius:3px;background:#0f766e;image:url("__CHECK_ICON__");}
+QLabel#notice {background:#e9f4f1;color:#235c52;padding:12px;border-radius:7px;}
+QToolTip {background:#20364e;color:white;border:0;padding:6px;font-size:14px;}
 """
+
+
+def apply_theme(app, text_size=None):
+    """A complete application palette keeps Windows dark mode from leaking into light panels."""
+    import re
+    size=int(text_size or app.property("textSize") or 15)
+    size=max(15,min(19,size));app.setProperty("textSize",size)
+    palette=QPalette()
+    colors={QPalette.Window:"#f3f6fa",QPalette.WindowText:"#172538",QPalette.Base:"#ffffff",
+        QPalette.AlternateBase:"#f6f9fc",QPalette.Text:"#172538",QPalette.Button:"#ffffff",
+        QPalette.ButtonText:"#243b55",QPalette.Highlight:"#dbeafe",QPalette.HighlightedText:"#102c49",
+        QPalette.ToolTipBase:"#20364e",QPalette.ToolTipText:"#ffffff",QPalette.PlaceholderText:"#53677f",
+        QPalette.Light:"#ffffff",QPalette.Midlight:"#e7eef7",QPalette.Mid:"#b9c8d9",QPalette.Dark:"#72869f",QPalette.Shadow:"#c6d3e1"}
+    for role,color in colors.items():palette.setColor(role,QColor(color))
+    for role in [QPalette.Text,QPalette.WindowText,QPalette.ButtonText]:palette.setColor(QPalette.Disabled,role,QColor("#73839a"))
+    app.setStyle("Fusion");app.setPalette(palette)
+    stylesheet=STYLE.replace("__CHECK_ICON__",(Path(__file__).parent/"assets"/"check.svg").resolve().as_posix())
+    app.setStyleSheet(re.sub(r"font-size:(\d+)px",lambda m:f"font-size:{round(int(m[1])*size/15)}px",stylesheet))
 
 
 def label(text, name="", wrap=False):
@@ -114,6 +150,10 @@ class DictTableModel(QAbstractTableModel):
             return QColor(COLORS.get(value,"#527483"))
         if role==Qt.FontRole and key=="status":
             font=QFont(); font.setBold(True); return font
+        if role==Qt.TextAlignmentRole and key in {"households","buildings","linked_count","total","added","changed","blank_roads"}:
+            return Qt.AlignRight|Qt.AlignVCenter
+        if role==Qt.BackgroundRole and key=="status":
+            return QColor("#e6f4ee" if value=="확정" else "#fff2d8" if value in {"주소 확인","재검토","수록 확인"} else "#f0f4f8")
         return None
 
 
@@ -139,22 +179,28 @@ class ImportDialog(QDialog):
         self.resize(980,720)
         self._mapping_columns = 0
         self._screen_connected = False
-        layout=QVBoxLayout(self)
-        layout.addWidget(label("가져오기 전 열 연결 확인","title"))
+        layout=QVBoxLayout(self);layout.setContentsMargins(20,18,20,16);layout.setSpacing(12)
+        layout.addWidget(label("단지정보 가져오기","title"))
         filename=label(Path(info.path).name,"subtitle",True)
         filename.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
         filename.setToolTip(Path(info.path).name);layout.addWidget(filename)
         self.body_scroll=QScrollArea();self.body_scroll.setWidgetResizable(True)
         self.body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.body_scroll.setFrameShape(QFrame.NoFrame)
-        body=QWidget();body.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
+        body=QWidget();body.setObjectName("importBody");body.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
         self.body_scroll.setWidget(body);layout.addWidget(self.body_scroll,1)
-        content=QVBoxLayout(body);content.setContentsMargins(0,0,8,0)
-        content.addWidget(label("단지코드로 원본을 갱신하며, 같은 주소의 다른 코드는 별도 단지로 유지합니다.","notice",True))
+        content=QVBoxLayout(body);content.setContentsMargins(0,0,8,0);content.setSpacing(12)
+        content.addWidget(label("미리보기에서 단지명과 주소를 확인한 뒤 가져오세요. 같은 코드의 여러 주소는 한 단지로 모읍니다.","notice",True))
         if info.sheets:
             line=QHBoxLayout(); line.addWidget(label("시트")); self.sheet=self.bounded_selector(); self.sheet.addItems(info.sheets); self.sheet.setCurrentText(info.sheet)
             line.addWidget(self.sheet,1); content.addLayout(line); self.sheet.currentTextChanged.connect(self.change_sheet)
-        self.mapping_grid=QGridLayout();self.mapping_widgets=[];self.maps={}
+        self.mapping_summary=label("","sectionTitle",True);content.addWidget(self.mapping_summary)
+        self.mapping_toggle=QToolButton();self.mapping_toggle.setCheckable(True)
+        self.mapping_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        content.addWidget(self.mapping_toggle,0,Qt.AlignLeft)
+        self.mapping_section=QWidget();self.mapping_section.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
+        self.mapping_grid=QGridLayout(self.mapping_section);self.mapping_grid.setContentsMargins(0,4,0,8)
+        self.mapping_widgets=[];self.maps={}
         for i,(key,title) in enumerate(FIELD_LABELS.items()):
             selector=self.bounded_selector(); selector.addItem("사용 안 함","")
             for header in info.headers:
@@ -165,13 +211,18 @@ class ImportDialog(QDialog):
             self.maps[key]=selector
             caption=label(title + (" *" if key in {"code","name"} or (key=="road" and kind=="kapt") else ""))
             self.mapping_widgets.append((caption,selector))
-        content.addLayout(self.mapping_grid);self.reflow_mapping()
+        content.addWidget(self.mapping_section);self.reflow_mapping()
+        self.mapping_toggle.toggled.connect(self.show_mapping)
         self.preview_caption=label("","subtitle",True);content.addWidget(self.preview_caption)
         self.preview=QTableWidget();self.preview.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
-        self.preview.setMinimumSize(0,150);self.preview.setMaximumHeight(240)
+        self.preview.setMinimumSize(0,190);self.preview.setMaximumHeight(250)
+        self.preview.setAlternatingRowColors(True);self.preview.verticalHeader().setDefaultSectionSize(42)
         self.preview.setWordWrap(False);self.preview.setTextElideMode(Qt.ElideRight)
         self.preview.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.populate_preview();content.addWidget(self.preview,1)
+        for selector in self.maps.values():selector.currentIndexChanged.connect(self.mapping_changed)
+        self.update_mapping_state();self.mapping_toggle.setChecked(not self.mapping_valid())
+        self.show_mapping(self.mapping_toggle.isChecked())
         form=QFormLayout(); self.source_date=QLineEdit(); self.source_date.setPlaceholderText("선택: YYYY-MM-DD · 원본 자료의 기준일")
         form.addRow("자료 기준일",self.source_date);content.addLayout(form)
         self.full=QCheckBox("전국 전체 목록으로 갱신")
@@ -179,7 +230,8 @@ class ImportDialog(QDialog):
         content.addWidget(self.full)
         content.addWidget(label("전체 목록에서 이전 코드가 빠지면 ‘수록 확인’으로 표시합니다. 지역·일부 자료는 체크하지 마세요.","subtitle",True))
         self.controls=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
-        self.controls.button(QDialogButtonBox.Ok).setText("가져오기");self.controls.button(QDialogButtonBox.Cancel).setText("취소")
+        self.controls.button(QDialogButtonBox.Ok).setText("가져오기 시작");self.controls.button(QDialogButtonBox.Ok).setObjectName("primary")
+        self.controls.button(QDialogButtonBox.Cancel).setText("취소")
         self.controls.accepted.connect(self.validate);self.controls.rejected.connect(self.reject);layout.addWidget(self.controls)
         self.fit_to_screen()
 
@@ -227,24 +279,46 @@ class ImportDialog(QDialog):
         if hasattr(self,"mapping_grid"):self.reflow_mapping()
 
     def populate_preview(self):
-        self.preview_caption.setText(f"미리보기 · 제목 행 {self.info.header_row+1}행 / 처음 {len(self.info.samples)}개 행")
-        self.preview.clear();self.preview.setColumnCount(len(self.info.headers));self.preview.setRowCount(len(self.info.samples));self.preview.setHorizontalHeaderLabels(self.info.headers)
+        self.preview_caption.setText(f"미리보기 · 처음 {len(self.info.samples)}개 행 · 전체 {len(self.info.headers)}개 열 · 제목은 {self.info.header_row+1}행")
+        first=[self.maps[key].currentData() for key in ["name","code","road"] if self.maps[key].currentData()]
+        headers=list(dict.fromkeys(first+self.info.headers))
+        self.preview.clear();self.preview.setColumnCount(len(headers));self.preview.setRowCount(len(self.info.samples));self.preview.setHorizontalHeaderLabels(headers)
         for i,row in enumerate(self.info.samples):
-            for j,key in enumerate(self.info.headers):
+            for j,key in enumerate(headers):
                 value=str(row.get(key,""));cell=QTableWidgetItem(value);cell.setToolTip(value);cell.setFlags(cell.flags() & ~Qt.ItemIsEditable);self.preview.setItem(i,j,cell)
         self.preview.resizeColumnsToContents()
-        for i in range(len(self.info.headers)):
+        for i in range(len(headers)):
             self.preview.setColumnWidth(i,min(320,max(120,self.preview.columnWidth(i))))
+
+    def mapping_valid(self):
+        required=["code","name"]+(["road"] if self.kind=="kapt" else [])
+        chosen=[selector.currentData() for selector in self.maps.values() if selector.currentData()]
+        return all(self.maps[key].currentData() for key in required) and len(chosen)==len(set(chosen))
+
+    def show_mapping(self,visible):
+        self.mapping_section.setVisible(visible)
+        self.mapping_toggle.setArrowType(Qt.DownArrow if visible else Qt.RightArrow)
+        self.mapping_toggle.setText("열 연결 접기" if visible else "열 연결 확인·수정")
+
+    def update_mapping_state(self):
+        valid=self.mapping_valid()
+        self.mapping_summary.setText("✓ 필요한 열이 연결되었습니다" if valid else "열 연결을 확인해 주세요")
+        if not valid:self.mapping_toggle.setChecked(True)
+
+    def mapping_changed(self):
+        self.update_mapping_state();self.populate_preview()
 
     def change_sheet(self,name):
         try:
             info=inspect_file(self.info.path,name); self.info=info
             for key,selector in self.maps.items():
+                selector.blockSignals(True)
                 selector.clear();selector.addItem("사용 안 함","")
                 for h in info.headers:
                     selector.addItem(h,h);selector.setItemData(selector.count()-1,h,Qt.ToolTipRole)
                 selector.setCurrentIndex(max(0,selector.findData(info.mapping.get(key,""))))
-            self.populate_preview()
+                selector.blockSignals(False);selector.setToolTip(selector.currentText())
+            self.update_mapping_state();self.mapping_toggle.setChecked(not self.mapping_valid());self.populate_preview()
         except Exception as error:
             QMessageBox.warning(self,"시트 읽기",str(error))
 
@@ -295,17 +369,18 @@ class ReviewDialog(QDialog):
         super().__init__(parent);self.store=store;self.record=store.get_complex(code);self.links=list(self.record["links"])
         r=self.record;self.setWindowTitle("단지·표준지 검토 — "+r["name"]);self.resize(920,800)
         layout=QVBoxLayout(self);layout.addWidget(label(r["name"],"title"));layout.addWidget(label(f"K-apt {code}  ·  현재 상태: {r['status']}","subtitle"))
-        scroll=QScrollArea();scroll.setWidgetResizable(True);body=QWidget();content=QVBoxLayout(body);layout.addWidget(scroll,1);scroll.setWidget(body)
+        scroll=QScrollArea();scroll.setWidgetResizable(True);body=QWidget();body.setObjectName("reviewBody");content=QVBoxLayout(body);layout.addWidget(scroll,1);scroll.setWidget(body)
         if r["shared_address"]:
             content.addWidget(label("주소를 함께 사용하는 등록: "+" / ".join(f"{x['name']} ({x['code']})" for x in r["shared_address"])+"\n주소가 같아도 자동으로 합치지 않습니다.","notice",True))
+        content.addWidget(label("1. 등록 상태 확인","sectionTitle"))
         form=QFormLayout();self.verdict=QComboBox()
         for title,value in [("검토 대기","pending"),("실재하는 유효 단지로 확인","valid"),("중복·멸실 등으로 제외","excluded")]: self.verdict.addItem(title,value)
         self.verdict.setCurrentIndex(max(0,self.verdict.findData(r["verdict"] or "pending")));form.addRow("등록 판정",self.verdict)
         self.reason=QComboBox();self.reason.setEditable(True);self.reason.addItems(["","유효 단지 확인","중복 등록","재건축 전·멸실","다른 단지로 대체","기타"]);self.reason.setCurrentText(r["reason"] or "");form.addRow("확인 / 제외 사유",self.reason)
         self.note=QPlainTextEdit(r["note"] or "");self.note.setPlaceholderText("직접 확인한 근거, 다른 단지와 구분한 이유, 중복이면 채택한 K-apt 코드 등을 기록하세요.");self.note.setMaximumHeight(90);form.addRow("검토 근거·메모",self.note);content.addLayout(form)
-        content.addWidget(label("공시가격 단지 연결","eyebrow"));self.link_list=QListWidget();self.link_list.setMaximumHeight(115);content.addWidget(self.link_list)
+        content.addWidget(label("2. 공시가격 단지 연결","sectionTitle"));self.link_list=QListWidget();self.link_list.setMaximumHeight(115);content.addWidget(self.link_list)
         actions=QHBoxLayout();actions.addWidget(button("연결 추가",self.add_link));actions.addWidget(button("선택 연결 해제",self.remove_link));actions.addStretch();content.addLayout(actions);self.refresh_links()
-        content.addWidget(label("단지당 표준 건물 하나","eyebrow"));form=QFormLayout()
+        content.addWidget(label("3. 단지당 표준 건물 하나","sectionTitle"));form=QFormLayout()
         self.road=QComboBox();self.road.addItem("대표 주소를 선택하세요","")
         for road in json.loads(r["roads"]): self.road.addItem(road,road)
         if r["selected_road"]: self.road.setCurrentIndex(max(0,self.road.findData(r["selected_road"])))
@@ -363,39 +438,58 @@ class ManualRealtyDialog(QDialog):
 
 class MainWindow(QMainWindow):
     PAGES=[("단지정보","kapt"),("표준지 목록","standards"),("주소 중복 검토","duplicates"),("공시가격 대조","realty"),("가져오기 기록","imports")]
-    def __init__(self,store:CatalogStore):
+    def __init__(self,store:CatalogStore,settings=None):
         super().__init__();self.store=store;self.page="kapt";self.offset=0;self.total=0;self.job=None;self._closing=False
+        self.settings=settings if settings is not None else QSettings("LocationAnalysisPC","Display")
+        try:size=int(self.settings.value("text_size",15))
+        except (ValueError,TypeError):size=15
+        if size not in {15,17,19}:size=15
+        apply_theme(QApplication.instance(),size)
         self.setWindowTitle(f"{APP_NAME} {VERSION}");self.resize(1440,920);self.setMinimumSize(1000,680)
         root=QWidget();self.setCentralWidget(root);outer=QHBoxLayout(root);outer.setContentsMargins(0,0,0,0);outer.setSpacing(0)
         sidebar=QFrame();sidebar.setObjectName("sidebar");sidebar.setFixedWidth(192);side=QVBoxLayout(sidebar);side.setContentsMargins(16,30,16,20)
         brand=label("입지분석","title");brand.setStyleSheet("color:white;font-size:23px;font-weight:700;");side.addWidget(brand)
-        side.addWidget(label("REFERENCE CATALOG"));side.addSpacing(32);self.nav={}
+        side.addWidget(label("표준지 목록 관리"));side.addSpacing(26);self.nav={}
         for title,key in self.PAGES:
             item=QPushButton(title);item.setCheckable(True);item.clicked.connect(lambda checked=False,p=key:self.change_page(p));self.nav[key]=item;side.addWidget(item)
-        side.addStretch();side.addWidget(label("표준지 목록 관리\n전국 단지 · 로컬 보관",wrap=True));side.addSpacing(15);side.addWidget(label("VERSION "+VERSION));outer.addWidget(sidebar)
-        main=QWidget();content=QVBoxLayout(main);content.setContentsMargins(28,26,28,16);content.setSpacing(16);outer.addWidget(main,1)
-        content.addWidget(label("LOCATION ANALYSIS / STANDARD SITES","eyebrow"))
-        titleline=QHBoxLayout();self.heading=label("단지정보","title");titleline.addWidget(self.heading);titleline.addStretch();titleline.addWidget(button("사용 안내",self.help));content.addLayout(titleline)
+        side.addStretch();side.addWidget(label("전국 단지 · PC에 보관\n검토 내용 자동 저장",wrap=True));side.addSpacing(15);side.addWidget(label("버전 "+VERSION));outer.addWidget(sidebar)
+        main=QWidget();content=QVBoxLayout(main);content.setContentsMargins(22,20,22,14);content.setSpacing(10);outer.addWidget(main,1)
+        titleline=QHBoxLayout();self.heading=label("단지정보","title");titleline.addWidget(self.heading);titleline.addStretch()
+        titleline.addWidget(label("글자 크기","subtitle"));self.text_size=QComboBox()
+        for name,value in [("기본",15),("크게",17),("더 크게",19)]:self.text_size.addItem(name,value)
+        self.text_size.setCurrentIndex(self.text_size.findData(size));self.text_size.currentIndexChanged.connect(self.change_text_size)
+        titleline.addWidget(self.text_size)
+        self.backup_button=button("백업",self.backup);self.backup_button.setToolTip("원본·검토·연결 기록 전체 백업")
+        self.restore_button=button("복원",self.restore);titleline.addWidget(self.backup_button);titleline.addWidget(self.restore_button)
+        titleline.addWidget(button("사용 안내",self.help));content.addLayout(titleline)
         self.subtitle=label("K-apt 단지정보를 가져와 표준지 후보를 관리합니다.","subtitle",True);content.addWidget(self.subtitle)
         cards=QHBoxLayout();cards.setSpacing(12);self.cards={}
         for key,title in [("total","가져온 K-apt 단지"),("candidates","표준지 후보"),("confirmed","확정 표준지"),("needs_review","확인할 후보")]:
-            frame=QFrame();frame.setObjectName("card");box=QVBoxLayout(frame);box.setContentsMargins(18,13,18,13);number=label("0","cardNumber");box.addWidget(number);box.addWidget(label(title,"cardLabel"));self.cards[key]=number;cards.addWidget(frame,1)
+            frame=QFrame();frame.setObjectName("card");box=QVBoxLayout(frame);box.setContentsMargins(14,9,14,9);box.setSpacing(2);number=label("0","cardNumber");box.addWidget(number);box.addWidget(label(title,"cardLabel"));self.cards[key]=number;cards.addWidget(frame,1)
         content.addLayout(cards)
         tools=QHBoxLayout();self.import_button=button("＋ K-apt 파일 가져오기",lambda:self.choose_import("kapt"),True);tools.addWidget(self.import_button)
         self.realty_import=button("공시가격 목록 가져오기",lambda:self.choose_import("realty"));tools.addWidget(self.realty_import)
         self.export_button=button("표준지 내보내기",self.export);tools.addWidget(self.export_button);tools.addStretch()
-        self.backup_button=button("보관함 백업",self.backup);self.restore_button=button("복원",self.restore);tools.addWidget(self.backup_button);tools.addWidget(self.restore_button);content.addLayout(tools)
+        content.addLayout(tools)
         filters=QHBoxLayout();self.search=QLineEdit();self.search.setClearButtonEnabled(True);self.search.setPlaceholderText("단지명 · K-apt 코드 · 도로명주소 · 지번주소");filters.addWidget(self.search,3)
         self.province=QComboBox();self.province.addItem("전국","");self.district=QComboBox();self.district.addItem("시군구 전체","");self.status=QComboBox();self.status.addItem("상태 전체","")
         for s in STATUSES:self.status.addItem(s,s)
-        for x in [self.province,self.district,self.status]:filters.addWidget(x,1)
+        for x in [self.province,self.district,self.status]:
+            x.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon);x.setMinimumContentsLength(5);filters.addWidget(x,1)
+        self.clear_filters=button("초기화",self.reset_filters);filters.addWidget(self.clear_filters)
         content.addLayout(filters)
-        self.notice=label("같은 주소의 별개 단지는 각각 유지하며, 한 단지의 여러 주소는 표준지 하나로 관리합니다.","notice",True);content.addWidget(self.notice)
+        guide=QFrame();guide.setObjectName("nextStep");guide_layout=QHBoxLayout(guide);guide_layout.setContentsMargins(14,10,14,10)
+        guide_text=QVBoxLayout();guide_text.setSpacing(4)
+        self.guide_title=label("","sectionTitle",True);self.guide_body=label("","subtitle",True)
+        for item in [self.guide_title,self.guide_body]:item.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred);guide_text.addWidget(item)
+        guide_layout.addLayout(guide_text,1);self.guide_button=button("",self.follow_guide);guide_layout.addWidget(self.guide_button)
+        content.addWidget(guide)
         self.empty=label("아직 단지정보가 없습니다.\n‘K-apt 파일 가져오기’에서 내려받은 전국 단지정보 엑셀을 선택하세요.",wrap=True);self.empty.setAlignment(Qt.AlignCenter);self.empty.setStyleSheet("padding:28px;color:#6a8291;font-size:15px;");content.addWidget(self.empty)
         self.splitter=QSplitter();self.splitter.setChildrenCollapsible(False);content.addWidget(self.splitter,1)
-        self.table=QTableView();self.table.setSelectionBehavior(QTableView.SelectRows);self.table.setSelectionMode(QTableView.SingleSelection);self.table.setEditTriggers(QTableView.NoEditTriggers);self.table.setAlternatingRowColors(False);self.table.verticalHeader().setVisible(False);self.table.verticalHeader().setDefaultSectionSize(42)
+        self.table=QTableView();self.table.setSelectionBehavior(QTableView.SelectRows);self.table.setSelectionMode(QTableView.SingleSelection);self.table.setEditTriggers(QTableView.NoEditTriggers);self.table.setAlternatingRowColors(True);self.table.setWordWrap(False);self.table.setTextElideMode(Qt.ElideRight);self.table.verticalHeader().setVisible(False);self.table.verticalHeader().setDefaultSectionSize(round(48*size/15))
+        self.table.setHorizontalScrollMode(QTableView.ScrollPerPixel);self.table.setVerticalScrollMode(QTableView.ScrollPerPixel)
         self.model=DictTableModel([]);self.table.setModel(self.model);self.splitter.addWidget(self.table)
-        details=QFrame();details.setObjectName("card");details.setMinimumWidth(260);self.details_layout=QVBoxLayout(details);self.detail_title=label("단지를 선택하세요",wrap=True);self.detail_title.setStyleSheet("font-size:18px;font-weight:700;padding:6px;");self.details_layout.addWidget(self.detail_title)
+        details=QFrame();details.setObjectName("card");details.setMinimumWidth(260);self.details_layout=QVBoxLayout(details);self.detail_title=label("단지를 선택하세요","sectionTitle",wrap=True);self.details_layout.addWidget(self.detail_title)
         self.detail_info=QPlainTextEdit();self.detail_info.setReadOnly(True);self.detail_info.setStyleSheet("border:0;background:white;");self.details_layout.addWidget(self.detail_info,1)
         self.review_button=button("단지·표준지 검토",self.review,True);self.details_layout.addWidget(self.review_button)
         self.manual_button=button("공시가격 단지 직접 등록",self.manual_realty);self.details_layout.addWidget(self.manual_button);self.splitter.addWidget(details);self.splitter.setSizes([900,330]);self.detail_panel=details
@@ -408,6 +502,53 @@ class MainWindow(QMainWindow):
         self.table.selectionModel().currentChanged.connect(self.selection_changed);self.table.doubleClicked.connect(lambda _:self.review())
         QShortcut(QKeySequence.Find,self,activated=self.search.setFocus)
         self.refresh_regions();self.change_page("kapt")
+
+    def change_text_size(self):
+        size=self.text_size.currentData();self.settings.setValue("text_size",size)
+        apply_theme(QApplication.instance(),size)
+        self.table.verticalHeader().setDefaultSectionSize(round(48*size/15))
+
+    def reset_filters(self):
+        self.search.blockSignals(True);self.search.clear();self.search.blockSignals(False);self.search_timer.stop()
+        for selector in [self.province,self.district,self.status]:
+            selector.blockSignals(True);selector.setCurrentIndex(0);selector.blockSignals(False)
+        self.refresh_regions();self.reset()
+
+    def update_guide(self,stats):
+        if not stats["total"]:
+            title="1. 전국 단지정보 파일부터 가져오세요"
+            body="다운로드한 K-apt 엑셀을 선택하면 표준지 후보 목록이 만들어집니다."
+            action="import";caption="K-apt 파일 선택"
+        elif self.page=="kapt":
+            title="2. 같은 주소의 등록부터 비교하세요"
+            body="중복·멸실 등록만 근거를 남겨 제외하고, 실제 별개 관리단지는 각각 유지합니다."
+            action="duplicates";caption="주소 중복 검토로"
+        elif self.page=="duplicates":
+            title="단지 선택 → ‘단지·표준지 검토’에서 판정"
+            body="주소가 같다는 이유만으로 제외하지 마세요. 중복은 채택할 코드를 메모하고 제외합니다."
+            action="standards";caption="표준지 후보 확인"
+        elif self.page=="standards":
+            title="3. 후보 목록은 지금 저장할 수 있습니다"
+            body="확정에는 유효 판정·공시가격 연결·표준 건물과 입구 확인이 필요합니다. 미확인 값은 비워 둬도 됩니다."
+            action="export";caption="표준지 내보내기"
+        elif self.page=="realty":
+            title="공시가격 목록 준비 → 단지 검토 창에서 연결"
+            body="현재는 파일 가져오기·직접 등록과 수동 연결을 지원합니다. 도로명·지번 자동 검색은 추후 추가합니다."
+            action="realty_import";caption="공시가격 파일 선택"
+        else:
+            title="가져오기 결과와 자료 기준일을 확인하세요"
+            body="검토는 자동 저장됩니다. 다른 PC로 옮기거나 별도 보관하려면 오른쪽 위 ‘백업’을 사용하세요."
+            action="kapt";caption="단지 목록으로"
+        self.guide_title.setText(title);self.guide_body.setText(body);self.guide_button.setText(caption)
+        self.guide_action=action;self.guide_button.setEnabled(self.job is None)
+
+    def follow_guide(self):
+        if self.job:return
+        action=self.guide_action
+        if action=="import":self.choose_import("kapt")
+        elif action=="realty_import":self.choose_import("realty")
+        elif action=="export":self.export()
+        else:self.reset_filters();self.change_page(action)
 
     def refresh_regions(self):
         p=self.province.currentData() or "";d=self.district.currentData() or "";provinces,districts=self.store.regions(p)
@@ -430,9 +571,10 @@ class MainWindow(QMainWindow):
     def refresh(self):
         stats=self.store.stats()
         for key,item in self.cards.items():item.setText(f"{stats[key]:,}")
+        self.update_guide(stats)
         is_catalog=self.page not in {"realty","imports"}
         for x in [self.province,self.district,self.status]:x.setVisible(is_catalog)
-        self.search.setVisible(self.page!="imports");self.review_button.setVisible(is_catalog);self.manual_button.setVisible(self.page=="realty")
+        self.search.setVisible(self.page!="imports");self.clear_filters.setVisible(self.page!="imports");self.review_button.setVisible(is_catalog);self.manual_button.setVisible(self.page=="realty")
         if is_catalog:
             rows,total=self.store.list_complexes(self.page,self.search.text().strip(),self.province.currentData() or "",self.district.currentData() or "",self.status.currentData() or "",self.offset)
             columns=[("단지명","name"),("검토 상태","status"),("K-apt 코드","code"),("도로명주소","road_raw"),("세대수","households"),("동수","buildings")]
@@ -443,10 +585,11 @@ class MainWindow(QMainWindow):
             all_rows=self.store.imports();total=len(all_rows);rows=all_rows[self.offset:self.offset+PAGE_SIZE]
             columns=[("원본 파일","filename"),("자료 종류","kind"),("자료 기준일","source_date"),("단지 수","total"),("신규","added"),("변경","changed"),("주소 공란","blank_roads")]
         self.total=total;self.model.beginResetModel();self.model.columns=columns;self.model.rows=rows;self.model.endResetModel()
+        header=self.table.horizontalHeader();header.setSectionResizeMode(QHeaderView.Interactive);header.setStretchLastSection(False)
         self.table.resizeColumnsToContents()
+        minimums={"name":220,"status":115,"code":145,"road_raw":310,"jibun":230,"filename":260}
         for i,(_,key) in enumerate(columns):
-            self.table.setColumnWidth(i,min(290,max(90,self.table.columnWidth(i))))
-        if columns:self.table.horizontalHeader().setSectionResizeMode(3 if is_catalog else 2 if self.page=="realty" else 0,QHeaderView.Stretch)
+            self.table.setColumnWidth(i,min(340,max(minimums.get(key,85),self.table.columnWidth(i))))
         self.page_count.setText(f"{total:,}개  ·  {self.offset+1 if total else 0:,}–{min(self.offset+PAGE_SIZE,total):,}")
         self.previous.setEnabled(self.offset>0);self.next.setEnabled(self.offset+PAGE_SIZE<total)
         self.empty.setVisible(total==0);self.empty.setText("아직 단지정보가 없습니다.\n‘K-apt 파일 가져오기’에서 전국 단지정보 엑셀을 선택하세요." if stats["total"]==0 and is_catalog else "표시할 항목이 없습니다. 검색어·지역·상태 조건을 확인하거나 원본 파일을 가져오세요.")
@@ -480,7 +623,7 @@ class MainWindow(QMainWindow):
         if ManualRealtyDialog(self.store,self).exec()==QDialog.Accepted:self.refresh()
 
     def set_busy(self,busy):
-        for item in [self.import_button,self.realty_import,self.backup_button,self.restore_button,self.export_button,self.review_button,self.manual_button]:item.setEnabled(not busy)
+        for item in [self.import_button,self.realty_import,self.backup_button,self.restore_button,self.export_button,self.review_button,self.manual_button,self.guide_button]:item.setEnabled(not busy)
         self.progress_bar.setVisible(busy);self.cancel.setVisible(busy)
         if busy:self.progress_bar.setRange(0,0)
         if not busy:self.review_button.setEnabled(self.page not in {"realty","imports"} and self.table.currentIndex().isValid())
@@ -510,7 +653,7 @@ class MainWindow(QMainWindow):
     def import_done(self,result):
         self.refresh_regions();self.refresh();text=f"가져오기 완료 · 신규 {result['added']:,} / 변경 {result['changed']:,} / 동일 {result['unchanged']:,}개"
         self.message.setText(text)
-        QMessageBox.information(self,"단지정보 가져오기",text+f"\n\n도로명주소 공란 {result['blank_roads']:,}개\n주소 형식 확인 {result['unparsed_roads']:,}개\n\n검토 기록은 유지했습니다. 변경된 단지 범위는 재검토로 표시합니다.")
+        QMessageBox.information(self,"단지정보 가져오기",text+f"\n\n도로명주소 공란 {result['blank_roads']:,}개\n주소 형식 확인 {result['unparsed_roads']:,}개\n\n다음: ‘주소 중복 검토’에서 같은 주소의 등록을 비교하세요.\n‘표준지 목록’에서는 후보 전체를 Excel로 내보낼 수 있습니다.\n검토 기록은 유지하며, 변경된 단지 범위는 재검토로 표시합니다.")
     def export(self):
         if not self.store.stats()["candidates"]:QMessageBox.information(self,"표준지 내보내기","K-apt 단지정보를 먼저 가져오세요.");return
         choice=QMessageBox(self);choice.setWindowTitle("표준지 내보내기");choice.setText("내보낼 표준지 범위를 선택하세요.")

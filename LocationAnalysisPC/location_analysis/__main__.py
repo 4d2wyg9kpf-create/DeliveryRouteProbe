@@ -21,15 +21,15 @@ def main(argv=None):
     from PySide6.QtCore import QLockFile
     from PySide6.QtGui import QFont,QFontDatabase
     from PySide6.QtWidgets import QApplication,QMessageBox
-    from .gui import MainWindow,STYLE
+    from .gui import MainWindow,apply_theme
     from .storage import CatalogStore,default_db_path
     app=QApplication.instance() or QApplication(sys.argv[:1]);app.setApplicationName(APP_NAME);app.setApplicationVersion(VERSION);app.setOrganizationName("LocationAnalysisPC")
     family="Malgun Gothic" if sys.platform=="win32" else "sans-serif"
     for font in sorted((Path(__file__).parent/"assets").glob("*.ttf")):
         font_id=QFontDatabase.addApplicationFont(str(font))
         families=QFontDatabase.applicationFontFamilies(font_id)
-        if families: family=families[0]
-    app.setStyle("Fusion");app.setStyleSheet(STYLE);app.setFont(QFont(family,10))
+        if families and sys.platform!="win32": family=families[0]
+    app.setFont(QFont(family,11));apply_theme(app)
     if args.smoke_test:
         from .diagnostics import gui_smoke
         gui_smoke(args.smoke_test);return 0

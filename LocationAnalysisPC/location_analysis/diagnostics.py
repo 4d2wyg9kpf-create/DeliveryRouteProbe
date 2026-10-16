@@ -87,18 +87,25 @@ def self_test(output):
 
 
 def gui_smoke(output):
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import QSettings
+    from PySide6.QtGui import QPalette,QColor
     from PySide6.QtWidgets import QApplication
-    from .gui import MainWindow,ReviewDialog,ImportDialog,STYLE
+    from .gui import MainWindow,ReviewDialog,ImportDialog,apply_theme
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
     temporary=tempfile.TemporaryDirectory(prefix="location-gui-test-")
-    app=QApplication.instance() or QApplication([]);app.setStyle("Fusion");app.setStyleSheet(STYLE)
+    app=QApplication.instance() or QApplication([])
+    dark=QPalette()
+    for role in [QPalette.Window,QPalette.Base,QPalette.Button]:dark.setColor(role,QColor("#151515"))
+    for role in [QPalette.Text,QPalette.WindowText,QPalette.ButtonText]:dark.setColor(role,QColor("#eeeeee"))
+    app.setPalette(dark);apply_theme(app,15)
+    assert app.palette().color(QPalette.Window).lightness()>230 and app.palette().color(QPalette.Text).lightness()<70
+    settings=QSettings(str(Path(temporary.name)/"display.ini"),QSettings.IniFormat)
     store=CatalogStore(Path(temporary.name)/"catalog.sqlite3")
-    empty=MainWindow(store);empty.show();app.processEvents()
+    empty=MainWindow(store,settings);empty.show();app.processEvents()
     assert store.stats()["total"]==0 and empty.empty.isVisible() and empty.isVisible()
     empty.grab().save(str(output/"empty.png"));empty.close();app.processEvents()
     populate(store)
-    window=MainWindow(store);window.show();app.processEvents()
+    window=MainWindow(store,settings);window.show();app.processEvents()
     window.grab().save(str(output/"catalog.png"))
     counts={}
     for _,page in window.PAGES:
@@ -110,6 +117,8 @@ def gui_smoke(output):
     info=inspect_file(fixture)
     assert info.header_row==1 and len(info.headers)==88 and len(info.samples)==3
     dialog=ImportDialog(info,"kapt",window);dialog.show();app.processEvents();dialog.grab().save(str(output/"import.png"))
+    assert not dialog.mapping_section.isVisible()
+    assert dialog.body_scroll.widget().palette().color(QPalette.Window).lightness()>230
     screen=dialog.screen().availableGeometry()
     assert screen.contains(dialog.frameGeometry())
     assert all(dialog.maps[key].currentData() for key in ["code","name","road"])
@@ -117,14 +126,18 @@ def gui_smoke(output):
     dialog.resize(min(580,screen.width()-32),min(520,screen.height()-48));app.processEvents()
     assert dialog._mapping_columns==1 and dialog.controls.isVisible()
     dialog.grab().save(str(output/"import-narrow.png"))
+    dialog.mapping_toggle.setChecked(True);app.processEvents();dialog.grab().save(str(output/"import-mapping-expanded.png"))
     dialog.body_scroll.verticalScrollBar().setValue(dialog.body_scroll.verticalScrollBar().maximum());app.processEvents()
     dialog.grab().save(str(output/"import-narrow-bottom.png"));dialog.close()
     imported=CatalogStore(Path(temporary.name)/"imported.sqlite3")
     summary=imported.import_file(info)
     assert summary["total"]==2 and summary["repeated"]==1 and imported.stats()["candidates"]==2
     window.resize(1180,720);app.processEvents();window.grab().save(str(output/"compact.png"))
+    window.text_size.setCurrentIndex(window.text_size.findData(19));app.processEvents();window.grab().save(str(output/"large-text.png"))
+    assert settings.value("text_size")==19
+    assert window.guide_button.isVisible() and window.table.isVisible()
     assert counts["kapt"]==6 and counts["standards"]==4 and counts["realty"]==3
     window.close();app.processEvents()
-    report={"version":VERSION,"status":"passed","platform":platform.platform(),"screen":app.primaryScreen().size().toTuple(),"page_counts":counts,"empty_startup":True,"import_mapping_dialog":True,"review_dialog":True,"import_window_within_screen":True,"narrow_import_controls_accessible":True,"provider_incorrect_dimension_88_columns":True,"fixture_data_only":True}
+    report={"version":VERSION,"status":"passed","platform":platform.platform(),"screen":app.primaryScreen().size().toTuple(),"page_counts":counts,"empty_startup":True,"import_mapping_dialog":True,"review_dialog":True,"import_window_within_screen":True,"narrow_import_controls_accessible":True,"provider_incorrect_dimension_88_columns":True,"dark_system_palette_overridden":True,"manual_mapping_collapsed_when_valid":True,"large_text_preference":True,"next_step_guide":True,"fixture_data_only":True}
     (output/"gui-smoke.json").write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
     temporary.cleanup();return report
